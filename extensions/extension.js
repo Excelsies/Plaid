@@ -4043,9 +4043,10 @@ export default class TilingWMExtension extends Extension {
 
     _convertMaximizedToGaps(win) {
         if (this._destroyed || !win) return;
+        // Runs on every commit: window-state checks before the GSettings read.
+        if (win.is_fullscreen() || !win.is_maximized()) return;
         if (!this._settings || !this._settings.get_boolean('enabled')) return;
         if (this._dropdownWin === win) return;
-        if (win.is_fullscreen() || !win.is_maximized()) return;
         if (this._isFloating(win)) {
             this._handleFloatMaximize(win);
             return;
@@ -4127,8 +4128,8 @@ export default class TilingWMExtension extends Extension {
 
     _trackFloatGeometry(win) {
         if (!this._floatMaxRects || !win) return;
-        if (!this._isFloating(win) || win.is_maximized()) return;
-        if (this._gappedMaxSet.has(win)) return;
+        if (win.is_maximized() || this._gappedMaxSet.has(win)) return;
+        if (!this._isFloating(win)) return;
         const f = win.get_frame_rect();
         if (f.width > 0 && f.height > 0)
             this._floatMaxRects.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
@@ -10354,7 +10355,9 @@ export default class TilingWMExtension extends Extension {
         // (or, for dwindle, no slot at all — the BSP tree is never built
         // for a single window, so the tree branch returned null and every
         // settle re-assert silently no-oped while the window sat off-slot).
-        if (this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w)).length === 1)
+        // One scan serves the stack layouts below as well.
+        const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
+        if (tiled.length === 1)
             return this._singleWindowRect(workArea);
         const area = this._outsideArea(workArea);
         if (!area) return null;
@@ -10377,7 +10380,6 @@ export default class TilingWMExtension extends Extension {
             return r;
         }
 
-        const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
         const idx = tiled.indexOf(win);
         if (idx === -1) return null;
 
@@ -10495,11 +10497,10 @@ export default class TilingWMExtension extends Extension {
     }
 
     _maybeReassertSlot(win, tol = 16, mode = 'retile') {
+        // Every commit of every tiled window: side-effect-free gates first.
         if (this._destroyed || !this._settings) return;
-        if (!this._settings.get_boolean('enabled')) return;
         if (this._grabOp) return;
         if (!win || win.is_fullscreen() || win.minimized) return;
-        if (this._isFloating(win)) return;
         if (!this._windowWorkspaces.has(win)) return;
         // A landing verify owns the correction: re-asserting would turn each
         // stale ack of a slow client into another retile.
@@ -10517,6 +10518,8 @@ export default class TilingWMExtension extends Extension {
             const last = this._slotReassertTimes.get(win);
             if (last && now - last < 250) return;
         }
+        if (!this._settings.get_boolean('enabled')) return;
+        if (this._isFloating(win)) return;
         if (this._animating) {
             // Direct mode must NOT queue: the settle re-assert of a freshly
             // placed window can be starved by other workspaces' retile
