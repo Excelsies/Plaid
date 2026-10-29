@@ -369,6 +369,7 @@ export default class TilingWMExtension extends Extension {
         this._mismatchFrames = new Map();
         this._landingGivenUp = new Set();
         this._pendingWarp = new Set();
+        this._retileAfterGrab = new Set();
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = new Map();
         this._stackDiagnostics = new Set();
@@ -845,6 +846,7 @@ export default class TilingWMExtension extends Extension {
         this._mismatchFrames = null;
         this._landingGivenUp = null;
         this._pendingWarp = null;
+        this._retileAfterGrab = null;
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = null;
         this._stackDiagnostics = null;
@@ -2202,7 +2204,13 @@ export default class TilingWMExtension extends Extension {
         if (!this._settings.get_boolean('enabled')) {
             return;
         }
-        if (this._grabOp) return;
+        if (this._grabOp) {
+            // Deferred, not dropped (a window set changed mid-grab would keep
+            // its hole); _handleGrabEnd drains the set.
+            this._retileAfterGrab?.add(workspace);
+            this._dwindleDropCache = null;
+            return;
+        }
         const tiledWindows = this._getWindowsForWorkspace(workspace)
             .filter(w => !this._isFloating(w));
         if (tiledWindows.length === 0) {
@@ -9174,6 +9182,7 @@ export default class TilingWMExtension extends Extension {
 
     _handleGrabEnd(metaWindow, grabOp) {
         const wasTracking = this._grabOp !== null;
+        let dropWs = null;
 
         if (wasTracking && metaWindow && !this._isFloating(metaWindow)) {
             const ws = metaWindow.get_workspace();
@@ -9192,6 +9201,7 @@ export default class TilingWMExtension extends Extension {
                     } catch (_e) {}
                 }
                 this._retileWorkspace(ws);
+                dropWs = ws;
                 try { metaWindow.raise(); } catch (_e) {}
             }
         }
@@ -9215,6 +9225,22 @@ export default class TilingWMExtension extends Extension {
         this._disconnectGrabBoundaryHooks();
         this._grabOp = null;
         this._grabWindow = null;
+        // Retiles deferred by the grab. Not the drop's workspace again:
+        // rescheduled, it would wait behind the throttle and another
+        // workspace's animation.
+        if (this._retileAfterGrab && this._retileAfterGrab.size > 0) {
+            const deferred = [...this._retileAfterGrab];
+            this._retileAfterGrab.clear();
+            const active = global.workspace_manager.get_active_workspace();
+            const n = global.workspace_manager.get_n_workspaces();
+            const order = [];
+            for (let i = 0; i < n; i++) {
+                const ws = global.workspace_manager.get_workspace_by_index(i);
+                if (ws !== dropWs && deferred.includes(ws))
+                    order.splice(ws === active ? 0 : order.length, 0, ws);
+            }
+            for (const ws of order) this._retileWorkspace(ws);
+        }
         this._grabInitialStackRatios = null;
         this._startBorderAnimation();
     }
