@@ -379,9 +379,12 @@ export default class TilingWMExtension extends Extension {
         this._pendingRetileIds = new Map();
         this._pendingBorderId = 0;
         this._queuedAnimWorkspaces = new Set();
-        this._animStartedAt = 0;
+        this._animProgressAt = 0;
+        this._animGen = 0;
+        this._animWorkspace = null;
         this._transformStates = new Map();
         this._transformTimeline = null;
+        this._deferredReassertWins = new Set();
         this._landingRetries = new Map();
         this._landingWaits = new Set();
         this._pendingWarp = new Set();
@@ -873,7 +876,8 @@ export default class TilingWMExtension extends Extension {
         this._floatHooks = null;
         this._newWindowSet = null;
         this._queuedAnimWorkspaces = null;
-        this._animStartedAt = 0;
+        this._animProgressAt = 0;
+        this._deferredReassertWins = null;
         this._landingRetries = null;
         for (const win of [...(this._landingWaits || [])])
             this._endLandingWait(win);
@@ -1973,6 +1977,7 @@ export default class TilingWMExtension extends Extension {
         this._endLandingWait(win);
         if (this._slotReassertTimes) this._slotReassertTimes.delete(win);
         if (this._pendingWarp) this._pendingWarp.delete(win);
+        if (this._deferredReassertWins) this._deferredReassertWins.delete(win);
         if (this._newWindowSet) this._newWindowSet.delete(win);
         if (win._plaidInvisibleTimer) {
             try { GLib.source_remove(win._plaidInvisibleTimer); } catch (_e) {}
@@ -2276,9 +2281,14 @@ export default class TilingWMExtension extends Extension {
 
     _retileAll() {
         if (!this._settings || this._destroyed) return;
+        // Active workspace first: the queue drains in insertion order. The
+        // parking workspace never holds tiled windows.
+        const active = global.workspace_manager.get_active_workspace();
+        this._scheduleRetile(active);
         for (let i = 0; i < global.workspace_manager.get_n_workspaces(); i++) {
             const w = global.workspace_manager.get_workspace_by_index(i);
-            this._scheduleRetile(w);
+            if (w !== active && w !== this._backgroundAppParkingWs)
+                this._scheduleRetile(w);
         }
         this._scheduleBorders();
     }
@@ -2347,31 +2357,123 @@ export default class TilingWMExtension extends Extension {
             GLib.source_remove(this._animTickId);
             this._animTickId = 0;
         }
+        // Retire the run: its late callbacks must not clear _animating under
+        // the next one.
+        this._animGen++;
         this._stopTransforms();
-        if (this._newWindowSet) {
-            for (const win of this._newWindowSet) {
-                try {
-                    const a = win.get_compositor_private();
-                    if (a) {
-                        a.visible = true;
-                        a.set_opacity(255);
-                        a.remove_all_transitions();
-                    }
-                } catch (_e) {}
-            }
-        }
+        this._revealNewWindows();
         this._animating = false;
         this._animTargets = null;
         this._animStates = null;
-        if (this._queuedAnimWorkspaces && this._queuedAnimWorkspaces.size > 0) {
-            const pending = [...this._queuedAnimWorkspaces];
-            this._queuedAnimWorkspaces.clear();
-            log(`[plaid] anim: cancelled, draining ${pending.length} queued retiles`);
-            for (const ws of pending) this._scheduleRetile(ws);
+        if (this._queuedAnimWorkspaces && this._queuedAnimWorkspaces.size > 0)
+            log(`[plaid] anim: cancelled, draining ${this._queuedAnimWorkspaces.size} queued retiles`);
+        this._drainAnimQueue();
+    }
+
+    // Visible workspace first, then re-check mid-animation commits.
+    _drainAnimQueue() {
+        if (!this._queuedAnimWorkspaces) return;
+        const pending = [...this._queuedAnimWorkspaces];
+        this._queuedAnimWorkspaces.clear();
+        const active = global.workspace_manager.get_active_workspace();
+        pending.sort((a, b) => (b === active) - (a === active));
+        for (const ws of pending) this._scheduleRetile(ws);
+        if (!this._deferredReassertWins || this._deferredReassertWins.size === 0) return;
+        const wins = [...this._deferredReassertWins];
+        this._deferredReassertWins.clear();
+        for (const win of wins) {
+            const ws = win.get_workspace();
+            if (ws && !pending.includes(ws)) this._maybeReassertSlot(win);
         }
     }
 
-    _deferNewWindowPlacement(s, duration, done) {
+    // Watchdog: no progress for this long means a completion was lost. Scaled
+    // with the animation time so a slowed-down run is not cut short.
+    _animStallBudget() {
+        return 500 + 3 * this._getAnimationTime() * 1000;
+    }
+
+    // Needed whenever an animation is torn down early: overview clones ignore
+    // opacity, so a hidden window would show only there.
+    _revealNewWindows() {
+        if (!this._newWindowSet) return;
+        for (const win of this._newWindowSet) {
+            try {
+                const a = win.get_compositor_private();
+                if (a) {
+                    a.visible = true;
+                    a.set_opacity(255);
+                    a.remove_all_transitions();
+                }
+            } catch (_e) {}
+        }
+    }
+
+    // A placed window about to be shown is no longer new: a superseding run
+    // re-hiding it would make it blink.
+    _revealPlacedWindow(win) {
+        this._newWindowSet?.delete(win);
+        try {
+            const actor = win.get_compositor_private();
+            if (actor) actor.visible = true;
+        } catch (_e) {}
+        // The window has landed — cancel the 2.5s backstop reveal so it
+        // can't force-reveal a window that later moves to an inactive
+        // workspace.
+        if (win._plaidInvisibleTimer) {
+            try { GLib.source_remove(win._plaidInvisibleTimer); } catch (_e) {}
+            win._plaidInvisibleTimer = 0;
+        }
+        // Revealing = leaving the pending-warp state NOW: the offscreen
+        // mask multiplies the whole output (content AND border) by its
+        // opacity uniform, so a window still in _pendingWarp paints
+        // invisible even though the actor is visible. The frozen-frame
+        // / give-up paths reach fadeIn WITHOUT the verified-landing
+        // success branch (the only other place _pendingWarp is cleared),
+        // so clear it here — the same block the backstop reveal uses.
+        if (this._pendingWarp) this._pendingWarp.delete(win);
+        try {
+            const effect = this._windowMasks && this._windowMasks.get(win);
+            if (effect && effect.setOpacityUniform)
+                effect.setOpacityUniform(1);
+        } catch (_e) {}
+        this._scheduleBorders();
+    }
+
+    // Settle window: some clients (Firefox's session restore) re-apply
+    // their remembered geometry AFTER the placement. The size-changed
+    // hook catches it when the event reaches us, but the event path
+    // proved unreliable for this case (the journal showed only the
+    // backstop ever correcting), so a fine-grained poll is the
+    // dependable monitor: every 400ms for the 6s window, re-check
+    // the slot with the tight tolerance + direct re-place. The
+    // restore lands ~1-2s in → corrected within ~400ms of it (a
+    // quick flicker, no multi-second wait). Cost: ~15 trivial ticks
+    // per newly opened window, settle-window-only. The poll is NOT
+    // stopped on the first in-slot tick — a restore landing between
+    // ticks would be missed.
+    _armSettlePoll(win) {
+        win._plaidSettleUntil = Date.now() + 6000;
+        if (win._plaidSettlePollId) {
+            try { GLib.source_remove(win._plaidSettlePollId); } catch (_e) {}
+            win._plaidSettlePollId = 0;
+        }
+        win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+            if (this._destroyed || !win.get_compositor_private() ||
+                !this._windowWorkspaces || !this._windowWorkspaces.has(win)) {
+                win._plaidSettlePollId = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            if (!win._plaidSettleUntil || Date.now() > win._plaidSettleUntil) {
+                win._plaidSettlePollId = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            try { this._maybeReassertSlot(win, 4, 'direct'); } catch (_e) {}
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _deferNewWindowPlacement(s, duration, done, animGen) {
         const fadeDuration = Math.min(duration, 80);
         const fadeIn = () => {
             if (this._destroyed) return;
@@ -2380,66 +2482,8 @@ export default class TilingWMExtension extends Extension {
                 this._debugLog(`place: fading frame=(${Math.round(f.x)},${Math.round(f.y)},${Math.round(f.width)},${Math.round(f.height)}) ` +
                     `target=(${Math.round(s.targetX)},${Math.round(s.targetY)},${Math.round(s.targetW)},${Math.round(s.targetH)})`);
             } catch (_e) {}
-            try {
-                const actor = s.win.get_compositor_private();
-                if (actor) {
-                    actor.visible = true;
-                    // actor opacity is still 0 from the spawn hide — the
-                    // ease below animates 0→255.
-                }
-            } catch (_e) {}
-            // The window has landed — cancel the 2.5s backstop reveal so it
-            // can't force-reveal a window that later moves to an inactive
-            // workspace.
-            if (s.win._plaidInvisibleTimer) {
-                try { GLib.source_remove(s.win._plaidInvisibleTimer); } catch (_e) {}
-                s.win._plaidInvisibleTimer = 0;
-            }
-            // Revealing = leaving the pending-warp state NOW: the offscreen
-            // mask multiplies the whole output (content AND border) by its
-            // opacity uniform, so a window still in _pendingWarp paints
-            // invisible even though the actor is visible. The frozen-frame
-            // / give-up paths reach fadeIn WITHOUT the verified-landing
-            // success branch (the only other place _pendingWarp is cleared),
-            // so clear it here — the same block the backstop reveal uses.
-            if (this._pendingWarp) this._pendingWarp.delete(s.win);
-            try {
-                const effect = this._windowMasks && this._windowMasks.get(s.win);
-                if (effect && effect.setOpacityUniform)
-                    effect.setOpacityUniform(1);
-            } catch (_e) {}
-            // Settle window: some clients (Firefox's session restore) re-apply
-            // their remembered geometry AFTER the placement. The size-changed
-            // hook catches it when the event reaches us, but the event path
-            // proved unreliable for this case (the journal showed only the
-            // backstop ever correcting), so a fine-grained poll is the
-            // dependable monitor: every 400ms for the 6s window, re-check
-            // the slot with the tight tolerance + direct re-place. The
-            // restore lands ~1-2s in → corrected within ~400ms of it (a
-            // quick flicker, no multi-second wait). Cost: ~15 trivial ticks
-            // per newly opened window, settle-window-only. The poll is NOT
-            // stopped on the first in-slot tick — a restore landing between
-            // ticks would be missed.
-            s.win._plaidSettleUntil = Date.now() + 6000;
-            if (s.win._plaidSettlePollId) {
-                try { GLib.source_remove(s.win._plaidSettlePollId); } catch (_e) {}
-                s.win._plaidSettlePollId = 0;
-            }
-            s.win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
-                const w = s.win;
-                if (this._destroyed || !w || !w.get_compositor_private() ||
-                    !this._windowWorkspaces || !this._windowWorkspaces.has(w)) {
-                    if (w) w._plaidSettlePollId = 0;
-                    return GLib.SOURCE_REMOVE;
-                }
-                if (!w._plaidSettleUntil || Date.now() > w._plaidSettleUntil) {
-                    w._plaidSettlePollId = 0;
-                    return GLib.SOURCE_REMOVE;
-                }
-                try { this._maybeReassertSlot(w, 4, 'direct'); } catch (_e) {}
-                return GLib.SOURCE_CONTINUE;
-            });
-            this._scheduleBorders();
+            this._revealPlacedWindow(s.win);
+            this._armSettlePoll(s.win);
             let faded = false;
             const finishFade = () => {
                 if (this._destroyed) return;
@@ -2451,6 +2495,8 @@ export default class TilingWMExtension extends Extension {
             try {
                 const actor = s.win.get_compositor_private();
                 if (actor) {
+                    // actor opacity is still 0 from the spawn hide — the
+                    // ease below animates 0→255.
                     actor.ease({ opacity: 255, duration: fadeDuration, mode: Clutter.AnimationMode.EASE_OUT_CUBIC, onComplete: finishFade });
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, fadeDuration + 100, finishFade);
                     return;
@@ -2462,7 +2508,9 @@ export default class TilingWMExtension extends Extension {
         let lastFrameKey = null;
         let sameFrameCount = 0;
         const attempt = () => {
-            if (this._destroyed) return;
+            // Superseded: the new run places the window.
+            if (this._destroyed || animGen !== this._animGen) return;
+            this._animProgressAt = Date.now();
             try {
                 if (!s.win || !s.win.get_compositor_private()) {
                     done();
@@ -2818,9 +2866,9 @@ export default class TilingWMExtension extends Extension {
         if (this._animating) {
             // Stall watchdog: the in-flight animation's completion signal
             // can be missed (interrupted transitions, destroyed windows).
-            // If it has not completed within a generous budget, force-finish
+            // If it has made no progress within a generous budget, force-finish
             // so queued retiles keep running instead of wedging forever.
-            if (this._animStartedAt && Date.now() - this._animStartedAt > 800) {
+            if (Date.now() - this._animProgressAt > this._animStallBudget()) {
                 // Teardown the in-flight animation BEFORE starting a new
                 // one: the watchdog previously just cleared _animating and
                 // drained the queue, leaving the 16ms tick alive — the new
@@ -2834,20 +2882,26 @@ export default class TilingWMExtension extends Extension {
                     GLib.source_remove(this._animTickId);
                     this._animTickId = 0;
                 }
+                // Retire the stalled run and re-queue its workspace for its
+                // hidden new windows.
+                this._animGen++;
+                this._stopTransforms(false, this._animWorkspace);
                 this._animStates = null;
                 this._animTargets = null;
                 this._animating = false;
-                const pending = [...this._queuedAnimWorkspaces];
-                this._queuedAnimWorkspaces.clear();
-                log(`[plaid] anim: watchdog drained stalled queue (${pending.length})`);
-                for (const ws of pending) this._scheduleRetile(ws);
+                if (this._animWorkspace && this._animWorkspace !== workspace)
+                    this._queuedAnimWorkspaces.add(this._animWorkspace);
+                log(`[plaid] anim: watchdog drained stalled queue (${this._queuedAnimWorkspaces.size})`);
+                this._drainAnimQueue();
             } else {
                 this._queuedAnimWorkspaces.add(workspace);
                 this._debugLog(`anim: retile queued while animating (queue=${this._queuedAnimWorkspaces.size})`);
                 return;
             }
         }
-        this._animStartedAt = Date.now();
+        const animGen = ++this._animGen;
+        this._animWorkspace = workspace;
+        this._animProgressAt = Date.now();
 
         this._animTargets = new Map();
 
@@ -2888,7 +2942,12 @@ export default class TilingWMExtension extends Extension {
         const floatAtMap = [];
         for (const [win, target] of this._animTargets) {
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
-            const frame = win.get_frame_rect();
+            let frame = win.get_frame_rect();
+            // Lerp from where the client is heading, or a slow client is
+            // re-sent intermediate sizes.
+            const sent = win._plaidTickSent;
+            if (sent && this._tickSentPending(win, frame))
+                frame = { x: sent.x, y: sent.y, width: sent.w, height: sent.h };
             const actor = win.get_compositor_private();
             const isNew = this._newWindowSet.has(win);
             if (isNew && this._maxSizeBelowSlot(win, target)) {
@@ -2906,7 +2965,9 @@ export default class TilingWMExtension extends Extension {
         if (remaining === 0) { this._animating = false; return; }
 
         const dec = () => {
-            if (!this._newWindowSet) return;
+            // A retired run must not finish its replacement.
+            if (!this._newWindowSet || animGen !== this._animGen) return;
+            this._animProgressAt = Date.now();
             remaining--;
             if (remaining <= 0) {
                 this._animating = false;
@@ -2915,11 +2976,7 @@ export default class TilingWMExtension extends Extension {
                 this._animStates = null;
                 this._scheduleSaveLayouts();
                 this._scheduleBorders();
-                if (this._queuedAnimWorkspaces.size > 0) {
-                    const pending = [...this._queuedAnimWorkspaces];
-                    this._queuedAnimWorkspaces.clear();
-                    for (const ws of pending) this._scheduleRetile(ws);
-                }
+                this._drainAnimQueue();
             }
         };
 
@@ -2948,25 +3005,31 @@ export default class TilingWMExtension extends Extension {
                 const e = 1 - Math.pow(1 - t, 3);
                 for (const s of this._animStates) {
                     if (!s.win.get_compositor_private()) continue;
-                    const x = s.startX + (s.targetX - s.startX) * e;
-                    const y = s.startY + (s.targetY - s.startY) * e;
-                    const w = s.startW + (s.targetW - s.startW) * e;
-                    const h = s.startH + (s.targetH - s.startH) * e;
-                    try { s.win.move_resize_frame(true, Math.round(x), Math.round(y), Math.round(w), Math.round(h)); } catch (_e) {}
+                    const r = [s.startX + (s.targetX - s.startX) * e, s.startY + (s.targetY - s.startY) * e,
+                        s.startW + (s.targetW - s.startW) * e, s.startH + (s.targetH - s.startH) * e].map(Math.round);
+                    // Only a rect that moved, or a still window is re-sent
+                    // every tick.
+                    const last = s.lastRect ?? [s.startX, s.startY, s.startW, s.startH];
+                    if (r.every((v, i) => v === last[i])) continue;
+                    s.lastRect = r;
+                    this._tickConfigure(s.win, r[0], r[1], r[2], r[3]);
                 }
                 if (t >= 1) {
                     this._animTickId = 0;
                     this._animStates = null;
                     for (const s of existingStates) {
                         if (!s.win.get_compositor_private()) { dec(); continue; }
-                        try { s.win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); } catch (_e) {}
+                        // Each configure costs a constraint pass: skip windows
+                        // already at the slot.
+                        if (s.lastRect || !this._frameAtTarget(s, 0))
+                            this._tickConfigure(s.win, s.targetX, s.targetY, s.targetW, s.targetH);
                         this._verifyAnimationLanding(s, 'tiled');
                         dec();
                     }
                     // Now fade in new windows (placement + fade handled deferred)
                     for (const s of newStates) {
                         if (s.actor) {
-                            this._deferNewWindowPlacement(s, duration, dec);
+                            this._deferNewWindowPlacement(s, duration, dec, animGen);
                         } else {
                             dec();
                         }
@@ -2979,12 +3042,30 @@ export default class TilingWMExtension extends Extension {
             // Only new windows — fade them in after the deferred placement
             for (const s of newStates) {
                 if (s.actor) {
-                    this._deferNewWindowPlacement(s, duration, dec);
+                    this._deferNewWindowPlacement(s, duration, dec, animGen);
                 } else {
                     dec();
                 }
             }
         }
+    }
+
+    // Remembered as where the next run starts (see _animRetile).
+    _tickConfigure(win, x, y, w, h) {
+        const f = win.get_frame_rect();
+        const seen = this._tickSentPending(win, f) ? win._plaidTickSent.seen : [];
+        seen.push(`${f.x},${f.y},${f.width},${f.height}`, `${x},${y},${w},${h}`);
+        if (seen.length > 32) seen.splice(0, seen.length - 32);
+        try { win.move_resize_frame(true, x, y, w, h); } catch (_e) {}
+        win._plaidTickSent = { x, y, w, h, at: Date.now(), seen };
+    }
+
+    // The last per-tick configure is still in flight: recent, not landed, and
+    // the frame is one the ticks saw or sent (else something else moved it).
+    _tickSentPending(win, f) {
+        const sent = win._plaidTickSent;
+        return !!sent && Date.now() - sent.at < LANDING_SETTLE_MS &&
+            sent.seen.includes(`${f.x},${f.y},${f.width},${f.height}`);
     }
 
     // Transform animation: one move_resize_frame per window, then a per-frame
@@ -3090,6 +3171,8 @@ export default class TilingWMExtension extends Extension {
 
     _transformStep() {
         const now = GLib.get_monotonic_time();
+        // Progress for the watchdog: a slowed-down ease outlasts its budget.
+        if (this._animating) this._animProgressAt = Date.now();
         for (const s of [...this._transformStates.values()]) {
             if (this._transformStates.get(s.win) !== s) continue;
             if (!s.win.get_compositor_private()) {
@@ -9486,6 +9569,7 @@ export default class TilingWMExtension extends Extension {
         // mutter moves the grabbed window from here on: an eased transform
         // would hold it off the pointer.
         this._releaseTransform(metaWindow);
+        metaWindow._plaidTickSent = null;
 
         // Capture the pointer for every tracked grab — the move-grab path
         // (e.g. SSD titlebar clicks) must compare against the real click
@@ -10186,8 +10270,9 @@ export default class TilingWMExtension extends Extension {
             if (mode === 'direct') {
                 // fall through to the direct check below
             } else {
-                const ws = win.get_workspace();
-                if (ws && this._queuedAnimWorkspaces) this._queuedAnimWorkspaces.add(ws);
+                // Defer the check, not a retile (every animated commit lands
+                // here): _drainAnimQueue re-checks it.
+                this._deferredReassertWins?.add(win);
                 return;
             }
         }
