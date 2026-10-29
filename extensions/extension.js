@@ -669,6 +669,38 @@ export default class TilingWMExtension extends Extension {
         try { return global.get_current_time(); } catch (_e) { return 0; }
     }
 
+    // A workspace was inserted (delta +1) or removed (delta -1) at `index`:
+    // re-derive the windows' cached indices (stale, retiles see no windows)
+    // and shift the per-index layouts, ratios and shapes. `count` is the count
+    // before the change; rules beyond it stay put.
+    _shiftWorkspaceIndexKeys(index, delta,
+        count = global.workspace_manager.get_n_workspaces() - delta) {
+        const shiftMap = (map, idxOf, rekey) => {
+            if (!map) return false;
+            const moved = [...map].filter(([k]) => idxOf(k) >= index && idxOf(k) < count);
+            for (const [k] of moved) map.delete(k);
+            for (const [k, v] of moved) {
+                const i = idxOf(k);
+                if (delta < 0 && i === index) continue;
+                map.set(rekey(k, i + delta), v);
+            }
+            return moved.length > 0;
+        };
+        let shifted = false;
+        for (const map of [this._workspaceLayouts, this._masterRatios, this._stackRatios,
+            this._persistedLayoutByIndex, this._persistedMasterByIndex, this._persistedStackByIndex,
+            this._persistedDwindleByIndex, this._persistedDwindleRaw])
+            shifted = shiftMap(map, k => k, (_k, i) => i) || shifted;
+        this._reindexWindowWorkspaces();
+        if (shifted) this._scheduleSaveLayouts();
+    }
+
+    _reindexWindowWorkspaces() {
+        if (!this._windowWorkspaces || !this._windowWSIndices) return;
+        for (const [win, ws] of this._windowWorkspaces)
+            this._windowWSIndices.set(win, this._wsIndex(ws));
+    }
+
     _wsIndex(ws) {
         if (!ws) return -1;
         try { return ws.index(); } catch (_e) {}
@@ -1172,10 +1204,15 @@ export default class TilingWMExtension extends Extension {
         this._addSignal(global.workspace_manager, global.workspace_manager.connect('workspace-added', (_m, index) => {
             const ws = global.workspace_manager.get_workspace_by_index(index);
             this._workspaceOrders.set(ws, []);
+            this._shiftWorkspaceIndexKeys(index, +1);
             this._scheduleBackgroundAppParkingFix();
         }));
-        this._addSignal(global.workspace_manager, global.workspace_manager.connect('workspace-removed', () => {
+        this._addSignal(global.workspace_manager, global.workspace_manager.connect('workspaces-reordered', () => {
+            this._reindexWindowWorkspaces();
+        }));
+        this._addSignal(global.workspace_manager, global.workspace_manager.connect('workspace-removed', (_m, index) => {
             this._scheduleBackgroundAppParkingFix();
+            this._shiftWorkspaceIndexKeys(index, -1);
             for (const [workspace] of this._workspaceOrders) {
                 let valid = false;
                 for (let i = 0; i < global.workspace_manager.get_n_workspaces(); i++) {
@@ -1186,10 +1223,7 @@ export default class TilingWMExtension extends Extension {
                 }
                 if (!valid) {
                     this._workspaceOrders.delete(workspace);
-                    this._masterRatios.delete(this._wsIndex(workspace));
-                    this._stackRatios.delete(this._wsIndex(workspace));
                     this._bspTrees.delete(workspace);
-                    this._workspaceLayouts.delete(this._wsIndex(workspace));
                     this._lastFocusedPerWorkspace.delete(workspace);
                     // Workspace-keyed, workspace-object key — a retained
                     // GJS wrapper per removed workspace otherwise.
@@ -1636,6 +1670,7 @@ export default class TilingWMExtension extends Extension {
         // index, so a recreated workspace (dynamic-workspace churn) resolves
         // identically every time. Object-keyed live entries caused layout
         // flip-flops when workspaces were removed and recreated.
+        // Inserts and removals shift these keys (_shiftWorkspaceIndexKeys).
         const idx = this._wsIndex(workspace);
         const live = this._workspaceLayouts.get(idx);
         if (live) return live;
