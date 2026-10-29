@@ -4287,10 +4287,22 @@ export default class TilingWMExtension extends Extension {
 
         const focusWindow = global.display.focus_window;
 
-        const borderRadius = this._settings.get_int('border-radius');
-        const roundedCorners = this._settings.get_boolean('rounded-corners');
-        const bordersEnabled = this._settings.get_boolean('borders-enabled');
-        const blurEnabled = this._settings.get_boolean('window-blur');
+        const settings = this._settingsMemo();
+        const borderRadius = settings.get_int('border-radius');
+        const roundedCorners = settings.get_boolean('rounded-corners');
+        const bordersEnabled = settings.get_boolean('borders-enabled');
+        const blurEnabled = settings.get_boolean('window-blur');
+
+        // No Flair: skip the per-window walk, which runs after every commit.
+        if (!bordersEnabled && !(roundedCorners && borderRadius > 0) && !blurEnabled) {
+            this._removeAllBorders();
+            this._removeAllMasks();
+            this._removeAllBlurs();
+            if (this._dropdownWin)
+                this._applyDropdownEffects(this._dropdownWin);
+            this._syncBorderAnimation();
+            return;
+        }
 
         // Only sweep ALL borders when the feature turned off — otherwise
         // _ensureWindowBorder's per-window signature gate skips unchanged
@@ -4358,15 +4370,15 @@ export default class TilingWMExtension extends Extension {
                 // Widget before mask (same ordering rule as the floating
                 // loop) for the scratch fall-through.
                 if (scratch && bordersEnabled)
-                    this._ensureWindowBorder(win, actor, frame, isFocused);
-                this._ensureWindowMask(win, actor, borderRadius + 1);
+                    this._ensureWindowBorder(win, actor, frame, isFocused, settings);
+                this._ensureWindowMask(win, actor, borderRadius + 1, settings);
                 // Scratch windows fall through to their special border even
                 // with rounded corners (normal windows stay mask-only).
                 if (!scratch)
                     continue;
             }
 
-            if (bordersEnabled) this._ensureWindowBorder(win, actor, frame, isFocused);
+            if (bordersEnabled) this._ensureWindowBorder(win, actor, frame, isFocused, settings);
         }
 
         // Floating windows are not in _windowWSIndices (they skip _addWindow),
@@ -4391,9 +4403,9 @@ export default class TilingWMExtension extends Extension {
             // _updateMaskBounds zeroes the SDF border when a renderable
             // widget exists, so creating the widget first avoids a
             // first-pass (or transition-pass) transient double border.
-            if (bordersEnabled) this._ensureWindowBorder(win, actor, frame, isFocused);
+            if (bordersEnabled) this._ensureWindowBorder(win, actor, frame, isFocused, settings);
             if (roundedCorners && borderRadius > 0)
-                this._ensureWindowMask(win, actor, borderRadius + 1);
+                this._ensureWindowMask(win, actor, borderRadius + 1, settings);
         }
 
         // The border animation is armed by _syncBorderAnimation() below with the
@@ -4414,7 +4426,25 @@ export default class TilingWMExtension extends Extension {
         this._syncBorderAnimation();
     }
 
-    _ensureWindowBorder(win, actor, frame, isFocused) {
+    // Memo of this._settings for one borders pass (it runs after every commit
+    // and re-reads ~12 keys per window). Keys cannot change mid-pass.
+    _settingsMemo() {
+        const settings = this._settings;
+        const memo = new Map();
+        const read = (getter, key) => {
+            const k = `${getter}:${key}`;
+            if (!memo.has(k)) memo.set(k, settings[getter](key));
+            return memo.get(k);
+        };
+        return {
+            get_boolean: key => read('get_boolean', key),
+            get_int: key => read('get_int', key),
+            get_string: key => read('get_string', key),
+            get_strv: key => read('get_strv', key),
+        };
+    }
+
+    _ensureWindowBorder(win, actor, frame, isFocused, settings = this._settings) {
         if (!frame || frame.width === 0 || frame.height === 0) return false;
         // Rounded corners: exactly-one-border. Wayland — the mask attaches
         // to the window ACTOR, so this widget (its child) would be captured
@@ -4437,16 +4467,16 @@ export default class TilingWMExtension extends Extension {
         //     pass, so no double and no borderless gap.
         // Leftovers are removed BORDER-ONLY (_removeWidgetBorder — never
         // destroys the mask, unlike _removeBorder).
-        if (this._settings.get_boolean('rounded-corners') &&
-            this._settings.get_int('border-radius') > 0) {
+        if (settings.get_boolean('rounded-corners') &&
+            settings.get_int('border-radius') > 0) {
             if (win.get_client_type() !== Meta.WindowClientType.X11) {
                 this._removeWidgetBorder(win);
                 return false;
             }
             if (this._unwrapMaskActor(actor, win)) {
                 const effWidth = isFocused
-                    ? this._settings.get_int('active-border-width')
-                    : this._settings.get_int('inactive-border-width');
+                    ? settings.get_int('active-border-width')
+                    : settings.get_int('inactive-border-width');
                 const buffer = win.get_buffer_rect();
                 if ((frame.x - buffer.x) < effWidth ||
                     (frame.y - buffer.y) < effWidth) {
@@ -4456,15 +4486,15 @@ export default class TilingWMExtension extends Extension {
             }
             // childless → fall through: create the placeholder widget
         }
-        const activeWidth = this._settings.get_int('active-border-width');
-        const activeColor = (this._settings.get_strv('active-border-color') || [])[0] || '#3584e4';
-        const activeColor2 = (this._settings.get_strv('active-border-color-2') || [])[0] || '#62a0ea';
-        const inactiveWidth = this._settings.get_int('inactive-border-width');
-        const inactiveColor = (this._settings.get_strv('inactive-border-color') || [])[0] || '#555555';
-        const inactiveColor2 = (this._settings.get_strv('inactive-border-color-2') || [])[0] || '#777777';
-        const borderRadius = this._settings.get_int('border-radius');
-        const gradient = this._settings.get_boolean('gradient-borders');
-        const gradientDir = this._settings.get_string('gradient-direction');
+        const activeWidth = settings.get_int('active-border-width');
+        const activeColor = (settings.get_strv('active-border-color') || [])[0] || '#3584e4';
+        const activeColor2 = (settings.get_strv('active-border-color-2') || [])[0] || '#62a0ea';
+        const inactiveWidth = settings.get_int('inactive-border-width');
+        const inactiveColor = (settings.get_strv('inactive-border-color') || [])[0] || '#555555';
+        const inactiveColor2 = (settings.get_strv('inactive-border-color-2') || [])[0] || '#777777';
+        const borderRadius = settings.get_int('border-radius');
+        const gradient = settings.get_boolean('gradient-borders');
+        const gradientDir = settings.get_string('gradient-direction');
 
         let borderWidth = isFocused ? activeWidth : inactiveWidth;
         let color1 = isFocused ? activeColor : inactiveColor;
@@ -4526,12 +4556,15 @@ export default class TilingWMExtension extends Extension {
                 reactive: false,
                 visible: true,
             });
+            const c1 = this._hexToRgb(color1);
+            const c2 = this._hexToRgb(color2);
             border._plaidBorder = {
-                color1: this._hexToRgb(color1),
-                color2: this._hexToRgb(color2),
+                color1: c1,
+                color2: c2,
                 width: borderWidth,
                 radius: borderRadius,
                 direction: gradientDir,
+                thetaStep: this._gradientThetaStep(c1, c2),
             };
             border.connect('repaint', () => this._repaintBorder(border));
         } else {
@@ -4557,7 +4590,7 @@ export default class TilingWMExtension extends Extension {
             try {
                 const ringWidth = Math.max(2, activeWidth);
                 const scratchColor =
-                    (this._settings.get_strv('scratchpad-border-color') || [])[0] || '#f5c211';
+                    (settings.get_strv('scratchpad-border-color') || [])[0] || '#f5c211';
                 const ring = new St.Widget({
                     name: 'tiling-border',
                     x: borderX - ringWidth,
@@ -4646,18 +4679,46 @@ export default class TilingWMExtension extends Extension {
                 // phase advance FASTER — inverted polarity).
                 theta = ((Date.now() / period) % 1) * Math.PI * 2;
             }
+            border._plaidTheta = theta;
 
             const cr = border.get_context();
             cr.setLineWidth(bw);
             cr.setLineCap(cairo.LineCap.ROUND);
+            // One path per run of same-colour segments (a stroke each is
+            // hundreds of GI calls per repaint); round joins match separate
+            // round caps.
+            cr.setLineJoin(cairo.LineJoin.ROUND);
 
+            let runKey = -1;
+            let endX = 0, endY = 0, dirX = 0, dirY = 0;
             for (const seg of segs) {
                 const p = { x: (seg.x0 + seg.x1) / 2, y: (seg.y0 + seg.y1) / 2 };
                 const gpos = this._borderGradientPos(w, h, p, info.direction, animated, theta, cx, cy);
                 const c = this._lerpRgb(info.color1, info.color2, gpos);
-                cr.setSourceRGB(c.r, c.g, c.b);
-                cr.moveTo(seg.x0, seg.y0);
-                cr.lineTo(seg.x1, seg.y1);
+                const key = (Math.round(c.r * 255) << 16) | (Math.round(c.g * 255) << 8) | Math.round(c.b * 255);
+                const sx = seg.x1 - seg.x0;
+                const sy = seg.y1 - seg.y0;
+                if (key !== runKey) {
+                    if (runKey >= 0) {
+                        cr.lineTo(endX, endY);
+                        cr.stroke();
+                    }
+                    runKey = key;
+                    cr.setSourceRGB(c.r, c.g, c.b);
+                    cr.moveTo(seg.x0, seg.y0);
+                    dirX = sx;
+                    dirY = sy;
+                } else if (Math.abs(sx * dirY - sy * dirX) > 1e-6 * (sx * sx + sy * sy) ||
+                           sx * dirX + sy * dirY <= 0) {
+                    cr.lineTo(endX, endY);
+                    dirX = sx;
+                    dirY = sy;
+                }
+                endX = seg.x1;
+                endY = seg.y1;
+            }
+            if (runKey >= 0) {
+                cr.lineTo(endX, endY);
                 cr.stroke();
             }
         } catch (e) {
@@ -4687,6 +4748,10 @@ export default class TilingWMExtension extends Extension {
                 if (this._grabOp) {
                     return GLib.SOURCE_CONTINUE;
                 }
+                if (!this._borderAnimationNeeded()) {
+                    this._stopBorderAnimation();
+                    return GLib.SOURCE_REMOVE;
+                }
             } catch (e) {
                 log(`[plaid] border animation tick failed: ${e.message}`);
                 this._stopBorderAnimation();
@@ -4695,23 +4760,43 @@ export default class TilingWMExtension extends Extension {
             // Rotation follows border-animation-speed alone (see _repaintBorder).
             const period = this._borderRotationMs(this._settings.get_int('border-animation-speed'));
             const theta = period > 0 ? ((Date.now() / period) % 1) * Math.PI * 2 : 0;
+            // Re-render only while visible (mapped or in the overview) and
+            // once the colour moved a level (_gradientThetaStep).
+            const overview = Main.overview.visible;
             for (const effect of this._windowMasks.values()) {
+                if (!this._gradientStale(effect._plaidTheta, theta, effect._plaidThetaStep)) continue;
+                const target = effect.get_actor();
+                if (!target || !(overview || target.mapped)) continue;
+                effect._plaidTheta = theta;
                 try { effect.setTheta(theta); } catch (_e) {}
             }
             for (const border of this._windowBorders.values()) {
+                const info = border._plaidBorder;
+                if (!info || !(overview || border.mapped)) continue;
+                if (!this._gradientStale(border._plaidTheta, theta, info.thetaStep)) continue;
                 // St.DrawingArea only emits `repaint` when ITS queue_repaint
                 // set needs_repaint — Clutter's queue_redraw paints the
                 // cached texture without running the cairo handler, so the
                 // widget gradient never rotated (masked by the SDF being
                 // the visible border on masked windows). queue_repaint
                 // performs the Clutter redraw internally. Plain St.Widgets
-                // have no queue_repaint and nothing to animate.
-                try {
-                    if (border.queue_repaint) border.queue_repaint();
-                } catch (_e) {}
+                // (no _plaidBorder) have nothing to animate.
+                try { border.queue_repaint(); } catch (_e) {}
             }
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    // A gradient whose rotation is visible: a two-colour cairo border, or a
+    // mask drawing its SDF border (borderless masks only round corners).
+    _borderAnimationNeeded() {
+        for (const border of this._windowBorders.values()) {
+            if (border._plaidBorder && border._plaidBorder.thetaStep < Infinity) return true;
+        }
+        for (const effect of this._windowMasks.values()) {
+            if (effect._plaidThetaStep < Infinity) return true;
+        }
+        return false;
     }
 
     _stopBorderAnimation() {
@@ -4726,7 +4811,7 @@ export default class TilingWMExtension extends Extension {
             if (!this._settings || this._destroyed) return;
             const wantAnim = this._settings.get_boolean('gradient-borders') &&
                 this._settings.get_int('border-animation-speed') > 0 &&
-                (this._windowBorders.size > 0 || this._windowMasks.size > 0);
+                this._borderAnimationNeeded();
             if (wantAnim)
                 this._startBorderAnimation();
             else
@@ -5070,7 +5155,7 @@ export default class TilingWMExtension extends Extension {
         return effect;
     }
 
-    _ensureWindowMask(win, actor, radius) {
+    _ensureWindowMask(win, actor, radius, settings = this._settings) {
         if (!this._windowMasks || !actor || !actor.add_effect_with_name) return;
         // Mask self-heal quarantine: a texture swap rendered this window's
         // offscreen capture empty (see _updateMaskBounds) — the mask was
@@ -5125,7 +5210,7 @@ export default class TilingWMExtension extends Extension {
             } catch (_e) {}
             this._connectTextureWatch(win, actor, effect);
         }
-        this._updateMaskBounds(win, actor, effect, radius);
+        this._updateMaskBounds(win, actor, effect, radius, settings);
         try { target.queue_redraw(); } catch (_e) {}
     }
 
@@ -5186,7 +5271,7 @@ export default class TilingWMExtension extends Extension {
         try { global.stage.queue_redraw(); } catch (_e) {}
     }
 
-    _updateMaskBounds(win, actor, effect, radius) {
+    _updateMaskBounds(win, actor, effect, radius, settings = this._settings) {
         // Mask self-heal: X11 surfaces backed by foreign client textures
         // (Chromium/electron GPU rendering) can swap their texture on
         // workspace round-trips — the ClutterOffscreenEffect capture then
@@ -5228,8 +5313,8 @@ export default class TilingWMExtension extends Extension {
             const widthKey = isFocused ? 'active-border-width' : 'inactive-border-width';
             borderWidth = (this._grabWindow === win)
                 ? 0
-                : (this._settings.get_boolean('borders-enabled')
-                    ? this._settings.get_int(widthKey)
+                : (settings.get_boolean('borders-enabled')
+                    ? settings.get_int(widthKey)
                     : 0);
         }
 
@@ -5269,30 +5354,30 @@ export default class TilingWMExtension extends Extension {
             const c = this._hexToRgb(hex);
             return [c.r, c.g, c.b, 1];
         };
-        const color1Hex = (this._settings.get_strv(color1Key) || [])[0] || '#3584e4';
-        const color2Hex = (this._settings.get_strv(color2Key) || [])[0] || color1Hex;
+        const color1Hex = (settings.get_strv(color1Key) || [])[0] || '#3584e4';
+        const color2Hex = (settings.get_strv(color2Key) || [])[0] || color1Hex;
         const color1 = toRgba(color1Hex);
         const color2 = toRgba(color2Hex);
 
         let mode = 0;
         let theta = 0;
-        const speed = this._settings.get_int('border-animation-speed');
+        const speed = settings.get_int('border-animation-speed');
         const period = this._borderRotationMs(speed);
-        if (period > 0 && this._settings.get_boolean('gradient-borders')) {
+        if (period > 0 && settings.get_boolean('gradient-borders')) {
             mode = 3;
             // Rotation follows border-animation-speed alone (see _repaintBorder).
             theta = ((Date.now() / period) % 1) * Math.PI * 2;
         } else {
-            const dir = this._settings.get_string('gradient-direction');
+            const dir = settings.get_string('gradient-direction');
             if (dir === 'horizontal')
                 mode = 1;
             else if (dir === 'diagonal')
                 mode = 2;
         }
 
-        const blurEnabled = this._settings.get_boolean('window-blur');
+        const blurEnabled = settings.get_boolean('window-blur');
         let opacity = blurEnabled
-            ? this._settings.get_int('window-blur-opacity') / 100
+            ? settings.get_int('window-blur-opacity') / 100
             : 1;
         // A window hidden for its spawn choreography (actor opacity is ignored
         // by the offscreen mask) must stay invisible through the shader
@@ -5303,9 +5388,9 @@ export default class TilingWMExtension extends Extension {
         const scratchWin = !!(this._scratchpadWindows && this._scratchpadWindows.has(win));
         let ringWidth = 0;
         let ringColor = [0, 0, 0, 0];
-        if (scratchWin && this._settings.get_boolean('borders-enabled')) {
-            ringWidth = Math.max(2, this._settings.get_int('active-border-width'));
-            const ringHex = (this._settings.get_strv('scratchpad-border-color') || [])[0] || '#f5c211';
+        if (scratchWin && settings.get_boolean('borders-enabled')) {
+            ringWidth = Math.max(2, settings.get_int('active-border-width'));
+            const ringHex = (settings.get_strv('scratchpad-border-color') || [])[0] || '#f5c211';
             ringColor = toRgba(ringHex);
             if (!effect._ringLogged) {
                 effect._ringLogged = true;
@@ -5329,6 +5414,14 @@ export default class TilingWMExtension extends Extension {
             this._debugLog(`mask uniforms: ${win.get_wm_class_instance() || '?'} ring=${ringWidth} bw=${borderWidth} eff=${effect.get_actor() ? 'attached' : 'DETACHED'}`);
         }
         effect.updateMask(x1, y1, x2, y2, radius, borderWidth, color1, color2, mode, theta, opacity, ringWidth, ringColor);
+        // Uniform refreshes also run outside _doUpdateBorders: re-arm a
+        // stopped tick.
+        effect._plaidTheta = theta;
+        effect._plaidThetaStep = (mode === 3 && borderWidth > 0.5)
+            ? this._gradientThetaStep(this._hexToRgb(color1Hex), this._hexToRgb(color2Hex))
+            : Infinity;
+        if (effect._plaidThetaStep < Infinity && !this._borderAnimId)
+            this._startBorderAnimation();
     }
 
     _teardownMaskEffect(win, effect) {
@@ -9892,7 +9985,8 @@ export default class TilingWMExtension extends Extension {
             for (const ws of order) this._retileWorkspace(ws);
         }
         this._grabInitialStackRatios = null;
-        this._startBorderAnimation();
+        // Sync, not start: no 30fps tick when nothing animates.
+        this._syncBorderAnimation();
     }
 
     _isResizeGrab(grabOp) {
