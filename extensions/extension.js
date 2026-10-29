@@ -36,6 +36,9 @@ const LANDING_RETRIES = 3;
 const MASK_EFFECT_NAME = 'plaid-corner-mask';
 const BLUR_EFFECT_NAME = 'plaid-window-blur';
 
+// A new window stuck this long while placement fails is revealed where it is.
+const NEW_WINDOW_FROZEN_MS = 1000;
+
 // Transform animations (the live-resize hand-off) at slow_down_factor 1,
 // after Hyprland. HOLD: how long a stale buffer stays stretched awaiting the
 // client's commit.
@@ -1064,10 +1067,23 @@ export default class TilingWMExtension extends Extension {
                 };
                 const actor = win.get_compositor_private();
                 if (actor) {
-                    const firstFrameId = actor.connect('first-frame', () => {
-                        actor.disconnect(firstFrameId);
+                    // Nothing is painted in the overview, so first-frame would
+                    // not come: place from 'shown' then, once (shared with
+                    // first-frame).
+                    let placed = false;
+                    let firstFrameId = 0;
+                    let shownId = 0;
+                    const placeOnce = () => {
+                        if (placed) return;
+                        placed = true;
+                        try { actor.disconnect(firstFrameId); } catch (_e) {}
+                        try { win.disconnect(shownId); } catch (_e) {}
                         this._markPendingWindowInvisible(win, actor);
                         doRetile();
+                    };
+                    firstFrameId = actor.connect('first-frame', placeOnce);
+                    shownId = win.connect('shown', () => {
+                        if (Main.overview.visible) placeOnce();
                     });
                 } else {
                     GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
@@ -1806,6 +1822,9 @@ export default class TilingWMExtension extends Extension {
             if (this._settings.get_boolean('follow-focus') &&
                 win.get_window_type() === Meta.WindowType.NORMAL)
                 this._cursorWarpDeferred(win);
+            // Size hints arrive with the first commit: a window hidden as a
+            // tile may float now, and no retile places a float.
+            if (this._newWindowSet?.has(win)) this._releaseSpawnHide(win);
             this._debugLog('hide skip: floating');
             return;
         }
@@ -1822,6 +1841,15 @@ export default class TilingWMExtension extends Extension {
             return;
         }
         try {
+            // GNOME's async map effect re-shows the hidden actor at the spawn
+            // rect; Plaid fades it in at its slot. Only before the map, or the
+            // skip eats the next effect (close, maximize).
+            if (!win._plaidMapEffectSkipped && !actor.mapped) {
+                win._plaidMapEffectSkipped = true;
+                Main.wm.skipNextEffect(actor);
+            }
+        } catch (_e) {}
+        try {
             // An invisible actor is never painted — even by the offscreen mask
             // pipeline — so this hide cannot be bypassed by any effect. The
             // actor opacity + mask uniform stay as belt-and-suspenders for the
@@ -1836,31 +1864,43 @@ export default class TilingWMExtension extends Extension {
             } catch (_e) {}
             this._debugLog(`hide applied: ${win.get_wm_class_instance() || '?'}`);
         } catch (_e) {}
-        if (!win._plaidInvisibleTimer) {
-            win._plaidInvisibleTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2500, () => {
-                win._plaidInvisibleTimer = 0;
-                if (this._destroyed) return GLib.SOURCE_REMOVE;
-                this._debugLog(`backstop reveal: ${win.get_wm_class_instance() || '?'} ws=${this._wsIndex(win.get_workspace())} tiled=${this._windowWorkspaces.has(win)} frame=(${Math.round(win.get_frame_rect().x)},${Math.round(win.get_frame_rect().y)},${Math.round(win.get_frame_rect().width)},${Math.round(win.get_frame_rect().height)})`);
-                if (this._pendingWarp) this._pendingWarp.delete(win);
-                try {
-                    const a = win.get_compositor_private();
-                    if (a) {
-                        a.visible = true;
-                        a.set_opacity(255);
-                    }
-                } catch (_e) {}
-                try {
-                    const effect = this._windowMasks && this._windowMasks.get(win);
-                    if (effect && effect.setOpacityUniform)
-                        effect.setOpacityUniform(1);
-                } catch (_e) {}
-                // The blur/flair skipped during the pending-warp window must
-                // attach once the reveal fires.
-                this._scheduleBorders();
-                this._updateBorders();
+        this._armRevealBackstop(win);
+    }
+
+    // Last-resort reveal for a spawn-hidden window whose placement never
+    // completed; re-armed on every hide.
+    _armRevealBackstop(win) {
+        if (win._plaidInvisibleTimer) return;
+        win._plaidInvisibleTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2500, () => {
+            win._plaidInvisibleTimer = 0;
+            if (this._destroyed) return GLib.SOURCE_REMOVE;
+            const pending = !!this._newWindowSet?.has(win);
+            // Nothing is painted while the overview is up: revealing now would
+            // only expose the window at the spawn rect when it closes.
+            if (pending && Main.overview.visible) {
+                this._armRevealBackstop(win);
                 return GLib.SOURCE_REMOVE;
-            });
-        }
+            }
+            const f = win.get_frame_rect();
+            this._debugLog(`backstop reveal: ${win.get_wm_class_instance() || '?'} ws=${this._wsIndex(win.get_workspace())} tiled=${this._windowWorkspaces.has(win)} frame=(${Math.round(f.x)},${Math.round(f.y)},${Math.round(f.width)},${Math.round(f.height)})`);
+            if (this._pendingWarp) this._pendingWarp.delete(win);
+            // Place first, or it appears at the spawn rect over the tiles.
+            if (pending && this._windowWorkspaces.has(win) && !this._isFloating(win)) {
+                this._newWindowSet.delete(win);
+                const slot = this._currentSlotRect(win);
+                if (slot) {
+                    try { win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h); } catch (_e) {}
+                }
+                const ws = win.get_workspace();
+                if (ws) this._retileWorkspace(ws);
+            }
+            this._showSpawnHidden(win);
+            // The blur/flair skipped during the pending-warp window must
+            // attach once the reveal fires.
+            this._scheduleBorders();
+            this._updateBorders();
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _primaryWorkArea(ws) {
@@ -1869,6 +1909,49 @@ export default class TilingWMExtension extends Extension {
         } catch (_e) {
             return null;
         }
+    }
+
+    _currentSlotRect(win) {
+        const ws = win.get_workspace();
+        if (!ws) return null;
+        return this._windowSlotRect(win, ws, this._getWorkspaceLayout(ws), this._primaryWorkArea(ws),
+            this._settings.get_int('inside-gap'));
+    }
+
+    // Configure a new window to its slot before its first commit, so a slow
+    // client never draws the spawn rect. Also runs from the identity notify
+    // (the Wayland app_id arrives late).
+    _prePlaceNewWindow(win) {
+        try {
+            if (win._plaidPrePlaced || !this._newWindowSet?.has(win)) return;
+            if (!this._windowWorkspaces.has(win) || this._isFloating(win)) return;
+            // Placement guard: a window whose identity is still
+            // unresolved (no wm-class, no GTK app id) may be float-listed
+            // — the class resolves AFTER window-created for flatpaks and
+            // for native apps whose /usr/bin/name misses the float-list
+            // token (e.g. org.gnome.nautilus vs /usr/bin/nautilus), so
+            // _shouldManage registered it as tiled. Pre-mapping it at
+            // the single-window full-area slot makes mutter AUTO-MAXIMIZE
+            // it on map (placement area > 80% of the work area —
+            // MAX_UNMAXIMIZED_WINDOW_AREA in core/place.c), and the later
+            // float flip cannot restore the remembered size (the restore
+            // refuses maximized windows). Unresolved windows are placed
+            // by the first-frame retile, after identity resolution —
+            // float-listed ones are then never touched by the tiler and
+            // open at their own remembered geometry.
+            const idKnown = !!(win.get_wm_class_instance() ||
+                (win.get_gtk_application_id ? win.get_gtk_application_id() : ''));
+            const ws = win.get_workspace();
+            if (!idKnown || !ws || !win.get_compositor_private()) return;
+            // Not for a lone window: mutter auto-maximizes it, and that effect
+            // consumes the map-effect skip.
+            if (this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w)).length < 2) return;
+            const slot = this._currentSlotRect(win);
+            if (!slot) return;
+            win._plaidPrePlaced = true;
+            this._debugLog(`preplace: ${win.get_wm_class_instance() || '?'} slot=(${slot.x},${slot.y},${slot.w},${slot.h})`);
+            win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
+        } catch (_e) {}
     }
 
     _addWindow(win, resume = false) {
@@ -1933,33 +2016,7 @@ export default class TilingWMExtension extends Extension {
                         effect.setOpacityUniform(0);
                 }
             } catch (_e) {}
-            try {
-                const wsNow = win.get_workspace();
-                // Placement guard: a window whose identity is still
-                // unresolved (no wm-class, no GTK app id) may be float-listed
-                // — the class resolves AFTER window-created for flatpaks and
-                // for native apps whose /usr/bin/name misses the float-list
-                // token (e.g. org.gnome.nautilus vs /usr/bin/nautilus), so
-                // _shouldManage registered it as tiled. Pre-mapping it at
-                // the single-window full-area slot makes mutter AUTO-MAXIMIZE
-                // it on map (placement area > 80% of the work area —
-                // MAX_UNMAXIMIZED_WINDOW_AREA in core/place.c), and the later
-                // float flip cannot restore the remembered size (the restore
-                // refuses maximized windows). Unresolved windows are placed
-                // by the first-frame retile, after identity resolution —
-                // float-listed ones are then never touched by the tiler and
-                // open at their own remembered geometry.
-                const idKnown = !!(win.get_wm_class_instance() ||
-                    (win.get_gtk_application_id ? win.get_gtk_application_id() : ''));
-                if (wsNow && idKnown && !this._isFloating(win)) {
-                    const slot = this._windowSlotRect(win, wsNow,
-                        this._getWorkspaceLayout(wsNow),
-                        wsNow.get_work_area_for_monitor(global.display.get_primary_monitor()),
-                        this._settings.get_int('inside-gap'));
-                    if (slot && win.get_compositor_private())
-                        win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
-                }
-            } catch (_e) {}
+            this._prePlaceNewWindow(win);
         }
     }
 
@@ -2506,7 +2563,7 @@ export default class TilingWMExtension extends Extension {
         };
         let tries = 0;
         let lastFrameKey = null;
-        let sameFrameCount = 0;
+        let frameSince = 0;
         const attempt = () => {
             // Superseded: the new run places the window.
             if (this._destroyed || animGen !== this._animGen) return;
@@ -2548,16 +2605,15 @@ export default class TilingWMExtension extends Extension {
                 // moment mutter wakes up. Windows whose frame MOVES between
                 // attempts keep the full budget and stay hidden — normal
                 // placement polish is unchanged.
-                if (frameKey !== null && frameKey === lastFrameKey) {
-                    sameFrameCount++;
-                } else {
-                    sameFrameCount = 0;
-                }
+                // Frozen means unchanged for NEW_WINDOW_FROZEN_MS: a client
+                // blocking ~400ms per resize is not ignoring the request.
+                const now = Date.now();
+                if (frameKey === null || frameKey !== lastFrameKey) frameSince = now;
                 lastFrameKey = frameKey;
-                const frozen = sameFrameCount >= 2;
+                const frozen = frameKey !== null && now - frameSince >= NEW_WINDOW_FROZEN_MS;
                 if (tries > 15 || frozen) {
                     this._debugLog(frozen
-                        ? `anim: new-window placement frozen after ${tries} identical frames — finishing at spawn`
+                        ? `anim: new-window placement frozen (frame unchanged 1s, ${tries} attempts) — finishing at spawn`
                         : 'anim: new-window placement gave up after retries — finishing at target');
                     try {
                         if (s.win && s.win.get_compositor_private())
@@ -2895,6 +2951,16 @@ export default class TilingWMExtension extends Extension {
                 this._drainAnimQueue();
             } else {
                 this._queuedAnimWorkspaces.add(workspace);
+                // Re-hide spawn-hidden windows something re-showed (a map or
+                // size-change effect) until this queued retile places them.
+                for (const win of this._newWindowSet) {
+                    if (win.get_workspace() !== workspace || !this._pendingWarp?.has(win)) continue;
+                    const a = win.get_compositor_private();
+                    if (a && (a.visible || a.opacity > 0)) {
+                        a.visible = false;
+                        a.set_opacity(0);
+                    }
+                }
                 this._debugLog(`anim: retile queued while animating (queue=${this._queuedAnimWorkspaces.size})`);
                 return;
             }
@@ -2929,7 +2995,12 @@ export default class TilingWMExtension extends Extension {
         if (this._animTargets.size === 0) {
             this._debugLog('anim: no targets (bail)');
             this._animTargets = null;
-            for (const win of tiledWindows) this._newWindowSet.delete(win);
+            // Only windows with a committed frame are done; earlier ones have
+            // no target yet.
+            for (const win of tiledWindows) {
+                const f = win.get_frame_rect();
+                if (f.width > 0 && f.height > 0) this._newWindowSet.delete(win);
+            }
             this._scheduleBorders();
             return;
         }
@@ -2972,7 +3043,7 @@ export default class TilingWMExtension extends Extension {
             if (remaining <= 0) {
                 this._animating = false;
                 this._debugLog(`anim: done ws=${this._wsIndex(workspace)} queued=${this._queuedAnimWorkspaces.size}`);
-                for (const w of tiledWindows) this._newWindowSet.delete(w);
+                for (const st of states) this._newWindowSet.delete(st.win);
                 this._animStates = null;
                 this._scheduleSaveLayouts();
                 this._scheduleBorders();
@@ -2991,6 +3062,7 @@ export default class TilingWMExtension extends Extension {
                 // No show() here — a new window hidden via actor.visible=false
                 // must stay invisible until the placement reveals it at its
                 // slot.
+                this._armRevealBackstop(s.win);
             }
         }
 
@@ -4013,7 +4085,10 @@ export default class TilingWMExtension extends Extension {
                 return;
             }
         } catch (_e) {}
-        if (!this._isFloating(win)) return;
+        if (!this._isFloating(win)) {
+            this._prePlaceNewWindow(win);
+            return;
+        }
         const ws = win.get_workspace();
         if (ws) {
             const tree = this._bspGetTree(ws);
@@ -4029,7 +4104,9 @@ export default class TilingWMExtension extends Extension {
         if (win.is_maximized()) {
             try { win.unmaximize(); } catch (_e) {}
         }
-        this._restoreFloatNaturalRect(win);
+        // A pre-placed window is tile-sized: restore it too, but only while it
+        // is being placed, or a floated one snaps back on every title change.
+        this._restoreFloatNaturalRect(win, !!win._plaidPrePlaced && !!this._newWindowSet?.has(win));
         // Reveal: the window can be pending-hidden from the tiled
         // choreography (actor.visible=false + mask uniform 0) when its
         // identity resolved late to floating — nothing else reveals it, so
@@ -4058,7 +4135,7 @@ export default class TilingWMExtension extends Extension {
         } catch (_e) {}
     }
 
-    _restoreFloatNaturalRect(win) {
+    _restoreFloatNaturalRect(win, force = false) {
         if (!this._savedRects || !this._savedRects.has(win)) return;
         if (win.is_fullscreen() || win.is_maximized()) return;
         const saved = this._savedRects.get(win);
@@ -4072,7 +4149,7 @@ export default class TilingWMExtension extends Extension {
             workArea = ws.get_work_area_for_monitor(win.get_monitor());
         } catch (_e) {}
         if (!this._isValidWorkArea(workArea)) return;
-        if (frame.width < workArea.width - 20 || frame.height < workArea.height - 20) return;
+        if (!force && (frame.width < workArea.width - 20 || frame.height < workArea.height - 20)) return;
         this._debugLog(`float: restoring natural rect (${saved.x},${saved.y},${saved.w},${saved.h})`);
         this._moveWindow(win, saved.x, saved.y, saved.w, saved.h);
     }

@@ -238,6 +238,11 @@ export function _bspInsertForWorkspace(ws, win) {
         tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
     }
     this._bspTrees.set(ws, tree);
+    // Tag the new leaf now (same min clamp as the retile) so the pre-map
+    // placement has its slot before the next _bspLayout.
+    this._treeMinSizes(tree, gap);
+    this._clampTreeToMinSizes(tree, areaW, areaH, gap);
+    this._bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
 }
 
 export function _parseMinSizeOverrides(entries) {
