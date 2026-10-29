@@ -243,6 +243,33 @@ export function _parseMinSizeOverrides(entries) {
     return map;
 }
 
+// get_min_size()/get_max_size() as [ok, w, h]: GNOME 50 returns that, a plain
+// [w, h] counts as set.
+export function _unpackSizeHint(r) {
+    if (!r) return [false, 0, 0];
+    return r.length >= 3 ? [!!r[0], r[1], r[2]] : [true, r[0], r[1]];
+}
+
+// A min/max hint as a FRAME size, or null. Hints are in client coordinates
+// (CSD shadow included, SSD titlebar excluded); the delta comes from a probe
+// rect, since converting G_MAXINT overflows on SSD windows.
+export function _windowSizeHint(win, which) {
+    const [ok, w, h] = this._unpackSizeHint(which === 'max' ? win.get_max_size() : win.get_min_size());
+    if (!ok || !Number.isFinite(w) || !Number.isFinite(h) || (w <= 0 && h <= 0)) return null;
+    let dw = 0, dh = 0;
+    try {
+        const probe = win.get_frame_rect();
+        probe.x = 0;
+        probe.y = 0;
+        probe.width = 1000;
+        probe.height = 1000;
+        const f = win.client_rect_to_frame_rect(probe);
+        dw = f.width - 1000;
+        dh = f.height - 1000;
+    } catch (_e) {}
+    return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
+}
+
 export function _getWindowMinSize(win) {
     let entry = null;
     for (const c of this._winClassCandidates(win)) {
@@ -255,10 +282,8 @@ export function _getWindowMinSize(win) {
     }
     if (entry) return { w: entry.w, h: entry.h };
     try {
-        const [mw, mh] = win.get_min_size();
-        const w = Number.isFinite(mw) ? mw : 0;
-        const h = Number.isFinite(mh) ? mh : 0;
-        if (w > 0 || h > 0) return { w, h };
+        const min = this._windowSizeHint(win, 'min');
+        if (min && (min.w > 0 || min.h > 0)) return min;
     } catch (_e) {}
     return { w: 0, h: 0 };
 }
@@ -537,6 +562,8 @@ export const bspMethods = {
     _bspTagGeometry,
     _bspInsertForWorkspace,
     _parseMinSizeOverrides,
+    _unpackSizeHint,
+    _windowSizeHint,
     _getWindowMinSize,
     _treeMinSizes,
     _clampTreeToMinSizes,

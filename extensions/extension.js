@@ -1495,9 +1495,12 @@ export default class TilingWMExtension extends Extension {
         // placements, so tiling them only buys a ~2s retry dance before the
         // give-up float. A min===max hint is the cheap, reliable signal —
         // float such windows up front instead.
-        const [mw, mh] = win.get_min_size();
-        const [xw, xh] = win.get_max_size();
-        return mw > 0 && xw > 0 && mw === xw && mh === xh;
+        // Both hints set. Raw client hints compare equal (the frame delta
+        // cancels); a frame probe is too costly on every commit.
+        const [minOk, minW, minH] = this._unpackSizeHint(win.get_min_size());
+        const [maxOk, maxW, maxH] = this._unpackSizeHint(win.get_max_size());
+        return minOk && maxOk && minW > 0 && minH > 0 &&
+            minW === maxW && minH === maxH;
     }
 
     _getWorkspaceOrder(workspace) {
