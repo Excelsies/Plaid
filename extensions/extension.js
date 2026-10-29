@@ -45,6 +45,9 @@ const NEW_WINDOW_FROZEN_MS = 1000;
 const TRANSFORM_ANIM_MS = 380;
 const TRANSFORM_HOLD_MS = 1500;
 
+const DROP_PREVIEW_FADE_MS = 120;
+const DROP_PREVIEW_GLIDE_MS = 80;
+
 // Resize grabs are anchored at the button press (_pressAnchor): the pointer is
 // recorded for PRESS_TRACK_MS after each cursor-shape change.
 const PRESS_TRACK_MS = 3000;
@@ -400,6 +403,9 @@ export default class TilingWMExtension extends Extension {
         this._grabWindow = null;
         this._grabStartX = 0;
         this._grabStartY = 0;
+        this._grabStartFrame = null;
+        this._dwindleDropCache = null;
+        this._dropPreviewTarget = null;
         this._pressTrackId = 0;
         this._pressTracker = null;
         this._pressTrackUntil = 0;
@@ -3965,6 +3971,29 @@ export default class TilingWMExtension extends Extension {
             }
         }
         return tree;
+    }
+
+    // Every leaf's slot as a retile lays it out (min-size clamp included), so
+    // drag previews match the result. Clamps ratios in place: pass a clone.
+    _bspSlotRects(tree, workArea) {
+        const rects = new Map();
+        if (!tree || tree.type === 'empty') return rects;
+        if (tree.type === 'leaf') {
+            const r = this._singleWindowRect(workArea);
+            if (r) rects.set(tree.window, { x: r.x, y: r.y, w: r.w, h: r.h });
+            return rects;
+        }
+        const area = this._outsideArea(workArea);
+        if (!area) return rects;
+        const gap = this._settings.get_int('inside-gap');
+        this._treeMinSizes(tree, gap);
+        this._clampTreeToMinSizes(tree, area.w, area.h, gap);
+        this._bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        for (const l of this._bspLeaves(tree)) {
+            rects.set(l.window, { x: l._x, y: l._y,
+                w: Math.max(l._w, l._minW || 0), h: Math.max(l._h, l._minH || 0) });
+        }
+        return rects;
     }
 
     _moveWindow(win, x, y, w, h) {
@@ -9675,6 +9704,11 @@ export default class TilingWMExtension extends Extension {
             this._pressAnchor(metaWindow)) || global.get_pointer();
         this._grabStartX = startX;
         this._grabStartY = startY;
+        // The click guard measures how far the window moved (mutter keeps it
+        // at a fixed offset from the press). Escape restores the frame before
+        // grab-op-end: a cancelled drag is no drop.
+        this._grabStartFrame = { x: frame.x, y: frame.y };
+        this._dwindleDropCache = null;
         this._grabGrace = this._computeGrabGraceThreshold();
 
         if (this._isResizeGrab(grabOp)) {
@@ -9742,13 +9776,9 @@ export default class TilingWMExtension extends Extension {
                 if (this._isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
                     // window starts a move grab with no real movement — only
-                    // reposition when the pointer actually travelled.
+                    // reposition when the window actually travelled.
                     try {
-                        const [ex, ey] = global.get_pointer();
-                        const dx = ex - this._grabStartX;
-                        const dy = ey - this._grabStartY;
-                        const grace = this._grabGrace ?? 10;
-                        if (Math.hypot(dx, dy) >= grace)
+                        if (this._movedPastGrace(metaWindow))
                             this._repositionWindow(metaWindow, ws);
                     } catch (_e) {}
                 }
@@ -9774,6 +9804,8 @@ export default class TilingWMExtension extends Extension {
         this._hideDropPreview();
         this._stopLiveResizeLoop();
         this._disconnectGrabBoundaryHooks();
+        this._dwindleDropCache = null;
+        this._grabStartFrame = null;
         this._handOffLiveStretch(metaWindow);
         this._grabOp = null;
         this._grabWindow = null;
@@ -10058,6 +10090,91 @@ export default class TilingWMExtension extends Extension {
             this._liveResizeCursorId = 0;
             this._liveResizeTracker = null;
         }
+    }
+
+    // Clamped into the work area: mutter stops a dragged titlebar below the
+    // top bar while the pointer goes on. null on another monitor (no drop).
+    _dropPoint(workArea, px, py) {
+        const mon = global.display.get_monitor_geometry(global.display.get_primary_monitor());
+        if (!mon || px < mon.x || px >= mon.x + mon.width || py < mon.y || py >= mon.y + mon.height)
+            return null;
+        return [Math.max(workArea.x, Math.min(workArea.x + workArea.width - 1, px)),
+            Math.max(workArea.y, Math.min(workArea.y + workArea.height - 1, py))];
+    }
+
+    // The slot under the pointer, else the closest, so a drop in a gap still
+    // has a target.
+    _dropTargetAt(rects, workArea, px, py) {
+        const pt = this._dropPoint(workArea, px, py);
+        if (!pt) return null;
+        [px, py] = pt;
+        let best = null;
+        let bestD = Infinity;
+        for (const [win, r] of rects) {
+            const d = this._pointRectDistSq(r.x, r.y, r.w, r.h, px, py);
+            if (d < bestD) {
+                best = win;
+                bestD = d;
+            }
+        }
+        return best;
+    }
+
+    // The target splits along the longer side of its slot once `win` is gone
+    // (not before: a target that then spans the screen would give a strip),
+    // `win` second. null: no change.
+    _dwindleDropTree(tree, win, target, workArea) {
+        // Preserve the split ratio at the drop target so the re-insert
+        // mirrors the previous proportions instead of resetting to the
+        // default dwindle-ratio.
+        let targetRatio = null;
+        const path = [];
+        this._bspFindPath(tree, target, path);
+        for (let i = path.length - 1; i >= 0; i--) {
+            if (path[i].type === 'split' && path[i].ratio > 0 && path[i].ratio < 1) {
+                targetRatio = path[i].ratio;
+                break;
+            }
+        }
+        const area = this._outsideArea(workArea);
+        if (!area) return null;
+        // With a window from elsewhere this only collapses empty children.
+        const newTree = this._bspRemove(tree, win);
+        const leaf = this._bspFindLeaf(newTree, target);
+        if (!leaf) return null;
+        const gap = this._settings.get_int('inside-gap');
+        this._treeMinSizes(newTree, gap);
+        this._clampTreeToMinSizes(newTree, area.w, area.h, gap);
+        this._bspTagGeometry(newTree, area.x, area.y, area.w, area.h, gap);
+        return this._bspReplaceLeaf(newTree, leaf, win, targetRatio);
+    }
+
+    // The window's slot after the drop (its own slot over its own leaf).
+    _dwindleDropPreview(win, ws, px, py) {
+        const tree = this._bspGetTree(ws);
+        const workArea = this._primaryWorkArea(ws);
+        if (!tree || !this._isValidWorkArea(workArea)) return null;
+        // Per drag, until the tree changes (_doRetileWorkspace clears it).
+        if (!this._dwindleDropCache) {
+            this._dwindleDropCache = { live: this._bspSlotRects(this._bspClone(tree), workArea),
+                landing: new Map() };
+        }
+        const c = this._dwindleDropCache;
+        const target = this._dropTargetAt(c.live, workArea, px, py);
+        if (!target) return null;
+        if (target === win) return c.live.get(win) ?? null;
+        if (!c.landing.has(target)) {
+            const drop = this._dwindleDropTree(this._bspClone(tree), win, target, workArea);
+            c.landing.set(target, drop ? this._bspSlotRects(drop, workArea).get(win) ?? null : null);
+        }
+        return c.landing.get(target);
+    }
+
+    _movedPastGrace(win) {
+        const s = this._grabStartFrame;
+        if (!s) return false;
+        const f = win.get_frame_rect();
+        return Math.hypot(f.x - s.x, f.y - s.y) >= (this._grabGrace ?? 10);
     }
 
     // On a monitor-edge axis mutter moves the frame off the slot: translate
@@ -10581,40 +10698,29 @@ export default class TilingWMExtension extends Extension {
         if (!metaWindow || !this._settings) return;
         const ws = metaWindow.get_workspace();
         if (!ws) return;
-        // Click-vs-drag gate: keep the overlay hidden until the pointer
-        // actually travelled — a titlebar click must not show a drag preview.
-        try {
-            const [px, py] = global.get_pointer();
-            const dx = px - this._grabStartX;
-            const dy = py - this._grabStartY;
-            const grace = this._grabGrace ?? 10;
-            if (Math.hypot(dx, dy) < grace) {
-                this._hideDropPreview();
-                return;
-            }
-        } catch (_e) {}
-        if (this._getWorkspaceLayout(ws) === 'floating') {
+        const layout = this._getWorkspaceLayout(ws);
+        if (layout === 'floating') {
             this._hideDropPreview();
             return;
         }
-
-        const [px, py] = global.get_pointer();
         const tiledWindows = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
         if (tiledWindows.length <= 1) {
             this._hideDropPreview();
             return;
         }
+        // Click-vs-drag gate: keep the overlay hidden until the window
+        // actually travelled — a titlebar click must not show a drag preview.
+        const dragging = this._movedPastGrace(metaWindow);
+        const [px, py] = global.get_pointer();
 
-        const layout = this._getWorkspaceLayout(ws);
         if (layout === 'dwindle') {
-            const leaf = this._computeDwindleDropTarget(ws, px, py);
-            if (leaf && leaf.type === 'leaf') {
-                this._showDropPreview(leaf._x, leaf._y, leaf._w, leaf._h);
-            } else {
+            const rect = dragging ? this._dwindleDropPreview(metaWindow, ws, px, py) : null;
+            if (rect)
+                this._showDropPreview(rect.x, rect.y, rect.w, rect.h);
+            else
                 this._hideDropPreview();
-            }
         } else {
-            const targetIdx = this._computeMasterStackDropTarget(ws, px, py);
+            const targetIdx = dragging ? this._computeMasterStackDropTarget(ws, px, py) : -1;
             if (targetIdx >= 0) {
                 this._showMasterStackPreview(ws, targetIdx);
             } else {
@@ -10676,31 +10782,6 @@ export default class TilingWMExtension extends Extension {
         this._showDropPreview(rx, ry, rw, rh);
     }
 
-    _computeDwindleDropTarget(ws, px, py) {
-        const tree = this._bspGetTree(ws);
-        if (!tree) return null;
-
-        const gap = this._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
-        if (!workArea) return null;
-
-        const area = this._outsideArea(workArea);
-        if (!area) return null;
-        const ax = area.x;
-        const ay = area.y;
-        const aw = area.w;
-        const ah = area.h;
-
-        // Drop zones live inside the outside-gapped area — a pointer in the
-        // outside-gap strip selects nothing.
-        if (px < ax || px > ax + aw || py < ay || py > ay + ah)
-            return null;
-
-        this._bspTagGeometry(tree, ax, ay, aw, ah, gap);
-        return this._bspFindLeafAtPoint(tree, ax, ay, aw, ah, px, py, gap);
-    }
-
     _showDropPreview(x, y, w, h) {
         if (w <= 0 || h <= 0) {
             this._hideDropPreview();
@@ -10708,23 +10789,46 @@ export default class TilingWMExtension extends Extension {
         }
         if (!this._dropPreview) {
             this._dropPreview = new St.Widget({
-                style: 'background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4;',
                 reactive: false,
-                visible: true,
+                visible: false,
             });
             this._dropOverlay.add_child(this._dropPreview);
         }
-        this._dropPreview.visible = true;
-        this._dropPreview.set_position(x, y);
-        this._dropPreview.set_size(w, h);
+        const p = this._dropPreview;
+        const t = this._dropPreviewTarget;
+        if (p.visible && t && t.x === x && t.y === y && t.w === w && t.h === h)
+            return;
+        this._dropPreviewTarget = { x, y, w, h };
+        if (!p.visible) {
+            // First appearance: place and fade in. Styled here so a
+            // border-radius change applies to the next drag.
+            let radius = 0;
+            try { radius = Math.max(0, this._settings.get_int('border-radius')); } catch (_e) {}
+            p.style = `background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4; border-radius: ${radius}px;`;
+            p.remove_all_transitions();
+            p.set_position(x, y);
+            p.set_size(w, h);
+            p.opacity = 0;
+            p.visible = true;
+            p.ease({ opacity: 255, duration: DROP_PREVIEW_FADE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            return;
+        }
+        p.ease({
+            x, y, width: w, height: h, opacity: 255,
+            duration: DROP_PREVIEW_GLIDE_MS,
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+        });
     }
 
     _hideDropPreview() {
         // Hide, don't destroy — the grab loop alternates between
         // target/no-target regions; recreating the widget each tick churns
         // allocations and re-layout under a live grab.
-        if (this._dropPreview)
+        if (this._dropPreview) {
+            this._dropPreview.remove_all_transitions();
             this._dropPreview.visible = false;
+        }
+        this._dropPreviewTarget = null;
     }
 
     _destroyDropPreview() {
@@ -10743,46 +10847,20 @@ export default class TilingWMExtension extends Extension {
 
         const layout = this._getWorkspaceLayout(ws);
         if (layout === 'dwindle') {
-            const targetLeaf = this._computeDwindleDropTarget(ws, px, py);
-            if (!targetLeaf || targetLeaf.type !== 'leaf') return;
-
             const tree = this._bspGetTree(ws);
-            if (!tree) return;
-
-            // Preserve the split ratio at the drop target so the re-insert
-            // mirrors the previous proportions instead of resetting to the
-            // default dwindle-ratio.
-            let targetRatio = null;
-            const path = [];
-            this._bspFindPath(tree, targetLeaf.window, path);
-            for (let i = path.length - 1; i >= 0; i--) {
-                if (path[i].type === 'split' && path[i].ratio > 0 && path[i].ratio < 1) {
-                    targetRatio = path[i].ratio;
-                    break;
-                }
-            }
-
-            const gap = this._settings.get_int('inside-gap');
+            const workArea = this._primaryWorkArea(ws);
+            if (!tree || !this._isValidWorkArea(workArea)) return;
+            const target = this._dropTargetAt(this._bspSlotRects(this._bspClone(tree), workArea),
+                workArea, px, py);
             // Dropping the dragged window on its OWN leaf (or on a leaf the
             // removal merges away) must leave the tree untouched: the old
             // code removed the window and never re-inserted it, so the
             // follow-up retile re-added it as the "newest" leaf — a silent
             // arrangement reshuffle (and the reshuffled shape got persisted)
             // (2026-10-04 audit).
-            if (targetLeaf.window === window) {
-                this._bspTrees.set(ws, tree);
-                return;
-            }
-            let newTree = this._bspRemove(tree, window);
-            if (newTree.type === 'empty') newTree = null;
-            if (newTree && !this._bspFindLeaf(newTree, targetLeaf.window)) {
-                this._bspTrees.set(ws, tree);
-                return;
-            }
-            if (newTree) {
-                newTree = this._bspReplaceLeaf(newTree, targetLeaf, window, targetRatio);
-            }
-            this._bspTrees.set(ws, newTree);
+            if (!target || target === window) return;
+            const newTree = this._dwindleDropTree(this._bspClone(tree), window, target, workArea);
+            if (newTree) this._bspTrees.set(ws, newTree);
         } else {
             const targetIdx = this._computeMasterStackDropTarget(ws, px, py);
             if (targetIdx < 0) return;

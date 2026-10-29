@@ -58,6 +58,28 @@ export function _bspCollectWindows(node) {
     return [...this._bspCollectWindows(node.first), ...this._bspCollectWindows(node.second)];
 }
 
+export function _bspLeaves(node, out = []) {
+    if (!node || node.type === 'empty') return out;
+    if (node.type === 'leaf') {
+        out.push(node);
+        return out;
+    }
+    this._bspLeaves(node.first, out);
+    this._bspLeaves(node.second, out);
+    return out;
+}
+
+// Structural copy (leaves keep their windows) for what-if layouts.
+export function _bspClone(node) {
+    if (!node) return null;
+    if (node.type !== 'split') return { ...node };
+    const copy = this._bspMakeSplit(node.direction, node.ratio,
+        this._bspClone(node.first), this._bspClone(node.second));
+    if (node.userRatio !== undefined) copy.userRatio = node.userRatio;
+    if (node.bentBy) copy.bentBy = node.bentBy;
+    return copy;
+}
+
 export function _bspLayout(node, x, y, w, h, gap, skipWindow) {
     if (!node) return;
     if (node.type === 'empty') return;
@@ -569,6 +591,8 @@ export const bspMethods = {
     _bspInsert,
     _bspRemove,
     _bspCollectWindows,
+    _bspLeaves,
+    _bspClone,
     _bspLayout,
     _bspFindPath,
     _bspFindLeaf,

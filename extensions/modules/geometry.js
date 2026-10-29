@@ -55,10 +55,18 @@ export function _bgAppRealToDisplay(realIdx) {
     return parkingIdx >= 0 && realIdx > parkingIdx ? realIdx - 1 : realIdx;
 }
 
+// Squared distance from (px, py) to the rect (0 inside it).
+export function _pointRectDistSq(x, y, w, h, px, py) {
+    const dx = Math.max(x - px, 0, px - (x + w));
+    const dy = Math.max(y - py, 0, py - (y + h));
+    return dx * dx + dy * dy;
+}
+
 export const geometryMethods = {
     _isValidWorkArea,
     _outsideArea,
     _singleWindowRect,
     _minClampSlot,
     _bgAppRealToDisplay,
+    _pointRectDistSq,
 };

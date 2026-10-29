@@ -125,3 +125,10 @@ test('maskSdfRect: pascube-style divergence is clamped inside the actor (regress
   assert.equal(x2, 1920);
   assert.equal(y2, 1080);
 });
+
+test('_pointRectDistSq is 0 inside the rect and the squared edge distance outside', () => {
+  const self = makeSelf();
+  assert.equal(self._pointRectDistSq(0, 0, 100, 100, 50, 50), 0);
+  assert.equal(self._pointRectDistSq(0, 0, 100, 100, 130, 50), 900);
+  assert.equal(self._pointRectDistSq(0, 0, 100, 100, -30, -40), 2500);
+});

@@ -11,6 +11,28 @@ test('_bspInsert: empty/null tree becomes a single leaf', () => {
   assert.equal(self._bspInsert(empty(), a, 0, 0, 200, 100, 0).window, a);
 });
 
+test('_bspClone copies the structure, keeps window refs and the user ratio', () => {
+  const self = makeSelf();
+  const a = W('a'), b = W('b');
+  const tree = split('h', 0.3, leaf(a), leaf(b));
+  tree.userRatio = 0.5;
+  const copy = self._bspClone(tree);
+  assert.notEqual(copy, tree);
+  assert.notEqual(copy.first, tree.first);
+  assert.equal(copy.first.window, a);
+  assert.equal(copy.userRatio, 0.5);
+  copy.ratio = 0.9;
+  assert.equal(tree.ratio, 0.3);
+});
+
+test('_bspLeaves lists the leaves in order, skipping empties', () => {
+  const self = makeSelf();
+  const a = W('a'), b = W('b'), c = W('c');
+  const tree = split('h', 0.5, leaf(a), split('v', 0.5, empty(), split('h', 0.5, leaf(b), leaf(c))));
+  assert.deepEqual(self._bspLeaves(tree).map((l) => l.window), [a, b, c]);
+  assert.deepEqual(self._bspLeaves(null), []);
+});
+
 test('_adjustForConstraints: bends only for the given window', () => {
   const self = makeSelf();
   const a = fakeWin({ frame: { x: 0, y: 0, width: 700, height: 500 } });
