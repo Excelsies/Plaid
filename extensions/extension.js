@@ -1494,7 +1494,13 @@ export default class TilingWMExtension extends Extension {
         }
     }
 
+    // Fullscreen counts as floating (nothing may move, mask or border it), but
+    // the window keeps its tree leaf (_isFullscreenTile).
     _isFloating(win) {
+        return win.is_fullscreen() || this._floatsWhenWindowed(win);
+    }
+
+    _floatsWhenWindowed(win) {
         if (this._toggleFloatWindows && this._toggleFloatWindows.has(win)) return true;
         if (this._floatClassMatches(win)) return true;
         const title = win.get_title();
@@ -1505,12 +1511,18 @@ export default class TilingWMExtension extends Extension {
         // The process cmdline is available immediately — and the verdict is
         // cached per PID (process-lifetime stable).
         if (this._isFloatProcessWindow(win)) return true;
-        if (win.is_fullscreen()) return true;
         if (win.get_window_type() !== Meta.WindowType.NORMAL) return true;
         if (win.is_skip_taskbar()) return true;
         if (win.get_transient_for()) return true;
         if (this._isFixedSizeWindow(win)) return true;
         return false;
+    }
+
+    // Its leaf stays as a placeholder: pruned, nothing re-tiles the window on
+    // unfullscreen.
+    _isFullscreenTile(win, ws) {
+        return win.is_fullscreen() && !win.minimized && win.get_workspace() === ws &&
+            !!this._windowWorkspaces?.has(win) && !this._floatsWhenWindowed(win);
     }
 
     _isFloatProcessWindow(win) {
@@ -2142,6 +2154,13 @@ export default class TilingWMExtension extends Extension {
             // layout — skip the retile. _scratchpadRemove still retiles
             // explicitly, so the intentional path is unaffected.
             if (this._isFloating(win)) return;
+            const ws = win.get_workspace();
+            if (ws) this._retileWorkspace(ws);
+        }) });
+        sigIds.push({ emitter: win, id: win.connect('notify::fullscreen', () => {
+            // Leaving fullscreen, mutter restores the frame saved on entry,
+            // stale if the layout changed since.
+            if (win.is_fullscreen() || this._floatsWhenWindowed(win)) return;
             const ws = win.get_workspace();
             if (ws) this._retileWorkspace(ws);
         }) });
@@ -3901,32 +3920,8 @@ export default class TilingWMExtension extends Extension {
         const areaW = area.w;
         const areaH = area.h;
 
-        if (tree) {
-            const treeWins = this._bspCollectWindows(tree);
-            for (const tw of treeWins) {
-                if (!tiledWindows.includes(tw)) {
-                    tree = this._bspRemove(tree, tw);
-                }
-            }
-            let currentWins = this._bspCollectWindows(tree);
-            for (const win of tiledWindows) {
-                if (!currentWins.includes(win)) {
-                    tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
-                    currentWins = this._bspCollectWindows(tree);
-                }
-            }
-            this._bspTrees.set(workspace, tree);
-        } else {
-            tree = null;
-            for (const win of tiledWindows) {
-                if (tree) {
-                    tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
-                } else {
-                    tree = this._bspMakeLeaf(win);
-                }
-            }
-            this._bspTrees.set(workspace, tree);
-        }
+        tree = this._bspSyncTree(workspace, tree, tiledWindows, area, gap);
+        this._bspTrees.set(workspace, tree);
 
         // Restore saved split ratios ONLY when the window set changed
         // (fresh session build, a window opened, or one closed). A plain
@@ -3948,6 +3943,28 @@ export default class TilingWMExtension extends Extension {
         this._treeMinSizes(tree);
         this._clampTreeToMinSizes(tree, areaW, areaH, gap);
         this._bspLayout(tree, areaX, areaY, areaW, areaH, gap);
+    }
+
+    // Prune leaves of windows that left and insert missing ones dwindle style.
+    _bspSyncTree(workspace, tree, tiledWindows, area, gap) {
+        if (!tree) {
+            for (const win of tiledWindows)
+                tree = tree ? this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap) : this._bspMakeLeaf(win);
+            return tree;
+        }
+        const tiled = new Set(tiledWindows);
+        for (const tw of this._bspCollectWindows(tree)) {
+            if (!tiled.has(tw) && !this._isFullscreenTile(tw, workspace))
+                tree = this._bspRemove(tree, tw);
+        }
+        const inTree = new Set(this._bspCollectWindows(tree));
+        for (const win of tiledWindows) {
+            if (!inTree.has(win)) {
+                tree = this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap);
+                inTree.add(win);
+            }
+        }
+        return tree;
     }
 
     _moveWindow(win, x, y, w, h) {
@@ -4090,7 +4107,8 @@ export default class TilingWMExtension extends Extension {
             return;
         }
         const ws = win.get_workspace();
-        if (ws) {
+        // A fullscreen tile keeps its leaf (video players retitle constantly).
+        if (ws && !this._isFullscreenTile(win, ws)) {
             const tree = this._bspGetTree(ws);
             if (tree && this._bspCollectWindows(tree).includes(win)) {
                 this._bspTrees.set(ws, this._bspRemove(tree, win));
