@@ -115,3 +115,14 @@ test('_bspReplaceLeaf replaces a target leaf with a split holding the new window
   assert.equal(replaced.first.window, a);
   assert.equal(replaced.second.window, b);
 });
+
+test('_bspLayout: never moves the grabbed window, re-sends only changed slots', () => {
+  const moves = [];
+  const self = makeSelf({}, { _safeMove: (w, x, y, ww, hh) => moves.push([w, x, y, ww, hh]), _liveSent: new Map() });
+  const a = W('a'), b = W('b');
+  const tree = split('h', 0.5, leaf(a), leaf(b));
+  self._bspLayout(tree, 0, 0, 200, 100, 0, a);
+  assert.deepEqual(moves, [[b, 100, 0, 100, 100]]);
+  self._bspLayout(tree, 0, 0, 200, 100, 0, a);
+  assert.equal(moves.length, 1); // same slot: not re-sent
+});

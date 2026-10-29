@@ -36,6 +36,16 @@ const LANDING_RETRIES = 3;
 const MASK_EFFECT_NAME = 'plaid-corner-mask';
 const BLUR_EFFECT_NAME = 'plaid-window-blur';
 
+// Transform animations (the live-resize hand-off) at slow_down_factor 1,
+// after Hyprland. HOLD: how long a stale buffer stays stretched awaiting the
+// client's commit.
+const TRANSFORM_ANIM_MS = 380;
+const TRANSFORM_HOLD_MS = 1500;
+
+// Resize grabs are anchored at the button press (_pressAnchor): the pointer is
+// recorded for PRESS_TRACK_MS after each cursor-shape change.
+const PRESS_TRACK_MS = 3000;
+
 // Every Plaid keybinding settings key — the single source of truth for
 // registration (_registerKeybindings), removal (_removeKeybindings), and the
 // "which GNOME shortcuts must yield" check in _disableMutterDefaults.
@@ -370,6 +380,8 @@ export default class TilingWMExtension extends Extension {
         this._pendingBorderId = 0;
         this._queuedAnimWorkspaces = new Set();
         this._animStartedAt = 0;
+        this._transformStates = new Map();
+        this._transformTimeline = null;
         this._landingRetries = new Map();
         this._landingWaits = new Set();
         this._pendingWarp = new Set();
@@ -382,15 +394,30 @@ export default class TilingWMExtension extends Extension {
         this._grabWindow = null;
         this._grabStartX = 0;
         this._grabStartY = 0;
+        this._pressTrackId = 0;
+        this._pressTracker = null;
+        this._pressTrackUntil = 0;
+        this._pressTrail = null;
         this._grabWidthSign = 0;
         this._grabHeightSign = 0;
         this._grabResizeNodeW = null;
         this._grabResizeNodeH = null;
+        this._grabInnerW = null;
+        this._grabInnerH = null;
+        this._grabClampedW = false;
+        this._grabClampedH = false;
+        this._grabLowered = false;
         this._grabInitialRatioW = 0;
         this._grabInitialRatioH = 0;
+        this._grabFollowW = 1;
+        this._grabFollowH = 1;
         this._grabInitialMasterRatio = 0;
         this._grabInitialStackRatios = null;
-        this._liveResizeId = 0;
+        this._liveResizeStageId = 0;
+        this._liveResizeCursorId = 0;
+        this._liveResizeTracker = null;
+        this._liveSent = null;
+        this._liveStretched = null;
         this._grabSizeChangedId = 0;
         this._grabPositionChangedId = 0;
         this._layoutPopup = null;
@@ -709,7 +736,9 @@ export default class TilingWMExtension extends Extension {
             this._stackSettleId = 0;
         }
         this._stopLiveResizeLoop();
+        this._stopPressTracking();
         this._disconnectGrabBoundaryHooks();
+        this._clearLiveStretch();
         // A disable mid-grab would otherwise leave _grabOp set: every retile
         // early-returns until a grab-op-end that never comes.
         this._grabOp = null;
@@ -1830,6 +1859,14 @@ export default class TilingWMExtension extends Extension {
         }
     }
 
+    _primaryWorkArea(ws) {
+        try {
+            return ws.get_work_area_for_monitor(global.display.get_primary_monitor());
+        } catch (_e) {
+            return null;
+        }
+    }
+
     _addWindow(win, resume = false) {
         if (!this._settings) return;
         if (this._windowWorkspaces.has(win)) {
@@ -2301,11 +2338,16 @@ export default class TilingWMExtension extends Extension {
         return 0.1 * Math.max(0.1, stSettings.slow_down_factor);
     }
 
+    _scaledAnimMs(ms) {
+        return ms * this._getAnimationTime() * 10;
+    }
+
     _cancelAnimation() {
         if (this._animTickId) {
             GLib.source_remove(this._animTickId);
             this._animTickId = 0;
         }
+        this._stopTransforms();
         if (this._newWindowSet) {
             for (const win of this._newWindowSet) {
                 try {
@@ -2810,6 +2852,8 @@ export default class TilingWMExtension extends Extension {
         this._animTargets = new Map();
 
         const layout = this._getWorkspaceLayout(workspace);
+        // A retile configures every frame: no live-resize stretch may outlast it.
+        this._stopTransforms(false, workspace);
         if (layout === 'floating') {
             // GNOME owns floating placement; the fade-in choreography just
             // anchors at the window's current (GNOME-placed) position.
@@ -2943,6 +2987,212 @@ export default class TilingWMExtension extends Extension {
         }
     }
 
+    // Transform animation: one move_resize_frame per window, then a per-frame
+    // driver draws each at lerp(start, target, easeOutQuint(t)), re-derived
+    // from the current frame and buffer, so whatever the client has drawn is
+    // stretched over the eased rect (waiting for the commit would flash the
+    // destination and make slow clients jump). landed(s) runs once per state;
+    // a resized window stays stretched until its commit (at most
+    // TRANSFORM_HOLD_MS).
+    _animTransforms(states, landed, carry) {
+        const now = GLib.get_monotonic_time();
+        const duration = this._scaledAnimMs(TRANSFORM_ANIM_MS);
+        for (const s of states) {
+            const actor = s.win.get_compositor_private();
+            const prev = carry.get(s.win);
+            carry.delete(s.win);
+            if (!actor) {
+                landed(s);
+                continue;
+            }
+            s.actor = actor;
+            s.onLanded = landed;
+            s.done = false;
+            if (prev && prev.targetX === s.targetX && prev.targetY === s.targetY &&
+                prev.targetW === s.targetW && prev.targetH === s.targetH) {
+                // Same slot: keep its trajectory; restarting from the drawn
+                // rect brakes it.
+                for (const k of ['startX', 'startY', 'startW', 'startH', 't0', 'dur', 'sent'])
+                    s[k] = prev[k];
+                this._transformResendIfMoved(s);
+            } else {
+                if (prev) {
+                    [s.startX, s.startY, s.startW, s.startH] = prev.visual;
+                }
+                s.t0 = now;
+                s.dur = duration;
+                if (prev || !this._frameAtTarget(s, 0)) {
+                    try { s.win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); } catch (_e) {}
+                }
+                // Right after the configure: the target for a move or an X11
+                // client, the old rect for a Wayland resize until its commit.
+                const f = s.win.get_frame_rect();
+                s.sent = { x: f.x, y: f.y, w: f.width, h: f.height };
+            }
+            const f = s.win.get_frame_rect();
+            if (Math.max(Math.abs(s.startX - s.targetX), Math.abs(s.startY - s.targetY),
+                Math.abs(s.startW - s.targetW), Math.abs(s.startH - s.targetH)) < 1 &&
+                f.x === s.targetX && f.y === s.targetY && f.width === s.targetW && f.height === s.targetH) {
+                if (prev) this._transformReset(prev);
+                landed(s);
+                continue;
+            }
+            const reapply = () => {
+                if (this._transformStates.get(s.win) === s && s.win.get_compositor_private())
+                    this._transformApply(s, GLib.get_monotonic_time());
+            };
+            try {
+                s.sigIds = [s.win.connect('size-changed', reapply), s.win.connect('position-changed', reapply)];
+            } catch (_e) {
+                s.sigIds = [];
+            }
+            actor.remove_all_transitions();
+            actor.set_pivot_point(0, 0);
+            this._transformStates.set(s.win, s);
+            this._transformApply(s, now);
+        }
+        // Back to identity: interrupted windows this run does not move. Only
+        // this workspace's were carried; others keep their own run.
+        for (const p of carry.values()) this._transformReset(p);
+        if (this._transformStates.size === 0 || this._transformTimeline) return;
+        // Ticks before layout and paint: every frame gets a fresh transform.
+        const tl = new Clutter.Timeline({ actor: global.stage, duration: 1000, repeat_count: -1 });
+        tl.connect('new-frame', () => {
+            if (this._transformTimeline !== tl) return;
+            this._transformStep();
+            if (this._transformStates.size === 0 && this._transformTimeline === tl) {
+                this._transformTimeline = null;
+                tl.stop();
+            }
+        });
+        this._transformTimeline = tl;
+        tl.start();
+    }
+
+    _transformVisual(s, now) {
+        const t = Math.min(1, Math.max(0, (now - s.t0) / 1000 / s.dur));
+        const e = 1 - Math.pow(1 - t, 5);
+        return [s.startX + (s.targetX - s.startX) * e, s.startY + (s.targetY - s.startY) * e,
+            s.startW + (s.targetW - s.startW) * e, s.startH + (s.targetH - s.startH) * e];
+    }
+
+    // Pivot (0,0) is the buffer origin. Read the window, not the actor: in the
+    // update phase the allocation can still be the pre-commit one.
+    _transformApply(s, now) {
+        const f = s.win.get_frame_rect();
+        if (f.width <= 0 || f.height <= 0) return;
+        const b = s.win.get_buffer_rect();
+        const [x, y, w, h] = this._transformVisual(s, now);
+        const sx = w / f.width, sy = h / f.height;
+        s.actor.set_scale(sx, sy);
+        s.actor.set_translation(x - b.x - (f.x - b.x) * sx, y - b.y - (f.y - b.y) * sy, 0);
+    }
+
+    _transformStep() {
+        const now = GLib.get_monotonic_time();
+        for (const s of [...this._transformStates.values()]) {
+            if (this._transformStates.get(s.win) !== s) continue;
+            if (!s.win.get_compositor_private()) {
+                this._transformFinish(s);
+                continue;
+            }
+            this._transformResendIfMoved(s);
+            if (now - s.t0 >= s.dur * 1000) {
+                // Answered (at the slot or a size of its own) or out of time;
+                // without `sent` only the slot counts. An answer must be at
+                // the slot's position: a commit for an abandoned Wayland
+                // configure carries that position.
+                const f = s.win.get_frame_rect();
+                const near = r => Math.abs(f.x - r.x) <= 2 && Math.abs(f.y - r.y) <= 2 &&
+                    Math.abs(f.width - r.w) <= 2 && Math.abs(f.height - r.h) <= 2;
+                const atSlot = Math.abs(f.x - s.targetX) <= 2 && Math.abs(f.y - s.targetY) <= 2;
+                if (near({ x: s.targetX, y: s.targetY, w: s.targetW, h: s.targetH }) ||
+                    (s.sent && !near(s.sent) && atSlot) ||
+                    now - s.t0 >= (s.dur + this._scaledAnimMs(TRANSFORM_HOLD_MS)) * 1000) {
+                    this._transformFinish(s);
+                    continue;
+                }
+                if (!s.done) {
+                    s.done = true;
+                    s.onLanded(s);
+                    if (this._transformStates.get(s.win) !== s) continue;
+                }
+            }
+            this._transformApply(s, now);
+        }
+    }
+
+    // Moved by something else (mutter centres a window configured before map):
+    // send the configure again.
+    _transformResendIfMoved(s) {
+        if (!s.sent) return;
+        const f = s.win.get_frame_rect();
+        if (f.width <= 0 || f.height <= 0) return;
+        const at = (x, y) => Math.abs(f.x - x) <= 2 && Math.abs(f.y - y) <= 2;
+        if (at(s.sent.x, s.sent.y) || at(s.targetX, s.targetY)) return;
+        try { s.win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); } catch (_e) {}
+        const g = s.win.get_frame_rect();
+        s.sent = { x: g.x, y: g.y, w: g.width, h: g.height };
+    }
+
+    _transformReset(s) {
+        // Closed on an inactive workspace: no close effect keeps the actor
+        // alive, and touching it logs a Gjs-CRITICAL.
+        if (s.win.get_compositor_private() !== s.actor) return;
+        try {
+            s.actor.set_scale(1, 1);
+            s.actor.set_translation(0, 0, 0);
+        } catch (_e) {}
+    }
+
+    _transformDisconnect(s) {
+        for (const id of s.sigIds ?? []) {
+            try { s.win.disconnect(id); } catch (_e) {}
+        }
+        s.sigIds = null;
+    }
+
+    _transformFinish(s) {
+        this._transformDisconnect(s);
+        this._transformStates.delete(s.win);
+        this._transformReset(s);
+        if (!s.done) {
+            s.done = true;
+            s.onLanded(s);
+        }
+    }
+
+    // For code that transforms the window itself: it lands where it is.
+    _releaseTransform(win) {
+        const s = this._transformStates.get(win);
+        if (s) this._transformFinish(s);
+    }
+
+    // workspace: only its runs. keep: leave windows drawn where they are and
+    // return their states for the replacing run (snapping to identity jumps
+    // every moving window).
+    _stopTransforms(keep = false, workspace = null) {
+        const carry = new Map();
+        const now = GLib.get_monotonic_time();
+        for (const s of [...this._transformStates.values()]) {
+            if (workspace && s.win.get_workspace() !== workspace) continue;
+            this._transformDisconnect(s);
+            this._transformStates.delete(s.win);
+            if (keep && s.win.get_compositor_private()) {
+                s.visual = this._transformVisual(s, now);
+                carry.set(s.win, s);
+            } else {
+                this._transformReset(s);
+            }
+        }
+        if (this._transformStates.size === 0 && this._transformTimeline) {
+            const tl = this._transformTimeline;
+            this._transformTimeline = null;
+            try { tl.stop(); } catch (_e) {}
+        }
+        return carry;
+    }
+
     _animFloat(win, x, y, w, h) {
         const animTime = this._getAnimationTime();
         if (animTime <= 0) {
@@ -2954,6 +3204,7 @@ export default class TilingWMExtension extends Extension {
             this._moveWindow(win, x, y, w, h);
             return;
         }
+        this._releaseTransform(win);
         const frame = win.get_frame_rect();
         try { win.move_resize_frame(true, x, y, w, h); } catch (_e) {}
         actor.remove_all_transitions();
@@ -9131,6 +9382,8 @@ export default class TilingWMExtension extends Extension {
     // --- Grab-Based Mouse Resize & Swap ---
 
     _connectGrabSignals() {
+        const tracker = global.backend.get_cursor_tracker();
+        this._addSignal(tracker, tracker.connect('cursor-changed', () => this._trackPressPointer(tracker)));
         this._addSignal(global.display, global.display.connect('grab-op-begin', (_d, metaWindow, grabOp) => {
             if (metaWindow && this._gappedMaxSet && this._gappedMaxSet.has(metaWindow)) {
                 this._debugLog('float maximize: drag exits gapped mode');
@@ -9148,6 +9401,50 @@ export default class TilingWMExtension extends Extension {
             this._syncBlurStacking();
             try { this._reassertFloatingTransients(); } catch (_e) {}
         }));
+    }
+
+    // mutter anchors a resize at the press, but grab-op-begin comes later, the
+    // pointer already past. The press never reaches an extension; the pointer
+    // is recorded only briefly after a cursor-shape change.
+    _trackPressPointer(tracker) {
+        this._pressTrackUntil = GLib.get_monotonic_time() / 1000 + PRESS_TRACK_MS;
+        this._recordPressPointer();
+        if (this._pressTrackId) return;
+        this._pressTrackId = tracker.connect('position-invalidated', () => {
+            if (GLib.get_monotonic_time() / 1000 > this._pressTrackUntil)
+                this._stopPressTracking();
+            else
+                this._recordPressPointer();
+        });
+        this._pressTracker = tracker;
+    }
+
+    _recordPressPointer() {
+        const [x, y] = global.get_pointer();
+        this._pressTrail ??= [];
+        this._pressTrail.push([GLib.get_monotonic_time() / 1000, x, y]);
+        if (this._pressTrail.length > 8) this._pressTrail.shift();
+    }
+
+    _stopPressTracking() {
+        if (this._pressTrackId) {
+            this._pressTracker.disconnect(this._pressTrackId);
+            this._pressTrackId = 0;
+            this._pressTracker = null;
+        }
+        this._pressTrail = null;
+    }
+
+    // The pointer at the press that started `win`'s grab, or null when the
+    // trail does not cover it (keyboard grab).
+    _pressAnchor(win) {
+        const t = win.get_user_time();
+        const trail = this._pressTrail;
+        if (!t || !trail || GLib.get_monotonic_time() / 1000 - t > 1000) return null;
+        for (let i = trail.length - 1; i >= 0; i--) {
+            if (trail[i][0] <= t) return [trail[i][1], trail[i][2]];
+        }
+        return null;
     }
 
     _computeGrabGraceThreshold() {
@@ -9186,11 +9483,17 @@ export default class TilingWMExtension extends Extension {
         if (!frame || frame.width === 0 || frame.height === 0 || !buffer) return;
 
         this._grabOp = grabOp;
+        // mutter moves the grabbed window from here on: an eased transform
+        // would hold it off the pointer.
+        this._releaseTransform(metaWindow);
 
         // Capture the pointer for every tracked grab — the move-grab path
         // (e.g. SSD titlebar clicks) must compare against the real click
         // position, not the constructor's zeroed coords.
-        const [startX, startY] = global.get_pointer();
+        // Pointer resizes are measured from the press (_pressAnchor).
+        const keyboard = (grabOp & 0x100) !== 0; // META_GRAB_OP_WINDOW_FLAG_KEYBOARD
+        const [startX, startY] = (this._isResizeGrab(grabOp) && !keyboard &&
+            this._pressAnchor(metaWindow)) || global.get_pointer();
         this._grabStartX = startX;
         this._grabStartY = startY;
         this._grabGrace = this._computeGrabGraceThreshold();
@@ -9203,51 +9506,44 @@ export default class TilingWMExtension extends Extension {
         }
 
         const wmClass = metaWindow.get_wm_class_instance() || '?';
-        this._debugLog(`GRAB_BEGIN win=${wmClass} rect=${JSON.stringify(frame)} grabOp=${grabOp} isResize=${this._isResizeGrab(grabOp)} isMove=${this._isMoveGrab(grabOp)} float=${this._isFloating(metaWindow)}`);
+        this._debugLog(`GRAB_BEGIN win=${wmClass} rect=(${frame.x},${frame.y},${frame.width},${frame.height}) grabOp=${grabOp} isResize=${this._isResizeGrab(grabOp)} isMove=${this._isMoveGrab(grabOp)} float=${this._isFloating(metaWindow)}`);
 
         if (this._isResizeGrab(grabOp) && !this._isFloating(metaWindow)) {
             const direction = (grabOp >> 12) & 0xF;
             this._grabWidthSign = (direction & 1) ? -1 : (direction & 2) ? 1 : 0;
             this._grabHeightSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
-            const tree = this._bspGetTree(ws);
             this._grabResizeNodeW = null;
             this._grabResizeNodeH = null;
+            this._grabInnerW = null;
+            this._grabInnerH = null;
+            this._grabClampedW = false;
+            this._grabClampedH = false;
+            this._grabLowered = false;
             this._grabInitialRatioW = 0;
             this._grabInitialRatioH = 0;
-
-            if (tree) {
-                const path = [];
-                this._bspFindPath(tree, metaWindow, path);
-                for (let i = path.length - 1; i >= 0; i--) {
-                    if (path[i].direction === 'h' && this._grabWidthSign !== 0 && !this._grabResizeNodeW) {
-                        this._grabResizeNodeW = path[i];
-                        this._grabInitialRatioW = path[i].ratio;
-                        if (!this._bspFindPath(path[i].first, metaWindow, []))
-                            this._grabWidthSign = -this._grabWidthSign;
-                    }
-                    if (path[i].direction === 'v' && this._grabHeightSign !== 0 && !this._grabResizeNodeH) {
-                        this._grabResizeNodeH = path[i];
-                        this._grabInitialRatioH = path[i].ratio;
-                        if (!this._bspFindPath(path[i].first, metaWindow, []))
-                            this._grabHeightSign = -this._grabHeightSign;
-                    }
-                }
-            }
+            this._grabFollowW = 1;
+            this._grabFollowH = 1;
+            const bsp = this._getWorkspaceLayout(ws) === 'dwindle';
+            if (bsp)
+                this._grabPickSplits(metaWindow, ws);
 
             this._grabInitialMasterRatio = this._getMasterRatio(ws);
             const sr = this._getStackRatios(ws);
             this._grabInitialStackRatios = new Map(sr);
 
-            this._startGrabLoop(metaWindow, 'resize');
+            this._startResizeLoop(metaWindow);
             this._disconnectGrabBoundaryHooks();
-            try {
-                this._grabSizeChangedId = metaWindow.connect('size-changed', () =>
-                    this._enforceGrabBoundary(metaWindow));
-                this._grabPositionChangedId = metaWindow.connect('position-changed', () =>
-                    this._enforceGrabBoundary(metaWindow));
-            } catch (_e) {}
+            // BSP layouts never configure the grabbed window mid-grab.
+            if (!bsp) {
+                try {
+                    this._grabSizeChangedId = metaWindow.connect('size-changed', () =>
+                        this._enforceGrabBoundary(metaWindow));
+                    this._grabPositionChangedId = metaWindow.connect('position-changed', () =>
+                        this._enforceGrabBoundary(metaWindow));
+                } catch (_e) {}
+            }
         } else if (this._isMoveGrab(grabOp) && !this._isFloating(metaWindow)) {
-            this._startGrabLoop(metaWindow, 'move');
+            this._startGrabLoop(metaWindow);
         } else {
             this._grabOp = null;
             this._grabWindow = null;
@@ -9259,6 +9555,10 @@ export default class TilingWMExtension extends Extension {
 
         if (wasTracking && metaWindow && !this._isFloating(metaWindow)) {
             const ws = metaWindow.get_workspace();
+            // The release can precede the frame applying the last motion: a
+            // final tick keeps the drop from retiling one event behind.
+            if (ws && this._isResizeGrab(grabOp) && this._liveResizeStageId)
+                this._grabResizeTick(metaWindow);
             if (ws) {
                 if (this._isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
@@ -9295,6 +9595,7 @@ export default class TilingWMExtension extends Extension {
         this._hideDropPreview();
         this._stopLiveResizeLoop();
         this._disconnectGrabBoundaryHooks();
+        this._handOffLiveStretch(metaWindow);
         this._grabOp = null;
         this._grabWindow = null;
         this._grabInitialStackRatios = null;
@@ -9318,182 +9619,358 @@ export default class TilingWMExtension extends Extension {
         return (grabOp & 1) !== 0 && direction === 0;
     }
 
-    _startGrabLoop(metaWindow, mode) {
-        this._stopLiveResizeLoop();
-
-        const ws = metaWindow.get_workspace();
-
-        this._liveResizeId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-            if (this._destroyed || !metaWindow || !this._grabOp) {
-                this._liveResizeId = 0;
-                return GLib.SOURCE_REMOVE;
-            }
+    _startGrabLoop(metaWindow) {
+        this._startFrameLoop(() => {
             const frame = metaWindow.get_frame_rect();
-            if (frame.width === 0 || frame.height === 0) return GLib.SOURCE_CONTINUE;
+            if (frame.width === 0 || frame.height === 0) return;
+            this._updateMoveDragPreview(metaWindow);
+        }, metaWindow);
+    }
 
-            if (mode === 'resize') {
-                const [curX, curY] = global.get_pointer();
-                const dx = curX - this._grabStartX;
-                const dy = curY - this._grabStartY;
+    // tick() once per painted frame, in before-update: after the client
+    // commits, before layout and paint.
+    _startFrameLoop(tick, metaWindow) {
+        this._stopLiveResizeLoop();
+        this._liveResizeStageId = global.stage.connect('before-update', () => {
+            if (this._destroyed || !this._grabOp || !metaWindow.get_compositor_private()) return;
+            tick();
+        });
+        this._liveResizeTracker = global.backend.get_cursor_tracker();
+        this._liveResizeCursorId = this._liveResizeTracker.connect('position-invalidated',
+            () => global.stage.schedule_update());
+        global.stage.schedule_update();
+    }
 
-                const gap = this._settings.get_int('inside-gap');
-                const monitor = global.display.get_primary_monitor();
-                const workArea = ws.get_work_area_for_monitor(monitor);
-                if (!workArea) return GLib.SOURCE_CONTINUE;
+    // Frame clock, not a timer: an out-of-phase sample draws a commit with the
+    // previous tick's stretch, and the neighbours trail the pointer.
+    _startResizeLoop(metaWindow) {
+        this._startFrameLoop(() => this._grabResizeTick(metaWindow), metaWindow);
+    }
 
-                const layout = this._getWorkspaceLayout(ws);
-                if (layout === 'dwindle') {
-                    const tree = this._bspGetTree(ws);
-                    if (tree) {
-                        const area = this._outsideArea(workArea);
-                        if (!area) return GLib.SOURCE_CONTINUE;
-                        const areaX = area.x;
-                        const areaY = area.y;
-                        const areaW = area.w;
-                        const areaH = area.h;
+    _grabResizeTick(metaWindow) {
+        const frame = metaWindow.get_frame_rect();
+        if (frame.width === 0 || frame.height === 0) return;
+        const ws = metaWindow.get_workspace();
+        if (!ws) return;
+        const [curX, curY] = global.get_pointer();
+        const dx = curX - this._grabStartX;
+        const dy = curY - this._grabStartY;
 
-                        this._treeMinSizes(tree);
-                        if (this._grabResizeNodeW) {
-                            const axis = this._grabResizeNodeW._w;
-                            if (axis - gap > 0) {
-                                const axisSize = axis - gap;
-                                const minW1 = this._grabResizeNodeW.first?._minW || 0;
-                                const minW2 = this._grabResizeNodeW.second?._minW || 0;
-                                const minRatio = minW1 / axisSize;
-                                const maxRatio = 1 - minW2 / axisSize;
-                                const lo = maxRatio <= minRatio
-                                    ? (minW1 + minW2 > 0 ? minW1 / (minW1 + minW2) : 0.15) : minRatio;
-                                const hi = maxRatio <= minRatio ? lo : maxRatio;
-                                const raw = this._grabInitialRatioW + (dx * this._grabWidthSign) / axisSize;
-                                if (Number.isFinite(raw))
-                                    this._grabResizeNodeW.ratio = Math.max(lo, Math.min(hi, raw));
-                            }
+        const gap = this._settings.get_int('inside-gap');
+        const monitor = global.display.get_primary_monitor();
+        const workArea = ws.get_work_area_for_monitor(monitor);
+        if (!workArea) return;
+
+        const layout = this._getWorkspaceLayout(ws);
+        if (layout === 'dwindle') {
+            const tree = this._bspGetTree(ws);
+            const area = tree ? this._outsideArea(workArea) : null;
+            if (area) {
+                this._grabUpdateBspRatios(tree, dx, dy, gap, area);
+                this._grabHideOvershoot(metaWindow, tree, frame);
+            }
+        } else if (layout === 'master-stack' || layout === 'centered-master-stack') {
+            const area = this._outsideArea(workArea);
+            if (!area) return;
+            const areaW = area.w;
+            const areaH = area.h;
+
+            if (this._grabWidthSign !== 0) {
+                const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
+                const idx = tiled.indexOf(metaWindow);
+                this._debugLog(`MS_RESIZE dx=${dx} dy=${dy} wSign=${this._grabWidthSign} hSign=${this._grabHeightSign} idx=${idx} numTiled=${tiled.length} initMasterRatio=${this._grabInitialMasterRatio.toFixed(3)}`);
+                let sign = this._grabWidthSign;
+                if (idx > 0) sign = -sign;
+                const masterDenom = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
+                if (masterDenom > 0) {
+                    let ratioDelta = (dx * sign) / masterDenom;
+                    if (layout === 'centered-master-stack' && idx > 0)
+                        ratioDelta *= 2;
+                    const newRatio = this._grabInitialMasterRatio + ratioDelta;
+                    const masterMin = tiled.length > 0 ? (this._getWindowMinSize(tiled[0]).w || 0) : 0;
+                    let stackMinW = 0;
+                    for (let i = 1; i < tiled.length; i++)
+                        stackMinW = Math.max(stackMinW, this._getWindowMinSize(tiled[i]).w || 0);
+                    let lo = masterMin / masterDenom;
+                    let hi = 1 - stackMinW / masterDenom;
+                    if (layout === 'centered-master-stack') {
+                        const numStack = tiled.length - 1;
+                        const leftCount = Math.ceil(numStack / 2);
+                        let leftMinW = 0;
+                        let rightMinW = 0;
+                        for (let i = 1; i < tiled.length; i++) {
+                            const m = this._getWindowMinSize(tiled[i]).w || 0;
+                            if (i <= leftCount) leftMinW = Math.max(leftMinW, m);
+                            else rightMinW = Math.max(rightMinW, m);
                         }
-                        if (this._grabResizeNodeH) {
-                            const axis = this._grabResizeNodeH._h;
-                            if (axis - gap > 0) {
-                                const axisSize = axis - gap;
-                                const minH1 = this._grabResizeNodeH.first?._minH || 0;
-                                const minH2 = this._grabResizeNodeH.second?._minH || 0;
-                                const minRatio = minH1 / axisSize;
-                                const maxRatio = 1 - minH2 / axisSize;
-                                const lo = maxRatio <= minRatio
-                                    ? (minH1 + minH2 > 0 ? minH1 / (minH1 + minH2) : 0.15) : minRatio;
-                                const hi = maxRatio <= minRatio ? lo : maxRatio;
-                                const raw = this._grabInitialRatioH + (dy * this._grabHeightSign) / axisSize;
-                                if (Number.isFinite(raw))
-                                    this._grabResizeNodeH.ratio = Math.max(lo, Math.min(hi, raw));
-                            }
-                        }
-                        this._bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
+                        hi = 1 - 2 * Math.max(leftMinW, rightMinW) / masterDenom;
                     }
-                } else if (layout === 'master-stack' || layout === 'centered-master-stack') {
-                    const area = this._outsideArea(workArea);
-                    if (!area) return GLib.SOURCE_CONTINUE;
-                    const areaW = area.w;
-                    const areaH = area.h;
-
-                    if (this._grabWidthSign !== 0) {
-                        const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
-                        const idx = tiled.indexOf(metaWindow);
-                        this._debugLog(`MS_RESIZE dx=${dx} dy=${dy} wSign=${this._grabWidthSign} hSign=${this._grabHeightSign} idx=${idx} numTiled=${tiled.length} initMasterRatio=${this._grabInitialMasterRatio.toFixed(3)}`);
-                        let sign = this._grabWidthSign;
-                        if (idx > 0) sign = -sign;
-                        const masterDenom = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
-                        if (masterDenom > 0) {
-                            let ratioDelta = (dx * sign) / masterDenom;
-                            if (layout === 'centered-master-stack' && idx > 0)
-                                ratioDelta *= 2;
-                            const newRatio = this._grabInitialMasterRatio + ratioDelta;
-                            const masterMin = tiled.length > 0 ? (this._getWindowMinSize(tiled[0]).w || 0) : 0;
-                            let stackMinW = 0;
-                            for (let i = 1; i < tiled.length; i++)
-                                stackMinW = Math.max(stackMinW, this._getWindowMinSize(tiled[i]).w || 0);
-                            let lo = masterMin / masterDenom;
-                            let hi = 1 - stackMinW / masterDenom;
-                            if (layout === 'centered-master-stack') {
-                                const numStack = tiled.length - 1;
-                                const leftCount = Math.ceil(numStack / 2);
-                                let leftMinW = 0;
-                                let rightMinW = 0;
-                                for (let i = 1; i < tiled.length; i++) {
-                                    const m = this._getWindowMinSize(tiled[i]).w || 0;
-                                    if (i <= leftCount) leftMinW = Math.max(leftMinW, m);
-                                    else rightMinW = Math.max(rightMinW, m);
-                                }
-                                hi = 1 - 2 * Math.max(leftMinW, rightMinW) / masterDenom;
-                            }
-                            if (hi <= lo) { lo = 0.5; hi = 0.5; }
-                            if (Number.isFinite(newRatio))
-                                this._masterRatios.set(this._wsIndex(ws), Math.max(lo, Math.min(hi, newRatio)));
+                    if (hi <= lo) { lo = 0.5; hi = 0.5; }
+                    if (Number.isFinite(newRatio))
+                        this._masterRatios.set(this._wsIndex(ws), Math.max(lo, Math.min(hi, newRatio)));
+                }
+            }
+            if (this._grabHeightSign !== 0) {
+                const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
+                const idx = tiled.indexOf(metaWindow);
+                if (idx > 0 && this._grabInitialStackRatios) {
+                    this._debugLog(`MS_HEIGHT idx=${idx} dy=${dy} hSign=${this._grabHeightSign} initStackRatios=[${[...this._grabInitialStackRatios.entries()].map(([k,v])=>`${k}:${v.toFixed(2)}`).join(',')}]`);
+                    const numStack = tiled.length - 1;
+                    const gapTotal = gap * (numStack - 1);
+                    const totalStackH = areaH - gapTotal;
+                    if (totalStackH > 0 && numStack > 1) {
+                        const stackRatios = this._getStackRatios(ws);
+                        const draggedStackIdx = idx - 1;
+                        const pixelDelta = dy * this._grabHeightSign;
+                        const otherDelta = -pixelDelta / (numStack - 1);
+                        let initTotal = 0;
+                        for (let j = 0; j < numStack; j++)
+                            initTotal += this._grabInitialStackRatios.has(j)
+                                ? this._grabInitialStackRatios.get(j) : 1.0;
+                        const newHeights = [];
+                        for (let j = 0; j < numStack; j++) {
+                            const initW = this._grabInitialStackRatios.has(j)
+                                ? this._grabInitialStackRatios.get(j) : 1.0;
+                            const initH = totalStackH * initW / initTotal;
+                            const delta = j === draggedStackIdx ? pixelDelta : otherDelta;
+                            const minH = tiled.length > j + 1
+                                ? (this._getWindowMinSize(tiled[j + 1]).h || 0) : 0;
+                            newHeights.push(Math.max(minH, initH + delta));
                         }
-                    }
-                    if (this._grabHeightSign !== 0) {
-                        const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
-                        const idx = tiled.indexOf(metaWindow);
-                        if (idx > 0 && this._grabInitialStackRatios) {
-                            this._debugLog(`MS_HEIGHT idx=${idx} dy=${dy} hSign=${this._grabHeightSign} initStackRatios=[${[...this._grabInitialStackRatios.entries()].map(([k,v])=>`${k}:${v.toFixed(2)}`).join(',')}]`);
-                            const numStack = tiled.length - 1;
-                            const gapTotal = gap * (numStack - 1);
-                            const totalStackH = areaH - gapTotal;
-                            if (totalStackH > 0 && numStack > 1) {
-                                const stackRatios = this._getStackRatios(ws);
-                                const draggedStackIdx = idx - 1;
-                                const pixelDelta = dy * this._grabHeightSign;
-                                const otherDelta = -pixelDelta / (numStack - 1);
-                                let initTotal = 0;
-                                for (let j = 0; j < numStack; j++)
-                                    initTotal += this._grabInitialStackRatios.has(j)
-                                        ? this._grabInitialStackRatios.get(j) : 1.0;
-                                const newHeights = [];
-                                for (let j = 0; j < numStack; j++) {
-                                    const initW = this._grabInitialStackRatios.has(j)
-                                        ? this._grabInitialStackRatios.get(j) : 1.0;
-                                    const initH = totalStackH * initW / initTotal;
-                                    const delta = j === draggedStackIdx ? pixelDelta : otherDelta;
-                                    const minH = tiled.length > j + 1
-                                        ? (this._getWindowMinSize(tiled[j + 1]).h || 0) : 0;
-                                    newHeights.push(Math.max(minH, initH + delta));
-                                }
-                                const newTotalH = newHeights.reduce((a, b) => a + b, 0);
-                                if (newTotalH > 0) {
-                                    for (let j = 0; j < numStack; j++) {
-                                        const newW = newHeights[j] / newTotalH * numStack;
-                                        stackRatios.set(j, Math.max(0.1, newW));
-                                    }
-                                }
-                            } else if (totalStackH > 0) {
-                                const initialWeight = this._grabInitialStackRatios.has(idx - 1)
-                                    ? this._grabInitialStackRatios.get(idx - 1) : 1.0;
-                                const minH = tiled.length > idx
-                                    ? (this._getWindowMinSize(tiled[idx]).h || 0) : 0;
-                                const minWeight = totalStackH > 0 ? minH / totalStackH * numStack : 0.1;
-                                const newWeight = Math.max(Math.max(0.1, minWeight),
-                                    initialWeight + (dy * this._grabHeightSign) / totalStackH * numStack);
-                                const stackRatios = this._getStackRatios(ws);
-                                stackRatios.set(idx - 1, newWeight);
-                                this._scheduleSaveLayouts();
+                        const newTotalH = newHeights.reduce((a, b) => a + b, 0);
+                        if (newTotalH > 0) {
+                            for (let j = 0; j < numStack; j++) {
+                                const newW = newHeights[j] / newTotalH * numStack;
+                                stackRatios.set(j, Math.max(0.1, newW));
                             }
                         }
+                    } else if (totalStackH > 0) {
+                        const initialWeight = this._grabInitialStackRatios.has(idx - 1)
+                            ? this._grabInitialStackRatios.get(idx - 1) : 1.0;
+                        const minH = tiled.length > idx
+                            ? (this._getWindowMinSize(tiled[idx]).h || 0) : 0;
+                        const minWeight = totalStackH > 0 ? minH / totalStackH * numStack : 0.1;
+                        const newWeight = Math.max(Math.max(0.1, minWeight),
+                            initialWeight + (dy * this._grabHeightSign) / totalStackH * numStack);
+                        const stackRatios = this._getStackRatios(ws);
+                        stackRatios.set(idx - 1, newWeight);
+                        this._scheduleSaveLayouts();
                     }
                 }
-
-                this._moveTiledExcept(metaWindow);
-                this._enforceGrabBoundary(metaWindow);
-                this._updateBordersDuringGrab();
-            } else if (mode === 'move') {
-                this._updateMoveDragPreview(metaWindow);
             }
+        }
 
-            return GLib.SOURCE_CONTINUE;
-        });
+        this._moveTiledExcept(metaWindow);
+        if (layout === 'dwindle')
+            this._dwindleAnchorGrabbed(metaWindow);
+        else
+            this._enforceGrabBoundary(metaWindow);
+        this._updateBordersDuringGrab();
+    }
+
+    // Per axis the outer split is the nearest ancestor whose divider IS the
+    // grabbed edge. On a monitor edge there is none: the opposite edge moves,
+    // mirrored (follow -1), since mutter shrinks the frame from the dragged
+    // edge. A same-direction split met first, `inner`, holds the anchored
+    // edge.
+    _grabPickSplits(win, ws) {
+        const tree = this._bspGetTree(ws);
+        const leaf = tree ? this._bspFindLeaf(tree, win) : null;
+        if (!leaf) return;
+        const workArea = this._primaryWorkArea(ws);
+        const area = this._isValidWorkArea(workArea) ? this._outsideArea(workArea) : null;
+        if (!area) return;
+        const gap = this._settings.get_int('inside-gap');
+        this._bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        const path = [];
+        this._bspFindPath(tree, win, path);
+        const sticks = (a, b) => Math.abs(a - b) < 2;
+        const pick = (dir, sign, lo, size, areaLo, areaSize) => {
+            const atLo = sticks(lo, areaLo);
+            const atHi = sticks(lo + size, areaLo + areaSize);
+            if (!sign || (atLo && atHi)) return [null, null, 1];
+            const wantSecond = sign < 0 || atHi;
+            const wantFirst = sign > 0 || atLo;
+            let inner = null;
+            for (let i = path.length - 1; i >= 0; i--) {
+                const node = path[i];
+                if (node.direction !== dir) continue;
+                const inFirst = node.first === (path[i + 1] ?? leaf);
+                const other = inFirst ? node.second : node.first;
+                if (!other || other.type === 'empty') continue;
+                // The divider is on the far side of a monitor-edge grab.
+                if (inFirst ? wantFirst : wantSecond) return [node, inner, (sign < 0) === inFirst ? -1 : 1];
+                inner ??= { node, inFirst, anchor: inFirst ? lo + size : lo };
+            }
+            return [null, null, 1];
+        };
+        [this._grabResizeNodeW, this._grabInnerW, this._grabFollowW] =
+            pick('h', this._grabWidthSign, leaf._x, leaf._w, area.x, area.w);
+        [this._grabResizeNodeH, this._grabInnerH, this._grabFollowH] =
+            pick('v', this._grabHeightSign, leaf._y, leaf._h, area.y, area.h);
+        this._grabInitialRatioW = this._grabResizeNodeW?.ratio ?? 0;
+        this._grabInitialRatioH = this._grabResizeNodeH?.ratio ?? 0;
+    }
+
+    // The divider follows the pointer's travel within both subtrees' minimums;
+    // `inner` is re-solved so the anchored edge stays where mutter keeps it.
+    _grabUpdateBspRatios(tree, dx, dy, gap, area) {
+        this._treeMinSizes(tree, gap);
+        const nodeW = this._grabResizeNodeW;
+        const nodeH = this._grabResizeNodeH;
+        if (nodeW)
+            this._grabClampedW = this._grabSetRatio(nodeW, this._grabInitialRatioW + this._grabFollowW * dx / (nodeW._w - gap), gap);
+        if (nodeH)
+            this._grabClampedH = this._grabSetRatio(nodeH, this._grabInitialRatioH + this._grabFollowH * dy / (nodeH._h - gap), gap);
+        // Re-clamp the splits below, or a narrowing subtree draws its
+        // min-size window squashed for the whole grab.
+        this._clampTreeToMinSizes(tree, area.w, area.h, gap);
+        this._bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        for (const inner of [this._grabInnerW, this._grabInnerH]) {
+            if (!inner) continue;
+            const n = inner.node;
+            const isH = n.direction === 'h';
+            const start = isH ? n._x : n._y;
+            const split = inner.inFirst ? inner.anchor - start : inner.anchor - gap - start;
+            // +0.5: the layout floors (axis - gap) * ratio back to `split`.
+            this._grabSetRatio(n, (split + 0.5) / ((isH ? n._w : n._h) - gap), gap);
+            this._bspTagGeometry(n, n._x, n._y, n._w, n._h, gap);
+        }
+    }
+
+    // Past a min-size limit mutter keeps growing the window and nothing an
+    // extension sends holds it: lower it under its neighbours so the edge
+    // looks like a hard stop; _handleGrabEnd raises it.
+    _grabHideOvershoot(win, tree, f) {
+        if (this._grabLowered || !(this._grabClampedW || this._grabClampedH)) return;
+        const leaf = this._bspFindLeaf(tree, win);
+        if (!leaf) return;
+        if ((this._grabClampedW && f.width > leaf._w + 1) || (this._grabClampedH && f.height > leaf._h + 1)) {
+            this._grabLowered = true;
+            win.lower();
+        }
+    }
+
+    _grabSetRatio(node, raw, gap) {
+        const isH = node.direction === 'h';
+        const axisSize = (isH ? node._w : node._h) - gap;
+        if (!(axisSize > 0) || !Number.isFinite(raw)) return false;
+        const min1 = (isH ? node.first?._minW : node.first?._minH) || 0;
+        const min2 = (isH ? node.second?._minW : node.second?._minH) || 0;
+        const minRatio = min1 / axisSize;
+        const maxRatio = 1 - min2 / axisSize;
+        const lo = maxRatio <= minRatio
+            ? (min1 + min2 > 0 ? min1 / (min1 + min2) : 0.15) : minRatio;
+        const hi = maxRatio <= minRatio ? lo : maxRatio;
+        node.ratio = Math.max(lo, Math.min(hi, raw));
+        // The user picked this ratio: no min-size clamp to undo.
+        delete node.userRatio;
+        delete node.bentBy;
+        return node.ratio !== raw;
     }
 
     _stopLiveResizeLoop() {
-        if (this._liveResizeId) {
-            GLib.source_remove(this._liveResizeId);
-            this._liveResizeId = 0;
+        if (this._liveResizeStageId) {
+            global.stage.disconnect(this._liveResizeStageId);
+            this._liveResizeStageId = 0;
         }
+        if (this._liveResizeCursorId) {
+            this._liveResizeTracker.disconnect(this._liveResizeCursorId);
+            this._liveResizeCursorId = 0;
+            this._liveResizeTracker = null;
+        }
+    }
+
+    // On a monitor-edge axis mutter moves the frame off the slot: translate
+    // the grabbed window back (never scaled).
+    _dwindleAnchorGrabbed(grabbed) {
+        if (this._grabFollowW > 0 && this._grabFollowH > 0) return;
+        const ws = grabbed.get_workspace();
+        const tree = ws ? this._bspGetTree(ws) : null;
+        const leaf = tree ? this._bspFindLeaf(tree, grabbed) : null;
+        if (!leaf || !(leaf._w > 0) || !(leaf._h > 0)) return;
+        const f = grabbed.get_frame_rect();
+        const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+        const draw = { x: this._grabFollowW < 0 ? slot.x : f.x, y: this._grabFollowH < 0 ? slot.y : f.y,
+            w: f.width, h: f.height };
+        if (!this._liveStretched) this._liveStretched = new Map();
+        this._stretchActorToSlot(grabbed, slot, draw);
+    }
+
+    // Same mapping as _transformApply.
+    _stretchActorToSlot(win, slot, draw = slot) {
+        // The stretch owns the transform now (a resize during an animation).
+        this._releaseTransform(win);
+        const actor = win.get_compositor_private();
+        if (!actor) return;
+        const f = win.get_frame_rect();
+        if (f.width <= 0 || f.height <= 0) return;
+        const flush = Math.abs(f.x - draw.x) <= 1 && Math.abs(f.y - draw.y) <= 1 &&
+            Math.abs(f.width - draw.w) <= 1 && Math.abs(f.height - draw.h) <= 1;
+        // Drawn at its own frame: the release retile eases it into its slot.
+        if (flush) {
+            if (this._liveStretched.delete(win)) {
+                actor.set_scale(1, 1);
+                actor.set_translation(0, 0, 0);
+            }
+            return;
+        }
+        const b = win.get_buffer_rect();
+        const sx = draw.w / f.width, sy = draw.h / f.height;
+        const tx = draw.x - b.x - (f.x - b.x) * sx, ty = draw.y - b.y - (f.y - b.y) * sy;
+        // Only a changing transform: each set_* queues a redraw that reruns
+        // this tick.
+        if (Math.abs(actor.scale_x - sx) > 1e-4 || Math.abs(actor.scale_y - sy) > 1e-4 ||
+            Math.abs(actor.translation_x - tx) > 0.01 || Math.abs(actor.translation_y - ty) > 0.01) {
+            actor.remove_all_transitions();
+            actor.set_pivot_point(0, 0);
+            actor.set_scale(sx, sy);
+            actor.set_translation(tx, ty, 0);
+        }
+        // The slot, not the drawn rect: what the grab-end hand-off holds.
+        this._liveStretched.set(win, slot);
+    }
+
+    // Windows still stretched stay over their slot as an arrived ease for the
+    // release retile; reset, a lagging window would show its stale size.
+    _handOffLiveStretch(grabbed) {
+        const live = this._liveStretched;
+        this._liveStretched = null;
+        this._liveSent = null;
+        if (!live || live.size === 0) return;
+        // Until now the grabbed window's size was mutter's.
+        const g = live.get(grabbed);
+        if (g) {
+            try { grabbed.move_resize_frame(true, g.x, g.y, g.w, g.h); } catch (_e) {}
+        }
+        const now = GLib.get_monotonic_time();
+        const carry = this._stopTransforms(true, grabbed.get_workspace());
+        const states = [];
+        for (const [win, r] of live) {
+            const actor = win.get_compositor_private();
+            if (!actor) continue;
+            const at = { startX: r.x, startY: r.y, startW: r.w, startH: r.h,
+                targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
+            // sent: null: every commit but the slot's answers a queued grab
+            // configure.
+            carry.set(win, { ...at, win, actor, t0: now, dur: 0, sent: null,
+                visual: [r.x, r.y, r.w, r.h] });
+            states.push({ ...at, win });
+        }
+        this._animTransforms(states, () => {}, carry);
+    }
+
+    _clearLiveStretch() {
+        if (this._liveStretched) {
+            for (const win of this._liveStretched.keys()) {
+                const actor = win.get_compositor_private();
+                if (!actor) continue;
+                actor.set_scale(1, 1);
+                actor.set_translation(0, 0, 0);
+            }
+        }
+        this._liveStretched = null;
+        this._liveSent = null;
     }
 
     _moveTiledExcept(skipWindow) {
@@ -9513,6 +9990,7 @@ export default class TilingWMExtension extends Extension {
             if (!treeWins.includes(skipWindow)) return;
             const area = this._outsideArea(workArea);
             if (!area) return;
+            if (!this._liveSent) this._liveSent = new Map();
             this._bspLayout(tree, area.x, area.y, area.w, area.h, gap, skipWindow);
         } else {
             const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
@@ -10062,7 +10540,7 @@ export default class TilingWMExtension extends Extension {
     }
 
     _hideDropPreview() {
-        // Hide, don't destroy — the 16ms grab loop alternates between
+        // Hide, don't destroy — the grab loop alternates between
         // target/no-target regions; recreating the widget each tick churns
         // allocations and re-layout under a live grab.
         if (this._dropPreview)
