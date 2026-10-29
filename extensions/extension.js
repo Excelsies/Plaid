@@ -43,6 +43,11 @@ const PLAID_KEYBIND_KEYS = [
     'scratchpad-toggle', 'scratchpad-add', 'dropdown-terminal',
 ];
 
+// Super+drag+scroll: one step per throttle (a wheel spin is a burst of
+// notches); SLIDE_MS is the shell's slide, used when its progress is unknown.
+const DRAG_SCROLL_THROTTLE_MS = 300;
+const DRAG_SCROLL_SLIDE_MS = 250;
+
 // The GNOME Shell re-enables extensions after every screen unlock, which
 // re-runs enable(). The login splash is a brand moment for real logins only
 // (fresh shell process = fresh module), so a module-level flag survives the
@@ -375,6 +380,11 @@ export default class TilingWMExtension extends Extension {
         this._stackDiagnostics = new Set();
         this._toggleFloatWindows = new Set();
         this._keyboardFocusChange = false;
+        this._dragScrollFilterId = 0;
+        this._dragScrollWin = null;
+        this._dragScrollLast = 0;
+        this._dragScrollHoldUntil = 0;
+        this._dragScrollShellWarned = false;
         this._grabOp = null;
         this._grabWindow = null;
         this._grabStartX = 0;
@@ -711,6 +721,7 @@ export default class TilingWMExtension extends Extension {
         // early-returns until a grab-op-end that never comes.
         this._grabOp = null;
         this._grabWindow = null;
+        this._endDragScroll();
         this._restoreMutterDefaults();
         this._removeAllBorders();
         this._destroyDropPreview();
@@ -1215,6 +1226,9 @@ export default class TilingWMExtension extends Extension {
                 try { if (this._reassertFloatingTransients()) settleChanged = true; } catch (_e) {}
                 return GLib.SOURCE_CONTINUE;
             });
+            // Re-activating the last focused window would raise it over the
+            // window drag-scroll is carrying here.
+            if (this._dragScrollWin?.get_workspace() === ws) return;
             const windows = this._getWindowsForWorkspace(ws);
             if (windows.length === 0) return;
             let target = this._lastFocusedPerWorkspace.get(ws);
@@ -1968,6 +1982,12 @@ export default class TilingWMExtension extends Extension {
                 const order = this._getWorkspaceOrder(oldWs);
                 const idx = order.indexOf(win);
                 if (idx !== -1) order.splice(idx, 1);
+                // Leave the old tree now: while a grab defers the retile, the
+                // stale leaf would keep its slot for good.
+                if (oldWs !== newWs) {
+                    const tree = this._bspGetTree(oldWs);
+                    if (tree) this._bspTrees.set(oldWs, this._bspRemove(tree, win));
+                }
                 this._retileWorkspace(oldWs);
             }
             if (newWs) {
@@ -2253,6 +2273,10 @@ export default class TilingWMExtension extends Extension {
         // hide choreography. slow_down_factor is the accessibility lever.
         const stSettings = St.Settings.get();
         return 0.1 * Math.max(0.1, stSettings.slow_down_factor);
+    }
+
+    _scaledAnimMs(ms) {
+        return ms * this._getAnimationTime() * 10;
     }
 
     _cancelAnimation() {
@@ -9066,9 +9090,11 @@ export default class TilingWMExtension extends Extension {
             if (this._destroyed || !this._settings || !this._settings.get_boolean('mouse-resize')) return;
             if (!this._settings.get_boolean('enabled')) return;
             this._handleGrabBegin(metaWindow, grabOp);
+            this._beginDragScroll(metaWindow, grabOp);
         }));
         this._addSignal(global.display, global.display.connect('grab-op-end', (_d, metaWindow, grabOp) => {
             this._handleGrabEnd(metaWindow, grabOp);
+            this._endDragScroll();
         }));
         this._addSignal(global.display, global.display.connect('restacked', () => {
             this._syncBlurStacking();
@@ -9099,6 +9125,180 @@ export default class TilingWMExtension extends Extension {
         } catch (_e) {
             return 10;
         }
+    }
+
+    // --- Super + drag + scroll: carry the dragged window to the adjacent
+    // workspace ---
+    // A drag's Clutter grab hides scroll from the stage; an event filter,
+    // installed for the move grab only, still sees it.
+    _beginDragScroll(metaWindow, grabOp) {
+        this._endDragScroll();
+        if (!metaWindow || !this._isMoveGrab(grabOp)) return;
+        if (!this._settings.get_boolean('drag-scroll-workspace')) return;
+        if (metaWindow.get_window_type() !== Meta.WindowType.NORMAL) return;
+        if (metaWindow.is_on_all_workspaces() || metaWindow.is_skip_taskbar()) return;
+        // Carry a tiled window only while Plaid tracks the grab (_grabOp):
+        // that keeps the move's retiles from configuring it.
+        if (this._grabOp === null && !this._isFloating(metaWindow)) return;
+        this._dragScrollWin = metaWindow;
+        this._dragScrollLast = 0;
+        try {
+            this._dragScrollFilterId = Clutter.Event.add_filter(global.stage,
+                event => this._onDragScrollEvent(event));
+        } catch (e) {
+            this._dragScrollFilterId = 0;
+            log(`[plaid] drag-scroll: add_filter failed: ${e.message}`);
+        }
+    }
+
+    _endDragScroll() {
+        if (this._dragScrollFilterId) {
+            try { Clutter.Event.remove_filter(this._dragScrollFilterId); } catch (_e) {}
+            this._dragScrollFilterId = 0;
+        }
+        this._dragScrollWin = null;
+        this._dragScrollHoldUntil = 0;
+    }
+
+    _onDragScrollEvent(event) {
+        const type = event.type();
+        if (type === Clutter.EventType.BUTTON_RELEASE) {
+            this._dragScrollReleaseDuringSlide();
+            return Clutter.EVENT_PROPAGATE;
+        }
+        if (type !== Clutter.EventType.SCROLL) return Clutter.EVENT_PROPAGATE;
+        const win = this._dragScrollWin;
+        if (!win || this._destroyed) return Clutter.EVENT_PROPAGATE;
+        // The shell's Super+drag modifier (mouse-button-modifier).
+        let mods = Clutter.ModifierType.MOD4_MASK;
+        try { mods = global.display.compositor_modifiers || mods; } catch (_e) {}
+        if ((event.get_state() & mods) !== mods) return Clutter.EVENT_PROPAGATE;
+        // Discrete steps only: mutter emulates each stream from the other, so
+        // the discrete one counts every gesture once (as
+        // handleWorkspaceScroll). Smooth events are swallowed.
+        let step;
+        switch (event.get_scroll_direction()) {
+            case Clutter.ScrollDirection.DOWN:
+            case Clutter.ScrollDirection.RIGHT:
+                step = 1;
+                break;
+            case Clutter.ScrollDirection.UP:
+            case Clutter.ScrollDirection.LEFT:
+                step = -1;
+                break;
+            default:
+                return Clutter.EVENT_STOP;
+        }
+        // One step per slide too: a slowed-down slide outlasts the throttle.
+        const now = GLib.get_monotonic_time();
+        if (now - this._dragScrollLast < DRAG_SCROLL_THROTTLE_MS * 1000 || this._dragScrollSliding())
+            return Clutter.EVENT_STOP;
+        this._dragScrollLast = now;
+        this._dragScrollToNeighbor(win, step);
+        return Clutter.EVENT_STOP;
+    }
+
+    // The slide's modal grab would keep a release from the window drag,
+    // leaving the window glued to the pointer: pop it here (filters run before
+    // grab delivery), only if it has exactly the expected shape.
+    _dragScrollReleaseDuringSlide() {
+        if (!this._dragScrollSliding()) return;
+        try {
+            const anim = Main.wm._workspaceAnimation;
+            if (!anim?._grab) return;
+            if (!(anim._grab instanceof Clutter.Grab) || !Array.isArray(anim._switchData?.monitors)) {
+                if (!this._dragScrollShellWarned) {
+                    this._dragScrollShellWarned = true;
+                    log('[plaid] drag-scroll: unexpected workspace slide state, a release during the slide is not handed to the drag');
+                }
+                return;
+            }
+            Main.popModal(anim._grab);
+            anim._grab = null;
+            this._debugLog('drag-scroll: released during the slide');
+        } catch (e) {
+            log(`[plaid] drag-scroll: could not end the slide's grab: ${e.message}`);
+        }
+    }
+
+    // The next user workspace in `step`'s direction, skipping the parking
+    // workspace; null at either end (no wrap).
+    _dragScrollTarget(fromWs, step) {
+        const wm = global.workspace_manager;
+        const n = wm.get_n_workspaces();
+        for (let i = fromWs.index() + step; i >= 0 && i < n; i += step) {
+            const ws = wm.get_workspace_by_index(i);
+            if (ws && ws !== this._backgroundAppParkingWs) return ws;
+        }
+        return null;
+    }
+
+    _dragScrollToNeighbor(win, step) {
+        if (Main.overview.visible) return;
+        const src = win.get_workspace();
+        if (!src) return;
+        const dest = this._dragScrollTarget(src, step);
+        if (!dest) {
+            this._debugLog(`drag-scroll: no workspace ${step > 0 ? 'after' : 'before'} ${this._wsIndex(src)}`);
+            return;
+        }
+        // The ghost and cached landings belong to the workspace being left.
+        this._dragGhost = null;
+        this._dwindleDropCache = null;
+        this._hideDropPreview();
+        // Carried in, it was dragged wherever it is released: put the click
+        // guard's origin (the grab's start frame or pointer) out of reach.
+        this._grabStartFrame = { x: -Infinity, y: -Infinity };
+        this._grabStartX = this._grabStartY = -Infinity;
+        this._dragScrollHoldUntil = GLib.get_monotonic_time() + this._scaledAnimMs(DRAG_SCROLL_SLIDE_MS) * 1000;
+        this._debugLog(`drag-scroll: ${win.get_wm_class_instance() || '?'} ws ${this._wsIndex(src)} -> ${this._wsIndex(dest)}`);
+        // The shell's own move-window-to-workspace; mutter keeps the move grab
+        // across the switch.
+        try {
+            Main.wm.actionMoveWindow(win, dest);
+        } catch (e) {
+            log(`[plaid] drag-scroll: actionMoveWindow failed (${e.message}), falling back`);
+            try {
+                win.change_workspace(dest);
+                dest.activate_with_focus(win, this._currentTime());
+            } catch (_e) {}
+        }
+        try { win.raise(); } catch (_e) {}
+        this._shrinkSlideClone(win);
+    }
+
+    // A Clutter.Clone ignores its source's transform: give the slide's clone
+    // the drag's scale.
+    _shrinkSlideClone(win) {
+        const actor = this._dragShrunk?.win === win ? this._dragShrunk.actor : null;
+        if (!actor) return;
+        try {
+            const [px, py] = actor.get_pivot_point();
+            const visit = parent => {
+                for (const child of parent.get_children()) {
+                    if (child instanceof Clutter.Clone && child.source === actor) {
+                        child.set_pivot_point(px, py);
+                        child.set_scale(actor.scale_x, actor.scale_y);
+                    } else {
+                        visit(child);
+                    }
+                }
+            };
+            for (const group of Main.wm._workspaceAnimation?._switchData?.monitors ?? [])
+                visit(group);
+        } catch (_e) {}
+    }
+
+    // Slide progress is private (_switchData): else its nominal length.
+    _dragScrollSliding() {
+        if (!this._dragScrollHoldUntil) return false;
+        let sliding = GLib.get_monotonic_time() < this._dragScrollHoldUntil;
+        try {
+            const anim = Main.wm._workspaceAnimation;
+            if (anim && '_switchData' in anim) sliding = !!anim._switchData;
+        } catch (_e) {}
+        if (!sliding) this._dragScrollHoldUntil = 0;
+        return sliding;
     }
 
     _handleGrabBegin(metaWindow, grabOp) {
@@ -9862,6 +10062,11 @@ export default class TilingWMExtension extends Extension {
 
     _updateMoveDragPreview(metaWindow) {
         if (!metaWindow || !this._settings) return;
+        // Sliding to a drag-scroll target: a zone would draw over the slide.
+        if (this._dragScrollSliding()) {
+            this._hideDropPreview();
+            return;
+        }
         const ws = metaWindow.get_workspace();
         if (!ws) return;
         // Click-vs-drag gate: keep the overlay hidden until the pointer

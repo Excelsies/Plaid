@@ -333,6 +333,11 @@
       <summary>Enable mouse-based resize and swap</summary>
       <description>When enabled, dragging window edges resizes the split ratio and dragging the title bar swaps windows</description>
     </key>
+    <key name="drag-scroll-workspace" type="b">
+      <default>true</default>
+      <summary>Scroll moves a dragged window to another workspace</summary>
+      <description>While a window is dragged with the window-drag modifier held (Super by default, see org.gnome.desktop.wm.preferences mouse-button-modifier), scrolling down or right moves it to the next workspace and scrolling up or left to the previous one; it is tiled where it is dropped. Only active while mouse-resize is enabled</description>
+    </key>
 
     <!-- Popups: workspace switch + tiling toggle notifications -->
     <key name="workspace-popup" type="b">

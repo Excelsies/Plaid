@@ -59,6 +59,11 @@ Full docs live on the [wiki](https://github.com/Plyply99/Plaid/wiki).
 - **Float rules**: Per-app and per-title floating.
 
 
+- **Mouse resize and swap**: Drag window edges to resize splits, drag a title
+  bar to swap or re-split. Hold Super (the window-drag modifier) and scroll
+  while dragging to carry the window to the next or previous workspace.
+
+
 - **DDT Plaid Drop Down Terminal**: Toggle a terminal (configurable command, default
   ghostty) that drops from the top of the work area at a configurable height,
   with full Flair and live height updates.
