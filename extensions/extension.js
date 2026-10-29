@@ -3951,12 +3951,28 @@ export default class TilingWMExtension extends Extension {
                     this._persistedDwindleByIndex.get(this._wsIndex(workspace));
                 if (savedShape && this._reconcileTreeRatios(savedShape, tree))
                     this._debugLog(`dwindle: restored saved split ratios (ws=${this._wsIndex(workspace)}, windows=${tiledWindows.length})`);
+            } else {
+                // Same window set: this retile follows a user edit.
+                this._foldLiveRatiosIntoSavedShape(workspace, tree);
             }
         }
 
         this._treeMinSizes(tree);
         this._clampTreeToMinSizes(tree, areaW, areaH, gap);
         this._bspLayout(tree, areaX, areaY, areaW, areaH, gap);
+    }
+
+    // The dconf copy lags 10s: a window opened or closed meanwhile would
+    // revert the edit. Deeper saved levels survive.
+    _foldLiveRatiosIntoSavedShape(workspace, tree) {
+        if (!tree || tree.type !== 'split' || !this._persistedDwindleByIndex) return;
+        const shapeKey = this._wsIndex(workspace);
+        const savedShape = this._persistedDwindleByIndex.get(shapeKey);
+        if (savedShape)
+            this._reconcileTreeRatios(tree, savedShape);
+        else
+            this._persistedDwindleByIndex.set(shapeKey,
+                this._dwindleShapeFromString(this._dwindleShapeToString(tree)));
     }
 
     // Prune leaves of windows that left and insert missing ones dwindle style.
@@ -9791,6 +9807,10 @@ export default class TilingWMExtension extends Extension {
                             this._repositionWindow(metaWindow, ws);
                     } catch (_e) {}
                 }
+                // Save the grab's ratios now, or a deferred window-set retile
+                // restores the pre-grab shape.
+                if (this._getWorkspaceLayout(ws) === 'dwindle')
+                    this._foldLiveRatiosIntoSavedShape(ws, this._bspGetTree(ws));
                 this._retileWorkspace(ws);
                 dropWs = ws;
                 try { metaWindow.raise(); } catch (_e) {}
