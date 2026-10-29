@@ -58,6 +58,28 @@ export function _bspCollectWindows(node) {
     return [...this._bspCollectWindows(node.first), ...this._bspCollectWindows(node.second)];
 }
 
+export function _bspLeaves(node, out = []) {
+    if (!node || node.type === 'empty') return out;
+    if (node.type === 'leaf') {
+        out.push(node);
+        return out;
+    }
+    this._bspLeaves(node.first, out);
+    this._bspLeaves(node.second, out);
+    return out;
+}
+
+// Structural copy (leaves keep their windows) for what-if layouts.
+export function _bspClone(node) {
+    if (!node) return null;
+    if (node.type !== 'split') return { ...node };
+    const copy = this._bspMakeSplit(node.direction, node.ratio,
+        this._bspClone(node.first), this._bspClone(node.second));
+    if (node.userRatio !== undefined) copy.userRatio = node.userRatio;
+    if (node.bentBy) copy.bentBy = node.bentBy;
+    return copy;
+}
+
 export function _bspLayout(node, x, y, w, h, gap, skipWindow) {
     if (!node) return;
     if (node.type === 'empty') return;
@@ -66,6 +88,11 @@ export function _bspLayout(node, x, y, w, h, gap, skipWindow) {
         node._y = y;
         node._w = w;
         node._h = h;
+        // Never below the minimum: mutter enforces it anyway and re-anchors
+        // the rect off the slot. _windowSlotRect reports the same clamped
+        // slot.
+        w = Math.max(w, node._minW || 0);
+        h = Math.max(h, node._minH || 0);
         if (node.window !== skipWindow) {
             this._safeMove(node.window, x, y, w, h);
         } else {
@@ -234,6 +261,38 @@ export function _bspInsertForWorkspace(ws, win) {
     this._bspTrees.set(ws, tree);
 }
 
+// Minimums are ratio-independent and a split's min is the gap-separated
+// sum of its children's, so the whole tree fits iff the root does.
+function _minsFit(tree, areaW, areaH) {
+    return !tree || tree.type !== 'split' || ((tree._minW || 0) <= areaW && (tree._minH || 0) <= areaH);
+}
+
+// When the mins no longer fit, the first candidate that can move to a leaf
+// where everything fits moves to the largest such leaf (dwindle's split rules;
+// only the leaf changes), or a burst of min-size apps nests into a corner. An
+// unfixable tree is left alone. The minimums must be current.
+export function _bspRelocateForMinSizes(tree, candidates, areaX, areaY, areaW, areaH, gap, ratio) {
+    for (const win of candidates) {
+        if (_minsFit(tree, areaW, areaH)) break;
+        const base = this._bspRemove(this._bspClone(tree), win);
+        if (!base || base.type === 'empty') continue;
+        this._bspTagGeometry(base, areaX, areaY, areaW, areaH, gap);
+        const order = this._bspLeaves(base).map((leaf, i) => [i, leaf._w * leaf._h])
+            .sort((a, b) => b[1] - a[1]);
+        for (const [i] of order) {
+            const cand = this._bspClone(base);
+            this._bspTagGeometry(cand, areaX, areaY, areaW, areaH, gap);
+            const placed = this._bspReplaceLeaf(cand, this._bspLeaves(cand)[i], win, ratio);
+            this._treeMinSizes(placed, gap);
+            if (_minsFit(placed, areaW, areaH)) {
+                tree = placed;
+                break;
+            }
+        }
+    }
+    return tree;
+}
+
 export function _parseMinSizeOverrides(entries) {
     const map = new Map();
     for (const entry of entries || []) {
@@ -288,7 +347,7 @@ export function _getWindowMinSize(win) {
     return { w: 0, h: 0 };
 }
 
-export function _treeMinSizes(node) {
+export function _treeMinSizes(node, gap = 0) {
     if (!node || node.type === 'empty') return { w: 0, h: 0 };
     if (node.type === 'leaf') {
         const min = node.window ? this._getWindowMinSize(node.window) : { w: 0, h: 0 };
@@ -296,8 +355,13 @@ export function _treeMinSizes(node) {
         node._minH = min.h;
         return min;
     }
-    const a = this._treeMinSizes(node.first);
-    const b = this._treeMinSizes(node.second);
+    const a = this._treeMinSizes(node.first, gap);
+    const b = this._treeMinSizes(node.second, gap);
+    // Two laid-out children are always separated by the inner gap.
+    const both = !!node.first && !!node.second &&
+        node.first.type !== 'empty' && node.second.type !== 'empty';
+    const gW = both && a.w + b.w > 0 ? gap : 0;
+    const gH = both && a.h + b.h > 0 ? gap : 0;
     // 'h' = children side by side (widths ADD, heights max); 'v' =
     // children stacked (heights ADD, widths max). The formulas were
     // INVERTED (2026-10-04 audit — the journal diag tree showed a
@@ -307,47 +371,60 @@ export function _treeMinSizes(node) {
     // the windows can take → landing-verify failures → bend/give-up
     // floats.
     if (node.direction === 'h') {
-        node._minW = a.w + b.w;
+        node._minW = a.w + b.w + gW;
         node._minH = Math.max(a.h, b.h);
     } else {
         node._minW = Math.max(a.w, b.w);
-        node._minH = a.h + b.h;
+        node._minH = a.h + b.h + gH;
     }
     return { w: node._minW, h: node._minH };
 }
 
 export function _clampTreeToMinSizes(node, areaW, areaH, gap) {
+    // Top-down, each split against its own span with _bspLayout's arithmetic:
+    // against the whole area, deep splits would never clamp.
     if (!node || node.type !== 'split') return;
-    this._clampTreeToMinSizes(node.first, areaW, areaH, gap);
-    this._clampTreeToMinSizes(node.second, areaW, areaH, gap);
-    if (node.direction === 'h') {
-        const minW1 = node.first?._minW || 0;
-        const minW2 = node.second?._minW || 0;
-        const axisSize = areaW - gap;
-        if (axisSize > 0) {
-            const minRatio = minW1 / axisSize;
-            const maxRatio = 1 - minW2 / axisSize;
-            if (maxRatio <= minRatio) {
-                const need = minW1 + minW2;
-                node.ratio = need > 0 ? minW1 / need : 0.5;
-            } else {
-                node.ratio = Math.max(minRatio, Math.min(maxRatio, node.ratio));
-            }
-        }
+    const firstEmpty = !node.first || node.first.type === 'empty';
+    const secondEmpty = !node.second || node.second.type === 'empty';
+    if (firstEmpty || secondEmpty) {
+        // _bspLayout hands the whole span to the surviving child.
+        if (!firstEmpty) this._clampTreeToMinSizes(node.first, areaW, areaH, gap);
+        if (!secondEmpty) this._clampTreeToMinSizes(node.second, areaW, areaH, gap);
+        return;
+    }
+    const isH = node.direction === 'h';
+    const axis = (isH ? areaW : areaH) - gap;
+    if (axis <= 0) return;
+    const min1 = (isH ? node.first._minW : node.first._minH) || 0;
+    const min2 = (isH ? node.second._minW : node.second._minH) || 0;
+    // The user's ratio lives on in userRatio while a clamp binds (minimums
+    // never change the split ratio, as in Hyprland). A bend holds only while
+    // the window that refused its slot is under this split.
+    if (node.bentBy && !this._bspFindLeaf(node, node.bentBy))
+        delete node.bentBy;
+    const base = node.bentBy ? node.ratio : node.userRatio ?? node.ratio;
+    let split = Math.floor(axis * base);
+    // Infeasible: share the shortfall in proportion to the minimums.
+    const want = min1 + min2 > axis
+        ? Math.round(axis * min1 / (min1 + min2))
+        : Math.max(min1, Math.min(axis - min2, split));
+    if (want !== split) {
+        // Clamp in whole pixels: min/axis as a ratio can floor 1px below
+        // the minimum. The +0.5 keeps floor(axis * ratio) === want.
+        if (node.userRatio === undefined) node.userRatio = base;
+        node.ratio = Math.min(0.999, Math.max(0.001, (want + 0.5) / axis));
+        split = Math.floor(axis * node.ratio);
     } else {
-        const minH1 = node.first?._minH || 0;
-        const minH2 = node.second?._minH || 0;
-        const axisSize = areaH - gap;
-        if (axisSize > 0) {
-            const minRatio = minH1 / axisSize;
-            const maxRatio = 1 - minH2 / axisSize;
-            if (maxRatio <= minRatio) {
-                const need = minH1 + minH2;
-                node.ratio = need > 0 ? minH1 / need : 0.5;
-            } else {
-                node.ratio = Math.max(minRatio, Math.min(maxRatio, node.ratio));
-            }
-        }
+        node.ratio = base;
+        if (!node.bentBy) delete node.userRatio;
+    }
+    const second = axis - split;
+    if (isH) {
+        this._clampTreeToMinSizes(node.first, split, areaH, gap);
+        this._clampTreeToMinSizes(node.second, second, areaH, gap);
+    } else {
+        this._clampTreeToMinSizes(node.first, areaW, split, gap);
+        this._clampTreeToMinSizes(node.second, areaW, second, gap);
     }
 }
 
@@ -386,7 +463,11 @@ export function _adjustForConstraints(node, parent, isFirst, x, y, w, h, gap, pa
                 parent.ratio = Math.max(0.05, Math.min(parent.ratio, 1 - f.height / axisSize));
             }
         }
-        return parent.ratio !== before;
+        if (parent.ratio === before) return false;
+        // _clampTreeToMinSizes restores the user's ratio once it leaves.
+        if (parent.userRatio === undefined) parent.userRatio = before;
+        parent.bentBy = node.window;
+        return true;
     }
     if (node.type !== 'split') return false;
     const isH = node.direction === 'h';
@@ -411,7 +492,8 @@ export function _dwindleShapeToString(node) {
     if (!node || node.type === 'empty') return 'e';
     if (node.type === 'leaf') return 'l';
     if (node.type !== 'split') return 'e';
-    const ratio = Number.isFinite(node.ratio) ? node.ratio : 0.5;
+    // The user's ratio, not a clamp of it, or the clamp outlives its window.
+    const ratio = Number.isFinite(node.userRatio ?? node.ratio) ? node.userRatio ?? node.ratio : 0.5;
     // Clamp before toFixed(4): a ratio ≥ 0.99995 serializes to "1.0000"
     // (and ≤ 0.00005 to "0.0000") which _dwindleShapeFromString REJECTS
     // (ratio must be strictly between 0 and 1) — the whole entry was
@@ -464,14 +546,16 @@ export function _reconcileTreeRatios(saved, live) {
     // mismatch means this branch's history diverged (different window
     // aspect / insert order) — stop descending there and keep the live
     // ratios. Never touches leaves. Returns true when anything changed.
+    // Both ends carry userRatio; the next clamp pass re-derives the clamp.
     if (!saved || !live) return false;
     if (saved.type !== 'split' || live.type !== 'split') return false;
     if (saved.direction !== live.direction) return false;
     let changed = false;
-    const r = Number(saved.ratio);
-    if (Number.isFinite(r) && r > 0.02 && r < 0.98 &&
-        Math.abs(live.ratio - r) > 0.0005) {
+    const r = Number(saved.userRatio ?? saved.ratio);
+    if (Number.isFinite(r) && r > 0.02 && r < 0.98 && !live.bentBy &&
+        Math.abs((live.userRatio ?? live.ratio) - r) > 0.0005) {
         live.ratio = r;
+        delete live.userRatio;
         changed = true;
     }
     changed = this._reconcileTreeRatios(saved.first, live.first) || changed;
@@ -553,6 +637,8 @@ export const bspMethods = {
     _bspInsert,
     _bspRemove,
     _bspCollectWindows,
+    _bspLeaves,
+    _bspClone,
     _bspLayout,
     _bspFindPath,
     _bspFindLeaf,
@@ -561,6 +647,7 @@ export const bspMethods = {
     _bspReplaceLeaf,
     _bspTagGeometry,
     _bspInsertForWorkspace,
+    _bspRelocateForMinSizes,
     _parseMinSizeOverrides,
     _unpackSizeHint,
     _windowSizeHint,

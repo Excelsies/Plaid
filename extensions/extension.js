@@ -343,6 +343,7 @@ export default class TilingWMExtension extends Extension {
         this._stackRatios = new Map();
         this._bspTrees = new Map();
         this._dwindleLeafSigs = new Map();
+        this._minFitSigs = new Map();
         this._lastFocusedPerWorkspace = new Map();
         this._savedRects = new Map();
         this._workspaceLayoutsSaveId = 0;
@@ -615,6 +616,7 @@ export default class TilingWMExtension extends Extension {
             // Fall back to a clean rebuild if anything went wrong.
             this._bspTrees = new Map();
             this._dwindleLeafSigs = new Map();
+            this._minFitSigs = new Map();
             this._workspaceOrders = new Map();
             this._windowWorkspaces = new Map();
             this._windowWSIndices = new Map();
@@ -825,6 +827,7 @@ export default class TilingWMExtension extends Extension {
         this._stackRatios = null;
         this._bspTrees = null;
         this._dwindleLeafSigs = null;
+        this._minFitSigs = null;
         this._lastRetileTimes = null;
         this._lastFocusedPerWorkspace = null;
         this._lastRealFocusedWindow = null;
@@ -1137,6 +1140,7 @@ export default class TilingWMExtension extends Extension {
                     // later fires against a dead workspace (2026-10-04
                     // audit).
                     this._dwindleLeafSigs?.delete(workspace);
+                    this._minFitSigs?.delete(workspace);
                     this._queuedAnimWorkspaces?.delete(workspace);
                     if (this._pendingRetileIds?.has(workspace)) {
                         try { GLib.source_remove(this._pendingRetileIds.get(workspace)); } catch (_e) {}
@@ -3443,6 +3447,27 @@ export default class TilingWMExtension extends Extension {
             this._bspTrees.set(workspace, tree);
         }
 
+        this._treeMinSizes(tree, gap);
+        // Relocation candidates: new windows, or all once the window set or a
+        // minimum changed (a burst's minimums arrive late). Resizes and drops
+        // never reshuffle tiles.
+        const fitSig = this._bspLeaves(tree)
+            .map(l => `${l.window?.get_id()}:${l._minW}x${l._minH}`).sort().join(',');
+        const refit = this._minFitSigs && this._minFitSigs.get(workspace) !== fitSig;
+        this._minFitSigs?.set(workspace, fitSig);
+        const candidates = tiledWindows
+            .filter(w => refit || this._newWindowSet?.has(w))
+            .sort((a, b) => b.get_stable_sequence() - a.get_stable_sequence());
+        if (candidates.length > 0) {
+            const relocated = this._bspRelocateForMinSizes(tree, candidates,
+                areaX, areaY, areaW, areaH, gap, this._settings.get_double('dwindle-ratio'));
+            if (relocated !== tree) {
+                this._debugLog(`retile: moved a window to a leaf that fits every minimum (ws=${this._wsIndex(workspace)})`);
+                tree = relocated;
+                this._bspTrees.set(workspace, tree);
+            }
+        }
+
         // Restore saved split ratios ONLY when the window set changed
         // (fresh session build, a window opened, or one closed). A plain
         // retile after a manual resize has the same leaf signature → no
@@ -3460,7 +3485,7 @@ export default class TilingWMExtension extends Extension {
             }
         }
 
-        this._treeMinSizes(tree);
+        this._treeMinSizes(tree, gap);
         this._clampTreeToMinSizes(tree, areaW, areaH, gap);
         this._bspLayout(tree, areaX, areaY, areaW, areaH, gap);
     }
@@ -6093,6 +6118,9 @@ export default class TilingWMExtension extends Extension {
                 const inFirst = this._bspFindPath(split.first, focused, []);
                 const signedDelta = inFirst ? delta : -delta;
                 split.ratio = Math.max(0.15, Math.min(0.85, split.ratio + signedDelta / axisSize));
+                // The user picked this ratio: no min-size clamp to undo.
+                delete split.userRatio;
+                delete split.bentBy;
                 return;
             }
         }
@@ -9214,6 +9242,16 @@ export default class TilingWMExtension extends Extension {
         }
 
         this._hideDropPreview();
+        // A split the mouse resize moved holds the user's new ratio.
+        if (wasTracking && this._isResizeGrab(grabOp)) {
+            for (const [node, before] of [[this._grabResizeNodeW, this._grabInitialRatioW],
+                [this._grabResizeNodeH, this._grabInitialRatioH]]) {
+                if (node && node.ratio !== before) {
+                    delete node.userRatio;
+                    delete node.bentBy;
+                }
+            }
+        }
         this._stopLiveResizeLoop();
         this._disconnectGrabBoundaryHooks();
         this._grabOp = null;

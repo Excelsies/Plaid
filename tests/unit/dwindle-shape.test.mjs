@@ -88,3 +88,29 @@ test('_reconcileTreeRatios: ignores ratios outside the sane 0.02..0.98 band', ()
   assert.equal(self._reconcileTreeRatios(saved, live), false);
   assert.equal(live.ratio, 0.5);
 });
+
+test('shape: saves the user ratio, not a min-size clamp of it', () => {
+  const self = makeSelf();
+  const tree = split('h', 0.3, leaf(null), leaf(null));
+  tree.userRatio = 0.75;
+  assert.equal(shapeToString(self, tree), 'h0.7500(l,l)');
+});
+
+test('_reconcileTreeRatios: restores the user ratio over a clamp and drops the clamp record', () => {
+  const self = makeSelf();
+  const saved = split('h', 0.8, leaf(null), leaf(null));
+  const live = split('h', 0.4, leaf(null), leaf(null));
+  live.userRatio = 0.5;
+  assert.equal(self._reconcileTreeRatios(saved, live), true);
+  assert.equal(live.ratio, 0.8);
+  assert.equal(live.userRatio, undefined);
+});
+
+test('_reconcileTreeRatios: a split bent for a window keeps its bend', () => {
+  const self = makeSelf();
+  const saved = split('h', 0.8, leaf(null), leaf(null));
+  const live = split('h', 0.4, leaf(null), leaf(null));
+  live.bentBy = {};
+  assert.equal(self._reconcileTreeRatios(saved, live), false);
+  assert.equal(live.ratio, 0.4);
+});
