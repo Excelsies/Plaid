@@ -11,6 +11,18 @@ test('_bspInsert: empty/null tree becomes a single leaf', () => {
   assert.equal(self._bspInsert(empty(), a, 0, 0, 200, 100, 0).window, a);
 });
 
+test('_adjustForConstraints: bends only for the given window', () => {
+  const self = makeSelf();
+  const a = fakeWin({ frame: { x: 0, y: 0, width: 700, height: 500 } });
+  const b = fakeWin({ frame: { x: 500, y: 0, width: 500, height: 500 } });
+  const tree = split('h', 0.5, leaf(a), leaf(b));
+  self._bspTagGeometry(tree, 0, 0, 1000, 500, 0);
+  assert.equal(self._adjustForConstraints(tree, null, true, 0, 0, 1000, 500, 0, 0, b), false);
+  assert.equal(tree.ratio, 0.5);
+  assert.equal(self._adjustForConstraints(tree, null, true, 0, 0, 1000, 500, 0, 0, a), true);
+  assert.equal(tree.ratio, 0.7);
+});
+
 test('_bspInsert: into a leaf splits on the longer axis', () => {
   const self = makeSelf({ 'dwindle-ratio': 0.5 });
   const a = W('a'), b = W('b');

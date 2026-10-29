@@ -28,6 +28,11 @@ const LAYOUT_NAMES = {
     'floating': 'Floating',
 };
 
+// Landing verify: how long a client gets to commit its slot (an IDE under
+// XWayland can block over a second) and how often a miss is re-sent.
+const LANDING_SETTLE_MS = 2000;
+const LANDING_RETRIES = 3;
+
 const MASK_EFFECT_NAME = 'plaid-corner-mask';
 const BLUR_EFFECT_NAME = 'plaid-window-blur';
 
@@ -366,8 +371,7 @@ export default class TilingWMExtension extends Extension {
         this._queuedAnimWorkspaces = new Set();
         this._animStartedAt = 0;
         this._landingRetries = new Map();
-        this._mismatchFrames = new Map();
-        this._landingGivenUp = new Set();
+        this._landingWaits = new Set();
         this._pendingWarp = new Set();
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = new Map();
@@ -842,8 +846,9 @@ export default class TilingWMExtension extends Extension {
         this._queuedAnimWorkspaces = null;
         this._animStartedAt = 0;
         this._landingRetries = null;
-        this._mismatchFrames = null;
-        this._landingGivenUp = null;
+        for (const win of [...(this._landingWaits || [])])
+            this._endLandingWait(win);
+        this._landingWaits = null;
         this._pendingWarp = null;
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = null;
@@ -1492,8 +1497,8 @@ export default class TilingWMExtension extends Extension {
 
     _isFixedSizeWindow(win) {
         // Non-resizable windows: Mutter refuses atomic move_resize_frame
-        // placements, so tiling them only buys a ~2s retry dance before the
-        // give-up float. A min===max hint is the cheap, reliable signal —
+        // placements, so tiling them only buys an ~8s retry dance ending
+        // off-slot. A min===max hint is the cheap, reliable signal —
         // float such windows up front instead.
         const [mw, mh] = win.get_min_size();
         const [xw, xh] = win.get_max_size();
@@ -1504,6 +1509,56 @@ export default class TilingWMExtension extends Extension {
         if (!this._workspaceOrders.has(workspace))
             this._workspaceOrders.set(workspace, []);
         return this._workspaceOrders.get(workspace);
+    }
+
+    // Float on insert only: a window whose MAXIMUM size is below its slot can
+    // never fill it. A tiled window is never floated later for missing its
+    // slot.
+    _maxSizeBelowSlot(win, slot) {
+        const max = this._windowSizeHint(win, 'max');
+        return !!max && ((max.w > 0 && max.w + 2 < slot.w) || (max.h > 0 && max.h + 2 < slot.h));
+    }
+
+    _floatAtMap(win, slot) {
+        const max = this._windowSizeHint(win, 'max');
+        log(`[plaid] float: ${win.get_wm_class_instance() || '?'} max size ${max?.w}x${max?.h} is below its slot ${slot.w}x${slot.h} — floated at map`);
+        this._toggleFloatWindows.add(win);
+        const ws = win.get_workspace();
+        if (ws) {
+            const tree = this._bspGetTree(ws);
+            if (tree && this._bspFindLeaf(tree, win))
+                this._bspTrees.set(ws, this._bspRemove(tree, win));
+            this._retileWorkspace(ws);
+        }
+        this._releaseSpawnHide(win);
+    }
+
+    // Undo the spawn hide of a new window the tiler will not place (floating).
+    _releaseSpawnHide(win) {
+        this._newWindowSet?.delete(win);
+        if (this._pendingWarp) this._pendingWarp.delete(win);
+        if (win._plaidInvisibleTimer) {
+            try { GLib.source_remove(win._plaidInvisibleTimer); } catch (_e) {}
+            win._plaidInvisibleTimer = 0;
+        }
+        this._showSpawnHidden(win);
+        this._scheduleBorders();
+    }
+
+    // The offscreen mask's opacity uniform multiplies its whole output.
+    _showSpawnHidden(win) {
+        try {
+            const a = win.get_compositor_private();
+            if (a) {
+                a.visible = true;
+                a.set_opacity(255);
+            }
+        } catch (_e) {}
+        try {
+            const effect = this._windowMasks && this._windowMasks.get(win);
+            if (effect && effect.setOpacityUniform)
+                effect.setOpacityUniform(1);
+        } catch (_e) {}
     }
 
     _getWorkspaceLayout(workspace) {
@@ -1878,8 +1933,7 @@ export default class TilingWMExtension extends Extension {
         // Prune the landing/choreography maps so dead windows (and the
         // actors they hold) don't linger until disable.
         if (this._landingRetries) this._landingRetries.delete(win);
-        if (this._landingGivenUp) this._landingGivenUp.delete(win);
-        if (this._mismatchFrames) this._mismatchFrames.delete(win);
+        this._endLandingWait(win);
         if (this._slotReassertTimes) this._slotReassertTimes.delete(win);
         if (this._pendingWarp) this._pendingWarp.delete(win);
         if (this._newWindowSet) this._newWindowSet.delete(win);
@@ -2384,12 +2438,9 @@ export default class TilingWMExtension extends Extension {
             if (this._verifyAnimationLanding(s, 'new', true)) {
                 this._debugLog(`place: attempt ${tries} verified — fading at target`);
                 fadeIn();
-            } else if (this._landingGivenUp && this._landingGivenUp.has(s.win)) {
-                this._debugLog('place: given-up set — fading');
-                fadeIn();
             } else {
-                // Bounded: the pure landing verify never populates the
-                // given-up set, so an endless retry here would wedge the whole
+                // Bounded: the pure landing verify never gives up on its
+                // own, so an endless retry here would wedge the whole
                 // animation pipeline (_animating stays true, later retiles
                 // queue forever, new windows sit hidden until the reveal
                 // timer pops them at the center). Give up after ~1.5s and
@@ -2464,7 +2515,6 @@ export default class TilingWMExtension extends Extension {
         let off = 0;
         for (const win of tiled) {
             if (win.minimized || win.is_fullscreen()) continue;
-            if (this._landingGivenUp && this._landingGivenUp.has(win)) continue;
             const slot = this._windowSlotRect(win, ws, layout, workArea, gap);
             if (!slot) continue;
             const f = win.get_frame_rect();
@@ -2494,18 +2544,18 @@ export default class TilingWMExtension extends Extension {
         rec.count++;
         if (rec.count > 4) {
             this._debugLog(`pinned adjust: ws=${idx} gave up after ${rec.count} adjustments`);
-            return;
+            return false;
         }
         try {
-            if (!win || !ws) return;
+            if (!win || !ws) return false;
             const layout = this._getWorkspaceLayout(ws);
-            if (layout === 'floating') return;
+            if (layout === 'floating') return false;
             const gap = this._settings.get_int('inside-gap');
             const monitor = global.display.get_primary_monitor();
             const workArea = ws.get_work_area_for_monitor(monitor);
-            if (!workArea || workArea.width === 0) return;
+            if (!workArea || workArea.width === 0) return false;
             const area = this._outsideArea(workArea);
-            if (!area) return;
+            if (!area) return false;
             const areaW = area.w;
             const areaH = area.h;
             const f = win.get_frame_rect();
@@ -2514,11 +2564,11 @@ export default class TilingWMExtension extends Extension {
             let changed = false;
             if (layout === 'dwindle') {
                 const tree = this._bspGetTree(ws);
-                if (!tree) return;
-                changed = this._adjustForConstraints(tree, null, true, area.x, area.y, areaW, areaH, gap, 0);
+                if (!tree) return false;
+                changed = this._adjustForConstraints(tree, null, true, area.x, area.y, areaW, areaH, gap, 0, win);
             } else if (layout === 'master-stack' || layout === 'centered-master-stack') {
                 const tiled = this._getWindowsForWorkspace(ws).filter(w => !this._isFloating(w));
-                if (tiled.length < 2) return;
+                if (tiled.length < 2) return false;
                 if (win === tiled[0]) {
                     const basis = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
                     if (basis > 0) {
@@ -2550,21 +2600,29 @@ export default class TilingWMExtension extends Extension {
                     }
                 }
             } else {
-                return;
+                return false;
             }
             // Report and persist ONLY on a real ratio change: the old
             // unconditional log claimed "bent" even when every clamp was a
             // no-op (it misled the 2026-10-02 triage).
-            if (!changed) return;
+            if (!changed) return false;
             log(`[plaid] constraint: pinned frame ${Math.round(f.width)}x${Math.round(f.height)} bent the split ratio (${minSrc})`);
             this._scheduleSaveLayouts();
+            return true;
         } catch (e) {
             // The whole bend used to be swallowed silently — any exception
             // (e.g. a finalized window's get_frame_rect) killed the min-size
             // bend with zero trace while the window sat off-slot
             // (2026-10-04 audit).
             log(`[plaid] pinned adjust failed: ${e.message}`);
+            return false;
         }
+    }
+
+    _frameAtTarget(s, tol) {
+        const f = s.win.get_frame_rect();
+        return Math.abs(f.x - s.targetX) <= tol && Math.abs(f.y - s.targetY) <= tol &&
+            Math.abs(f.width - s.targetW) <= tol && Math.abs(f.height - s.targetH) <= tol;
     }
 
     _verifyAnimationLanding(s, kind, pure = false) {
@@ -2576,125 +2634,142 @@ export default class TilingWMExtension extends Extension {
                     log(`[plaid] anim: landing skipped (window gone) ${kind} id=${win ? win.get_id() : '?'}`);
                 return false;
             }
-            if (this._landingGivenUp && this._landingGivenUp.has(win)) return false;
-            const f = win.get_frame_rect();
+            if (!pure) {
+                this._awaitLanding(s, kind);
+                return false;
+            }
             // The deferred new-window placement must land PRECISELY (pure
             // mode): the 16px tolerance silently accepted off-landings like
             // mutter's shadow-clamped frame (8px x-offset) and never
             // re-requested, leaving the window at wrong screen gaps. The
             // animated tick path keeps 16px — sliding frames.
-            const tol = kind === 'new' && pure ? 4 : 16;
-            if (Math.abs(f.x - s.targetX) > tol || Math.abs(f.y - s.targetY) > tol ||
-                Math.abs(f.width - s.targetW) > tol || Math.abs(f.height - s.targetH) > tol) {
-                if (!pure) {
-                    this._debugLog(`anim: landing mismatch (${kind}) ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized} frame=(${f.x},${f.y},${f.width},${f.height}) target=(${s.targetX},${s.targetY},${s.targetW},${s.targetH})`);
-                    try {
-                        const mws = win.get_workspace();
-                        if (mws) {
-                            const tree = this._bspGetTree(mws);
-                            const min = this._getWindowMinSize(win);
-                            if (tree)
-                                this._debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
-                        }
-                    } catch (_e) {}
-                    const prev = this._mismatchFrames?.get(win);
-                    this._mismatchFrames?.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
-                    const refusesShrink = f.width > s.targetW + 16 || f.height > s.targetH + 16;
-                    if (prev && refusesShrink &&
-                        Math.abs(f.x - prev.x) <= 1 && Math.abs(f.y - prev.y) <= 1 &&
-                        Math.abs(f.width - prev.w) <= 1 && Math.abs(f.height - prev.h) <= 1)
-                        this._adjustPinnedTree(win, win.get_workspace());
-                    this._retryLanding(win);
-                }
-                return false;
-            } else {
-                if (this._landingRetries) this._landingRetries.delete(win);
-                if (this._landingGivenUp) this._landingGivenUp.delete(win);
-                if (this._mismatchFrames) this._mismatchFrames.delete(win);
-                if (this._pendingWarp && this._pendingWarp.has(win)) {
-                    this._pendingWarp.delete(win);
-                    this._moveCursorToWindow(win);
-                    // The window has landed — cancel the 2.5s backstop reveal
-                    // (it must not force-reveal a window that later moves to
-                    // an inactive workspace) and re-attach flair that the
-                    // pending-warp state skipped.
-                    //
-                    // The settle poll is deliberately NOT cancelled here:
-                    // this function also runs on the 'tiled' verify path of
-                    // every animated retile, where killing an armed settle
-                    // poll would silently skip the client-resize correction
-                    // for give-up windows. The poll self-expires at 6s.
-                    if (win._plaidInvisibleTimer) {
-                        try { GLib.source_remove(win._plaidInvisibleTimer); } catch (_e) {}
-                        win._plaidInvisibleTimer = 0;
-                    }
-                    this._scheduleBorders();
-                    this._updateBorders();
-                }
-                return true;
-            }
+            if (!this._frameAtTarget(s, kind === 'new' ? 4 : 16)) return false;
+            this._landingSucceeded(win);
+            return true;
         } catch (_e) {
             return false;
         }
     }
 
-    _retryLanding(win) {
-        if (!this._landingRetries || !this._landingGivenUp || this._destroyed || !win) return;
-        if (!win.get_compositor_private()) {
-            log(`[plaid] anim: landing retry skipped (window gone) id=${win.get_id()}`);
-            return;
-        }
-        const n = (this._landingRetries.get(win) || 0) + 1;
-        if (n > 3 || this._isFixedSizeWindow(win)) {
-            this._landingRetries.delete(win);
-            this._landingGivenUp.add(win);
-            if (this._mismatchFrames) this._mismatchFrames.delete(win);
-            try { this._toggleFloatWindows.add(win); } catch (_e) {}
-            // The window is floating now — clear the pending-warp state so a
-            // masked window is never left invisible: _landingGivenUp makes
-            // every future _verifyAnimationLanding return false, so the
-            // success branch that clears _pendingWarp can never run again,
-            // and the mask uniform stays at 0 (the whole output multiplied
-            // by it — no content, no border) until a title/wm-class notify
-            // or close. Mirror the backstop-reveal block.
-            if (this._pendingWarp) this._pendingWarp.delete(win);
-            try {
-                const a = win.get_compositor_private();
-                if (a) {
-                    a.visible = true;
-                    a.set_opacity(255);
-                }
-            } catch (_e) {}
-            try {
-                const effect = this._windowMasks && this._windowMasks.get(win);
-                if (effect && effect.setOpacityUniform)
-                    effect.setOpacityUniform(1);
-            } catch (_e) {}
-            this._scheduleBorders();
-            const ws = win.get_workspace();
-            const list = ws
-                ? ws.list_windows().map(w => `${w.get_id()}:${w.get_wm_class_instance() || '?'}:min=${w.minimized}:${Math.round(w.get_frame_rect().width)}x${Math.round(w.get_frame_rect().height)}`).join(' | ')
-                : 'no ws';
-            log(`[plaid] anim: landing failed after retries for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized} — floated (tiled set: ${list})`);
-            if (ws) this._retileWorkspace(ws);
-            return;
-        }
-        this._landingRetries.set(win, n);
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
-            if (this._destroyed) return GLib.SOURCE_REMOVE;
-            if (this._landingGivenUp && this._landingGivenUp.has(win)) return GLib.SOURCE_REMOVE;
-            // Window-liveness: _removeWindow prunes the given-up set on
-            // close, so that guard no longer covers a window closed within
-            // this 200ms window — touching a finalized Meta.Window here
-            // throws inside the source callback.
-            if (!win.get_compositor_private()) return GLib.SOURCE_REMOVE;
-            const ws = win.get_workspace();
-            if (ws) {
-                this._debugLog(`anim: landing retry ${n} for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized}`);
-                this._retileWorkspace(ws);
+    _landingSucceeded(win) {
+        this._landingRetries?.delete(win);
+        if (this._pendingWarp && this._pendingWarp.has(win)) {
+            this._pendingWarp.delete(win);
+            this._moveCursorToWindow(win);
+            // The window has landed — cancel the 2.5s backstop reveal
+            // (it must not force-reveal a window that later moves to
+            // an inactive workspace) and re-attach flair that the
+            // pending-warp state skipped.
+            //
+            // The settle poll is deliberately NOT cancelled here:
+            // this function also runs on the 'tiled' verify path of
+            // every animated retile, where killing an armed settle
+            // poll would silently skip the client-resize correction
+            // for give-up windows. The poll self-expires at 6s.
+            if (win._plaidInvisibleTimer) {
+                try { GLib.source_remove(win._plaidInvisibleTimer); } catch (_e) {}
+                win._plaidInvisibleTimer = 0;
             }
+            this._scheduleBorders();
+            this._updateBorders();
+        }
+    }
+
+    // Judged once the client has committed (a Wayland frame changes only on
+    // commit); re-checked on each commit until the settle deadline.
+    _awaitLanding(s, kind) {
+        const win = s.win;
+        this._endLandingWait(win);
+        const key = `${s.targetX},${s.targetY},${s.targetW},${s.targetH}`;
+        if (win._plaidLandKey !== key) {
+            // A new slot gets a fresh retry budget.
+            win._plaidLandKey = key;
+            this._landingRetries?.delete(win);
+        }
+        if (this._frameAtTarget(s, 16)) {
+            this._landingSucceeded(win);
+            return;
+        }
+        const wait = { ids: [], timer: 0, moved: false };
+        win._plaidLandWait = wait;
+        this._landingWaits?.add(win);
+        // Same size, elsewhere (mutter's centred map-time placement): move it
+        // once now, as no commit will re-check it. Only at the exact size, or
+        // the move undoes an uncommitted resize.
+        const moveIfOnlyPlaced = () => {
+            const f = win.get_frame_rect();
+            if (wait.moved || Math.abs(f.width - s.targetW) > 2 || Math.abs(f.height - s.targetH) > 2) return;
+            wait.moved = true;
+            try { win.move_frame(true, s.targetX, s.targetY); } catch (_e) {}
+        };
+        const onCommit = () => {
+            if (win._plaidLandWait !== wait) return;
+            if (!this._frameAtTarget(s, 16)) {
+                moveIfOnlyPlaced();
+                return;
+            }
+            this._endLandingWait(win);
+            this._landingSucceeded(win);
+        };
+        try {
+            wait.ids.push(win.connect('size-changed', onCommit));
+            wait.ids.push(win.connect('position-changed', onCommit));
+        } catch (_e) {}
+        moveIfOnlyPlaced();
+        if (win._plaidLandWait !== wait) return;
+        wait.timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, LANDING_SETTLE_MS, () => {
+            wait.timer = 0;
+            if (win._plaidLandWait !== wait) return GLib.SOURCE_REMOVE;
+            this._endLandingWait(win);
+            // A grab owns the layout now; its end retiles and re-verifies.
+            if (this._destroyed || this._grabOp || !win.get_compositor_private() ||
+                !this._windowWorkspaces?.has(win))
+                return GLib.SOURCE_REMOVE;
+            if (this._frameAtTarget(s, 16))
+                this._landingSucceeded(win);
+            else
+                this._landingMissed(s, kind);
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    _endLandingWait(win) {
+        const wait = win?._plaidLandWait;
+        if (!wait) return;
+        win._plaidLandWait = null;
+        this._landingWaits?.delete(win);
+        for (const id of wait.ids) {
+            try { win.disconnect(id); } catch (_e) {}
+        }
+        if (wait.timer) GLib.source_remove(wait.timer);
+    }
+
+    // Never floated: a frame stuck larger than the slot (an unadvertised
+    // minimum) bends the split, anything else gets its configure re-sent until
+    // LANDING_RETRIES.
+    _landingMissed(s, kind) {
+        const win = s.win;
+        // A state change, not a missed slot.
+        if (win.is_fullscreen() || win.is_maximized() || win.minimized) return;
+        const f = win.get_frame_rect();
+        const cls = win.get_wm_class_instance() || '?';
+        this._debugLog(`anim: landing mismatch (${kind}) ${cls} id=${win.get_id()} frame=(${f.x},${f.y},${f.width},${f.height}) target=(${s.targetX},${s.targetY},${s.targetW},${s.targetH})`);
+        const n = (this._landingRetries?.get(win) || 0) + 1;
+        this._landingRetries?.set(win, n);
+        if (n > LANDING_RETRIES) {
+            if (n === LANDING_RETRIES + 1)
+                log(`[plaid] anim: landing accepted for ${cls} id=${win.get_id()} — the client keeps ${f.width}x${f.height} (slot ${s.targetW}x${s.targetH})`);
+            return;
+        }
+        const ws = win.get_workspace();
+        const refusesShrink = f.width > s.targetW + 16 || f.height > s.targetH + 16;
+        if (refusesShrink && ws && this._adjustPinnedTree(win, ws)) {
+            this._retileWorkspace(ws);
+            return;
+        }
+        this._debugLog(`anim: landing retry ${n} for ${cls} id=${win.get_id()}`);
+        try { win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); } catch (_e) {}
+        this._awaitLanding(s, kind);
     }
 
     _animRetile(workspace, tiledWindows) {
@@ -2766,15 +2841,22 @@ export default class TilingWMExtension extends Extension {
         const duration = animTime * 1000;
 
         const states = [];
+        const floatAtMap = [];
         for (const [win, target] of this._animTargets) {
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
             const frame = win.get_frame_rect();
             const actor = win.get_compositor_private();
             const isNew = this._newWindowSet.has(win);
+            if (isNew && this._maxSizeBelowSlot(win, target)) {
+                floatAtMap.push([win, target]);
+                continue;
+            }
             this._debugLog(`anim: start ws=${this._wsIndex(workspace)} win=${win.get_wm_class_instance() || '?'} new=${isNew} target=(${Math.round(target.x)},${Math.round(target.y)},${Math.round(target.w)},${Math.round(target.h)})`);
             states.push({ win, actor, isNew, startX: frame.x, startY: frame.y, startW: frame.width, startH: frame.height, targetX: target.x, targetY: target.y, targetW: target.w, targetH: target.h });
         }
         this._animTargets = null;
+        for (const [win, target] of floatAtMap)
+            this._floatAtMap(win, target);
 
         let remaining = states.length;
         if (remaining === 0) { this._animating = false; return; }
@@ -9599,6 +9681,9 @@ export default class TilingWMExtension extends Extension {
         if (!win || win.is_fullscreen() || win.minimized) return;
         if (this._isFloating(win)) return;
         if (!this._windowWorkspaces.has(win)) return;
+        // A landing verify owns the correction: re-asserting would turn each
+        // stale ack of a slow client into another retile.
+        if (win._plaidLandWait) return;
         // Timestamp gate: size-changed fires per move/resize step and the
         // full slot computation is O(n²) per retile — skip re-checks for the
         // same window within 250ms (the retile verify covers the rest).
