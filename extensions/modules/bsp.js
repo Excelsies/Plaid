@@ -428,10 +428,13 @@ export function _clampTreeToMinSizes(node, areaW, areaH, gap) {
     }
 }
 
-export function _adjustForConstraints(node, parent, isFirst, x, y, w, h, gap, parentAxis) {
+export function _adjustForConstraints(node, parent, isFirst, x, y, w, h, gap, parentAxis, onlyWin = null) {
     if (!node) return false;
     if (node.type === 'leaf') {
         if (!parent || !node.window) return false;
+        // Bend only for the verified window: other frames may be
+        // mid-transition.
+        if (onlyWin && node.window !== onlyWin) return false;
         const f = node.window.get_frame_rect();
         if (f.width === 0 || f.height === 0) return false;
         // parentAxis is the PARENT split's usable span (its w/h minus the
@@ -477,11 +480,11 @@ export function _adjustForConstraints(node, parent, isFirst, x, y, w, h, gap, pa
     const childAxis = axisSize - gap;
     let changed = false;
     if (isH) {
-        changed = this._adjustForConstraints(node.first, node, true, x, y, split, h, gap, childAxis) || changed;
-        changed = this._adjustForConstraints(node.second, node, false, x + split + gap, y, secondSize, h, gap, childAxis) || changed;
+        changed = this._adjustForConstraints(node.first, node, true, x, y, split, h, gap, childAxis, onlyWin) || changed;
+        changed = this._adjustForConstraints(node.second, node, false, x + split + gap, y, secondSize, h, gap, childAxis, onlyWin) || changed;
     } else {
-        changed = this._adjustForConstraints(node.first, node, true, x, y, w, split, gap, childAxis) || changed;
-        changed = this._adjustForConstraints(node.second, node, false, x, y + split + gap, w, secondSize, gap, childAxis) || changed;
+        changed = this._adjustForConstraints(node.first, node, true, x, y, w, split, gap, childAxis, onlyWin) || changed;
+        changed = this._adjustForConstraints(node.second, node, false, x, y + split + gap, w, secondSize, gap, childAxis, onlyWin) || changed;
     }
     return changed;
 }
