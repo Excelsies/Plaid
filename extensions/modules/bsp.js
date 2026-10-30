@@ -17,12 +17,19 @@ export function _bspMakeSplit(dir, ratio, first, second) {
     return { type: 'split', direction: dir, ratio, first, second };
 }
 
-export function _bspInsert(node, win, x, y, w, h, gap) {
+// Split ratio for new windows: spiral halves the target (as Hyprland), dwindle
+// keeps dwindle-ratio.
+export function _bspSplitRatio(ws) {
+    if (ws && this._getWorkspaceLayout(ws) === 'spiral') return 0.5;
+    return this._settings.get_double('dwindle-ratio');
+}
+
+export function _bspInsert(node, win, x, y, w, h, gap, ratio = null) {
     if (!node) return this._bspMakeLeaf(win);
     if (node.type === 'empty') return this._bspMakeLeaf(win);
     if (node.type === 'leaf') {
         const dir = w >= h ? 'h' : 'v';
-        const ratio = this._settings.get_double('dwindle-ratio');
+        if (ratio === null) ratio = this._settings.get_double('dwindle-ratio');
         return this._bspMakeSplit(dir, ratio, node, this._bspMakeLeaf(win));
     }
     const isH = node.direction === 'h';
@@ -30,9 +37,9 @@ export function _bspInsert(node, win, x, y, w, h, gap) {
     const split = Math.floor((axisSize - gap) * node.ratio);
     const secondSize = axisSize - split - gap;
     if (isH)
-        node.second = this._bspInsert(node.second, win, x + split + gap, y, secondSize, h, gap);
+        node.second = this._bspInsert(node.second, win, x + split + gap, y, secondSize, h, gap, ratio);
     else
-        node.second = this._bspInsert(node.second, win, x, y + split + gap, w, secondSize, gap);
+        node.second = this._bspInsert(node.second, win, x, y + split + gap, w, secondSize, gap, ratio);
     return node;
 }
 
@@ -197,6 +204,55 @@ export function _bspReplaceLeaf(node, targetLeaf, newWin, preferredRatio = null)
     return node;
 }
 
+// Split targetLeaf with newWin on an explicit side (drag-drop zones):
+// dir 'h' = side by side, 'v' = stacked; newFirst puts newWin left/top.
+export function _bspInsertAtLeaf(node, targetLeaf, newWin, dir, newFirst, ratio) {
+    if (!node || node.type === 'empty') return node;
+    if (node.type === 'leaf') {
+        if (node !== targetLeaf) return node;
+        const leaf = this._bspMakeLeaf(newWin);
+        return newFirst
+            ? this._bspMakeSplit(dir, ratio, leaf, node)
+            : this._bspMakeSplit(dir, ratio, node, leaf);
+    }
+    node.first = this._bspInsertAtLeaf(node.first, targetLeaf, newWin, dir, newFirst, ratio);
+    node.second = this._bspInsertAtLeaf(node.second, targetLeaf, newWin, dir, newFirst, ratio);
+    return node;
+}
+
+// Spiral splits the focused tiled window (else the leaf under or closest to
+// the pointer) along its longer side; the new window takes the half the
+// pointer is in. The warp to each revealed window leaves the pointer on the
+// slot's integer centre, the second half: the classic spiral when unsteered.
+// `tree` must be tagged.
+export function _spiralInsertNew(ws, tree, win, area) {
+    const [px, py] = global.get_pointer();
+    let target = null;
+    const focus = global.display.focus_window;
+    if (focus && focus !== win && focus.get_workspace() === ws && !this._isFloating(focus))
+        target = this._bspFindLeaf(tree, focus);
+    if (!target && px >= area.x && px < area.x + area.w && py >= area.y && py < area.y + area.h)
+        target = this._bspFindLeafAtPoint(tree, area.x, area.y, area.w, area.h, px, py,
+            this._settings.get_int('inside-gap'));
+    if (!target || target.type !== 'leaf') {
+        target = null;
+        let best = Infinity;
+        for (const leaf of this._bspLeaves(tree)) {
+            const d = this._pointRectDistSq(leaf._x, leaf._y, leaf._w, leaf._h, px, py);
+            if (d < best) {
+                best = d;
+                target = leaf;
+            }
+        }
+    }
+    if (!target) return this._bspMakeLeaf(win);
+    const dir = target._w >= target._h ? 'h' : 'v';
+    const newFirst = dir === 'h'
+        ? px < target._x + Math.floor(target._w / 2)
+        : py < target._y + Math.floor(target._h / 2);
+    return this._bspInsertAtLeaf(tree, target, win, dir, newFirst, this._bspSplitRatio(ws));
+}
+
 export function _bspTagGeometry(node, x, y, w, h, gap) {
     if (!node) return;
     node._x = x;
@@ -236,7 +292,10 @@ export function _bspInsertForWorkspace(ws, win) {
     const areaW = area.w;
     const areaH = area.h;
 
-    if (tree) {
+    if (tree && this._getWorkspaceLayout(ws) === 'spiral') {
+        this._bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
+        tree = this._spiralInsertNew(ws, tree, win, area);
+    } else if (tree) {
         const [px, py] = global.get_pointer();
         this._bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
         // Leaf-pick only when the pointer is INSIDE the tiling area —
@@ -252,12 +311,12 @@ export function _bspInsertForWorkspace(ws, win) {
             ? this._bspFindLeafAtPoint(tree, areaX, areaY, areaW, areaH, px, py, gap)
             : null;
         if (target) {
-            tree = this._bspReplaceLeaf(tree, target, win);
+            tree = this._bspReplaceLeaf(tree, target, win, this._bspSplitRatio(ws));
         } else {
-            tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
+            tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, this._bspSplitRatio(ws));
         }
     } else {
-        tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
+        tree = this._bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, this._bspSplitRatio(ws));
     }
     this._bspTrees.set(ws, tree);
     // Tag the new leaf now (same min clamp as the retile) so the pre-map
@@ -588,6 +647,7 @@ export const bspMethods = {
     _bspGetTree,
     _bspMakeLeaf,
     _bspMakeSplit,
+    _bspSplitRatio,
     _bspInsert,
     _bspRemove,
     _bspCollectWindows,
@@ -599,6 +659,8 @@ export const bspMethods = {
     _bspSwapWindows,
     _bspFindLeafAtPoint,
     _bspReplaceLeaf,
+    _bspInsertAtLeaf,
+    _spiralInsertNew,
     _bspTagGeometry,
     _bspInsertForWorkspace,
     _parseMinSizeOverrides,

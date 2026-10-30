@@ -62,6 +62,16 @@ export function _pointRectDistSq(x, y, w, h, px, py) {
     return dx * dx + dy * dy;
 }
 
+// The side of `r` a drop at (px, py) lands on: the diagonals cut it into four
+// triangles and the one under the point wins.
+export function _dropZoneSide(r, px, py) {
+    const dx = px - (r.x + r.w / 2);
+    const dy = py - (r.y + r.h / 2);
+    if (Math.abs(dy) * r.w < Math.abs(dx) * r.h)
+        return dx > 0 ? 'right' : 'left';
+    return dy > 0 ? 'bottom' : 'top';
+}
+
 export const geometryMethods = {
     _isValidWorkArea,
     _outsideArea,
@@ -69,4 +79,5 @@ export const geometryMethods = {
     _minClampSlot,
     _bgAppRealToDisplay,
     _pointRectDistSq,
+    _dropZoneSide,
 };

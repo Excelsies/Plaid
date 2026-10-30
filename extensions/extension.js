@@ -23,6 +23,7 @@ import { borderMathMethods } from './modules/border-math.js';
 
 const LAYOUT_NAMES = {
     'dwindle': 'Dwindle',
+    'spiral': 'Spiral',
     'master-stack': 'Master-stack',
     'centered-master-stack': 'Centered Master-stack',
     'floating': 'Floating',
@@ -39,14 +40,24 @@ const BLUR_EFFECT_NAME = 'plaid-window-blur';
 // A new window stuck this long while placement fails is revealed where it is.
 const NEW_WINDOW_FROZEN_MS = 1000;
 
-// Transform animations (the live-resize hand-off) at slow_down_factor 1,
-// after Hyprland. HOLD: how long a stale buffer stays stretched awaiting the
-// client's commit.
+// Transform animations (spiral) at slow_down_factor 1, after Hyprland. HOLD:
+// how long a stale buffer stays stretched awaiting the client's commit.
 const TRANSFORM_ANIM_MS = 380;
+const POPIN_SCALE = 0.87;
+const POPIN_FADE_MS = 170;
 const TRANSFORM_HOLD_MS = 1500;
+
+// Spiral drag: the dragged tile shrinks so the windows under it stay visible.
+const SPIRAL_DRAG_SCALE = 0.85;
+const SPIRAL_DRAG_SHRINK_MS = 150;
 
 const DROP_PREVIEW_FADE_MS = 120;
 const DROP_PREVIEW_GLIDE_MS = 80;
+
+// Spiral drag home: after the pointer first leaves the old slot only its
+// central CORE share counts; the hysteresis stops re-flows on boundary wobble.
+const SPIRAL_HOME_CORE = 0.4;
+const SPIRAL_HOME_HYSTERESIS_PX = 12;
 
 // Resize grabs are anchored at the button press (_pressAnchor): the pointer is
 // recorded for PRESS_TRACK_MS after each cursor-shape change.
@@ -405,6 +416,8 @@ export default class TilingWMExtension extends Extension {
         this._grabStartX = 0;
         this._grabStartY = 0;
         this._grabStartFrame = null;
+        this._dragShrunk = null;
+        this._dragGhost = null;
         this._dwindleDropCache = null;
         this._dropPreviewTarget = null;
         this._pressTrackId = 0;
@@ -686,11 +699,15 @@ export default class TilingWMExtension extends Extension {
             }
             return moved.length > 0;
         };
+        // Shape maps are keyed "index:layout".
+        const tagIdx = k => parseInt(k, 10);
+        const retag = (k, i) => `${i}${k.substring(k.indexOf(':'))}`;
         let shifted = false;
         for (const map of [this._workspaceLayouts, this._masterRatios, this._stackRatios,
-            this._persistedLayoutByIndex, this._persistedMasterByIndex, this._persistedStackByIndex,
-            this._persistedDwindleByIndex, this._persistedDwindleRaw])
+            this._persistedLayoutByIndex, this._persistedMasterByIndex, this._persistedStackByIndex])
             shifted = shiftMap(map, k => k, (_k, i) => i) || shifted;
+        for (const map of [this._persistedDwindleByIndex, this._persistedDwindleRaw])
+            shifted = shiftMap(map, tagIdx, retag) || shifted;
         this._reindexWindowWorkspaces();
         if (shifted) this._scheduleSaveLayouts();
     }
@@ -784,6 +801,9 @@ export default class TilingWMExtension extends Extension {
         this._stopPressTracking();
         this._disconnectGrabBoundaryHooks();
         this._clearLiveStretch();
+        // _cancelAnimation below resets the shrunk drag window.
+        this._unshrinkDraggedWindow();
+        this._dragGhost = null;
         // A disable mid-grab would otherwise leave _grabOp set: every retile
         // early-returns until a grab-op-end that never comes.
         this._grabOp = null;
@@ -1492,9 +1512,11 @@ export default class TilingWMExtension extends Extension {
         return true;
     }
 
-    _moveCursorToWindow(win) {
+    // rect: warp to this {x, y, width, height} instead of the window's frame
+    // (a window revealed at its slot before the client has committed it).
+    _moveCursorToWindow(win, rect = null) {
         try {
-            const frame = win.get_frame_rect();
+            const frame = rect ?? win.get_frame_rect();
             if (frame.width === 0 || frame.height === 0) return false;
             const centerX = frame.x + frame.width / 2;
             const centerY = frame.y + frame.height / 2;
@@ -1681,6 +1703,11 @@ export default class TilingWMExtension extends Extension {
         return this._settings.get_string('layout');
     }
 
+    // 'spiral' is dwindle with 50/50 splits and directional drop zones.
+    _isBspLayout(layout) {
+        return layout === 'dwindle' || layout === 'spiral';
+    }
+
     // --- Per-workspace layout/ratio persistence (across logins) ---
 
     _scheduleSaveLayouts() {
@@ -1755,10 +1782,13 @@ export default class TilingWMExtension extends Extension {
                 // restarts, friends closing). Rule: only a live 2+-window
                 // tree (a real arrangement) may overwrite an entry; no
                 // tree / leaf / empty PRESERVES the previously-saved shape.
+                //
+                // One entry per (slot, BSP layout): a shared entry stamped
+                // dwindle's ratios onto spiral's tree and the reverse.
                 const tree = this._bspTrees.get(ws);
-                if (tree && tree.type === 'split' &&
-                    this._getWorkspaceLayout(ws) === 'dwindle')
-                    dwindleRaw.set(i, this._dwindleShapeToString(tree));
+                const layout = this._getWorkspaceLayout(ws);
+                if (tree && tree.type === 'split' && this._isBspLayout(layout))
+                    dwindleRaw.set(`${i}:${layout}`, this._dwindleShapeToString(tree));
             }
             this._settings.set_strv('workspace-layouts', layouts);
             this._settings.set_strv('workspace-master-ratios', masterRatios);
@@ -1768,15 +1798,18 @@ export default class TilingWMExtension extends Extension {
             // workspaces beyond the current count survive, and the raw map
             // is re-synced to exactly what we wrote.
             const dwindleTrees = [];
-            for (const [i, shape] of dwindleRaw) {
+            for (const [key, shape] of dwindleRaw) {
                 const node = this._dwindleShapeFromString(shape);
                 if (node && node.type === 'split')
-                    dwindleTrees.push(`${i}:${shape}`);
+                    dwindleTrees.push(`${key}:${shape}`);
             }
             dwindleTrees.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
             this._settings.set_strv('workspace-dwindle-trees', dwindleTrees);
-            this._persistedDwindleRaw = new Map(
-                dwindleTrees.map(e => [parseInt(e, 10), e.substring(e.indexOf(':') + 1)]));
+            this._persistedDwindleRaw = new Map();
+            for (const entry of dwindleTrees) {
+                const e = this._parseDwindleTreeEntry(entry);
+                if (e) this._persistedDwindleRaw.set(e.key, e.shape);
+            }
             this._debugLog(`persisted layouts: ${layouts.length} ws, ${masterRatios.length} master, ${stackRatios.length} stack, ${dwindleTrees.length} dwindle`);
         } catch (e) {
             log(`[plaid] persist layouts failed: ${e.message}`);
@@ -1800,7 +1833,7 @@ export default class TilingWMExtension extends Extension {
                 const [idxStr, layout] = entry.split(':');
                 const idx = parseInt(idxStr, 10);
                 if (idx <= 0 || !Number.isInteger(idx)) continue;
-                if (!['dwindle', 'master-stack', 'centered-master-stack', 'floating'].includes(layout)) continue;
+                if (!['dwindle', 'spiral', 'master-stack', 'centered-master-stack', 'floating'].includes(layout)) continue;
                 this._persistedLayoutByIndex.set(idx, layout);
             }
             const masterEntries = this._settings.get_strv('workspace-master-ratios') || [];
@@ -1842,19 +1875,17 @@ export default class TilingWMExtension extends Extension {
         // reconcile time. The raw strings are kept alongside (in
         // _persistedDwindleRaw) so saves can MERGE instead of rebuilding —
         // see _savePersistedLayouts.
+        // Both maps are keyed "index:layout" (see _parseDwindleTreeEntry).
         const map = new Map();
         const raw = new Map();
         try {
             for (const entry of (this._settings.get_strv('workspace-dwindle-trees') || [])) {
-                const sep = entry.indexOf(':');
-                if (sep <= 0) continue;
-                const idx = parseInt(entry.substring(0, sep), 10);
-                if (idx <= 0 || !Number.isInteger(idx)) continue;
-                const shapeStr = entry.substring(sep + 1);
-                const shape = this._dwindleShapeFromString(shapeStr);
+                const e = this._parseDwindleTreeEntry(entry);
+                if (!e) continue;
+                const shape = this._dwindleShapeFromString(e.shape);
                 if (shape) {
-                    map.set(idx, shape);
-                    raw.set(idx, shapeStr);
+                    map.set(e.key, shape);
+                    raw.set(e.key, e.shape);
                 }
             }
         } catch (e) {
@@ -1862,6 +1893,24 @@ export default class TilingWMExtension extends Extension {
         }
         this._persistedDwindleRaw = raw;
         return map;
+    }
+
+    // "index:layout:shape"; legacy untagged entries ("index:shape") are
+    // dwindle's. Shapes never contain ':', so a second ':' marks a tag.
+    _parseDwindleTreeEntry(entry) {
+        const sep = entry.indexOf(':');
+        if (sep <= 0) return null;
+        const idx = parseInt(entry.substring(0, sep), 10);
+        if (idx <= 0 || !Number.isInteger(idx)) return null;
+        let rest = entry.substring(sep + 1);
+        let layout = 'dwindle';
+        const tag = rest.indexOf(':');
+        if (tag >= 0) {
+            layout = rest.substring(0, tag);
+            rest = rest.substring(tag + 1);
+            if (!this._isBspLayout(layout)) return null;
+        }
+        return { key: `${idx}:${layout}`, shape: rest };
     }
 
     _markPendingWindowInvisible(win, actor) {
@@ -2046,7 +2095,7 @@ export default class TilingWMExtension extends Extension {
             }
             if (!this._isFloating(win)) {
                 const layout = this._getWorkspaceLayout(ws);
-                if (layout === 'dwindle')
+                if (this._isBspLayout(layout))
                     this._bspInsertForWorkspace(ws, win);
             }
         }
@@ -2118,7 +2167,7 @@ export default class TilingWMExtension extends Extension {
             const idx = order.indexOf(win);
             if (idx !== -1) order.splice(idx, 1);
             const layout = this._getWorkspaceLayout(ws);
-            if (layout === 'dwindle') {
+            if (this._isBspLayout(layout)) {
                 const tree = this._bspGetTree(ws);
                 if (tree) this._bspTrees.set(ws, this._bspRemove(tree, win));
             }
@@ -2419,6 +2468,10 @@ export default class TilingWMExtension extends Extension {
 
     _doRetileWorkspace(workspace) {
         if (!this._settings) return;
+        // A spiral drag lays this workspace out itself: re-flow its ghost,
+        // or a closed window's dead leaf would come back with the drop.
+        if (this._grabOp && this._dragGhost?.ws === workspace && this._settings.get_boolean('enabled'))
+            this._refreshSpiralDragGhost();
         if (!this._settings.get_boolean('enabled')) {
             return;
         }
@@ -2776,7 +2829,7 @@ export default class TilingWMExtension extends Extension {
             const min = this._getWindowMinSize(win);
             const minSrc = min.w > 0 || min.h > 0 ? `min=${min.w}x${min.h}` : 'min=none';
             let changed = false;
-            if (layout === 'dwindle') {
+            if (this._isBspLayout(layout)) {
                 const tree = this._bspGetTree(ws);
                 if (!tree) return false;
                 changed = this._adjustForConstraints(tree, null, true, area.x, area.y, areaW, areaH, gap, 0, win);
@@ -2987,6 +3040,14 @@ export default class TilingWMExtension extends Extension {
     }
 
     _animRetile(workspace, tiledWindows) {
+        if (this._animating && !this._animTickId && this._animWorkspace === workspace &&
+            this._getWorkspaceLayout(workspace) === 'spiral' &&
+            [...this._transformStates.keys()].some(w => w.get_workspace() === workspace)) {
+            // Spiral retargets the run in flight from each window's drawn rect
+            // instead of queueing behind it.
+            this._animGen++;
+            this._animating = false;
+        }
         if (this._animating) {
             // Stall watchdog: the in-flight animation's completion signal
             // can be missed (interrupted transitions, destroyed windows).
@@ -3040,8 +3101,9 @@ export default class TilingWMExtension extends Extension {
         this._animTargets = new Map();
 
         const layout = this._getWorkspaceLayout(workspace);
-        // A retile configures every frame: no live-resize stretch may outlast it.
-        this._stopTransforms(false, workspace);
+        // Only spiral retiles through transforms; other layouts drop them.
+        if (layout !== 'spiral')
+            this._stopTransforms(false, workspace);
         if (layout === 'floating') {
             // GNOME owns floating placement; the fade-in choreography just
             // anchors at the window's current (GNOME-placed) position.
@@ -3053,7 +3115,7 @@ export default class TilingWMExtension extends Extension {
                         this._animTargets.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
                 }
             } catch (_e) {}
-        } else if (layout === 'dwindle')
+        } else if (this._isBspLayout(layout))
             this._retileDwindle(workspace, tiledWindows);
         else if (layout === 'centered-master-stack')
             this._retileCenteredMasterStack(workspace, tiledWindows);
@@ -3085,7 +3147,7 @@ export default class TilingWMExtension extends Extension {
             // Lerp from where the client is heading, or a slow client is
             // re-sent intermediate sizes.
             const sent = win._plaidTickSent;
-            if (sent && this._tickSentPending(win, frame))
+            if (layout !== 'spiral' && sent && this._tickSentPending(win, frame))
                 frame = { x: sent.x, y: sent.y, width: sent.w, height: sent.h };
             const actor = win.get_compositor_private();
             const isNew = this._newWindowSet.has(win);
@@ -3134,7 +3196,23 @@ export default class TilingWMExtension extends Extension {
             }
         }
 
-        if (existingStates.length > 0) {
+        if (layout === 'spiral') {
+            // Spiral: resize each window once and draw all of them, new ones
+            // popping in, along one eased path (_animTransforms).
+            for (const s of newStates) {
+                if (!s.actor) continue;
+                s.popin = true;
+                const warp = this._pendingWarp?.has(s.win);
+                this._revealPlacedWindow(s.win);
+                if (warp)
+                    this._moveCursorToWindow(s.win, { x: s.targetX, y: s.targetY, width: s.targetW, height: s.targetH });
+            }
+            this._animTransforms(states, s => {
+                this._verifyAnimationLanding(s, s.popin ? 'new' : 'tiled');
+                if (s.popin) this._armSettlePoll(s.win);
+                dec();
+            }, this._stopTransforms(true, workspace));
+        } else if (existingStates.length > 0) {
             this._animStates = existingStates;
             this._animStartTime = Date.now();
             this._animTickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
@@ -3222,6 +3300,9 @@ export default class TilingWMExtension extends Extension {
             const actor = s.win.get_compositor_private();
             const prev = carry.get(s.win);
             carry.delete(s.win);
+            // A new window's own first-frame retile retargets its pop-in run:
+            // keep the flag or its 'new' landing is lost.
+            if (prev?.popin && !prev.done) s.popin = true;
             if (!actor) {
                 landed(s);
                 continue;
@@ -3239,10 +3320,15 @@ export default class TilingWMExtension extends Extension {
             } else {
                 if (prev) {
                     [s.startX, s.startY, s.startW, s.startH] = prev.visual;
+                } else if (s.popin) {
+                    s.startW = s.targetW * POPIN_SCALE;
+                    s.startH = s.targetH * POPIN_SCALE;
+                    s.startX = s.targetX + (s.targetW - s.startW) / 2;
+                    s.startY = s.targetY + (s.targetH - s.startH) / 2;
                 }
                 s.t0 = now;
                 s.dur = duration;
-                if (prev || !this._frameAtTarget(s, 0)) {
+                if (prev || s.popin || !this._frameAtTarget(s, 0)) {
                     try { s.win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); } catch (_e) {}
                 }
                 // Right after the configure: the target for a move or an X11
@@ -3250,9 +3336,20 @@ export default class TilingWMExtension extends Extension {
                 const f = s.win.get_frame_rect();
                 s.sent = { x: f.x, y: f.y, w: f.width, h: f.height };
             }
+            s.op0 = null;
+            if (prev && prev.op0 !== null) {
+                s.op0 = prev.op0;
+                s.fadeT0 = prev.fadeT0;
+                s.fadeMs = prev.fadeMs;
+            } else if (s.popin) {
+                s.op0 = 0;
+                s.fadeT0 = now;
+                s.fadeMs = this._scaledAnimMs(POPIN_FADE_MS);
+            }
             const f = s.win.get_frame_rect();
-            if (Math.max(Math.abs(s.startX - s.targetX), Math.abs(s.startY - s.targetY),
-                Math.abs(s.startW - s.targetW), Math.abs(s.startH - s.targetH)) < 1 &&
+            if (s.op0 === null &&
+                Math.max(Math.abs(s.startX - s.targetX), Math.abs(s.startY - s.targetY),
+                    Math.abs(s.startW - s.targetW), Math.abs(s.startH - s.targetH)) < 1 &&
                 f.x === s.targetX && f.y === s.targetY && f.width === s.targetW && f.height === s.targetH) {
                 if (prev) this._transformReset(prev);
                 landed(s);
@@ -3307,6 +3404,10 @@ export default class TilingWMExtension extends Extension {
         const sx = w / f.width, sy = h / f.height;
         s.actor.set_scale(sx, sy);
         s.actor.set_translation(x - b.x - (f.x - b.x) * sx, y - b.y - (f.y - b.y) * sy, 0);
+        if (s.op0 !== null) {
+            const k = Math.min(1, (now - s.fadeT0) / 1000 / s.fadeMs);
+            s.actor.set_opacity(Math.round(s.op0 + (255 - s.op0) * k));
+        }
     }
 
     _transformStep() {
@@ -3365,6 +3466,7 @@ export default class TilingWMExtension extends Extension {
         try {
             s.actor.set_scale(1, 1);
             s.actor.set_translation(0, 0, 0);
+            if (s.op0 !== null) s.actor.set_opacity(255);
         } catch (_e) {}
     }
 
@@ -3964,6 +4066,22 @@ export default class TilingWMExtension extends Extension {
         let tree = this._bspGetTree(workspace);
         const area = this._outsideArea(workArea);
         if (!area) return;
+        // A dwindle/spiral switch resets every split to the new layout's
+        // ratio, then restores its own saved shape below.
+        const layout = this._getWorkspaceLayout(workspace);
+        const switched = !!tree && !!tree._laidOutAs && tree._laidOutAs !== layout;
+        if (switched) {
+            const ratio = this._bspSplitRatio(workspace);
+            const reset = node => {
+                if (!node || node.type !== 'split') return;
+                node.ratio = ratio;
+                delete node.userRatio;
+                reset(node.first);
+                reset(node.second);
+            };
+            reset(tree);
+            this._debugLog(`${layout}: reset ws=${this._wsIndex(workspace)} splits to ${ratio.toFixed(3)} (was ${tree._laidOutAs})`);
+        }
         const areaX = area.x;
         const areaY = area.y;
         const areaW = area.w;
@@ -3978,12 +4096,15 @@ export default class TilingWMExtension extends Extension {
         // reconcile → live ratios are never stomped; the resize itself
         // already scheduled a save (retiles are the save trigger), so the
         // saved shape stays current for the next window-set change.
+        // A layout switch never folds: that would write the other layout's
+        // ratios into this one's saved shape.
         if (tree && this._dwindleLeafSigs) {
             const sig = tiledWindows.map(w => w.get_id()).join(',');
-            if (this._dwindleLeafSigs.get(workspace) !== sig) {
+            const shapeKey = `${this._wsIndex(workspace)}:${layout}`;
+            const savedShape = this._persistedDwindleByIndex &&
+                this._persistedDwindleByIndex.get(shapeKey);
+            if (switched || this._dwindleLeafSigs.get(workspace) !== sig) {
                 this._dwindleLeafSigs.set(workspace, sig);
-                const savedShape = this._persistedDwindleByIndex &&
-                    this._persistedDwindleByIndex.get(this._wsIndex(workspace));
                 if (savedShape && this._reconcileTreeRatios(savedShape, tree))
                     this._debugLog(`dwindle: restored saved split ratios (ws=${this._wsIndex(workspace)}, windows=${tiledWindows.length})`);
             } else {
@@ -3995,13 +4116,14 @@ export default class TilingWMExtension extends Extension {
         this._treeMinSizes(tree);
         this._clampTreeToMinSizes(tree, areaW, areaH, gap);
         this._bspLayout(tree, areaX, areaY, areaW, areaH, gap);
+        if (tree) tree._laidOutAs = layout;
     }
 
     // The dconf copy lags 10s: a window opened or closed meanwhile would
     // revert the edit. Deeper saved levels survive.
     _foldLiveRatiosIntoSavedShape(workspace, tree) {
         if (!tree || tree.type !== 'split' || !this._persistedDwindleByIndex) return;
-        const shapeKey = this._wsIndex(workspace);
+        const shapeKey = `${this._wsIndex(workspace)}:${this._getWorkspaceLayout(workspace)}`;
         const savedShape = this._persistedDwindleByIndex.get(shapeKey);
         if (savedShape)
             this._reconcileTreeRatios(tree, savedShape);
@@ -4010,11 +4132,13 @@ export default class TilingWMExtension extends Extension {
                 this._dwindleShapeFromString(this._dwindleShapeToString(tree)));
     }
 
-    // Prune leaves of windows that left and insert missing ones dwindle style.
+    // Prune leaves of windows that left and insert missing ones dwindle style
+    // (spiral: _spiralInsertNew, next to the focus or pointer).
     _bspSyncTree(workspace, tree, tiledWindows, area, gap) {
+        const ratio = this._bspSplitRatio(workspace);
         if (!tree) {
             for (const win of tiledWindows)
-                tree = tree ? this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap) : this._bspMakeLeaf(win);
+                tree = tree ? this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio) : this._bspMakeLeaf(win);
             return tree;
         }
         const tiled = new Set(tiledWindows);
@@ -4023,9 +4147,15 @@ export default class TilingWMExtension extends Extension {
                 tree = this._bspRemove(tree, tw);
         }
         const inTree = new Set(this._bspCollectWindows(tree));
+        const spiral = this._getWorkspaceLayout(workspace) === 'spiral';
         for (const win of tiledWindows) {
             if (!inTree.has(win)) {
-                tree = this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap);
+                if (spiral && tree.type !== 'empty') {
+                    this._bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+                    tree = this._spiralInsertNew(workspace, tree, win, area);
+                } else {
+                    tree = this._bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio);
+                }
                 inTree.add(win);
             }
         }
@@ -6086,8 +6216,10 @@ export default class TilingWMExtension extends Extension {
                     if (!blur || !blur._sibling || blur._fatalFail) return;
                     if (this._windowBlurs && this._windowBlurs.get(win) !== blur) return;
                     try {
-                        const moving = actor.scale_x < 0.99 || actor.scale_y < 0.99 ||
-                            actor.opacity < 255;
+                        // Either direction (spiral eases from scale > 1): the
+                        // sibling would stick out.
+                        const moving = Math.abs(actor.scale_x - 1) > 0.01 ||
+                            Math.abs(actor.scale_y - 1) > 0.01 || actor.opacity < 255;
                         const shouldEnable = !moving;
                         if (blur.enabled && shouldEnable) {
                             // Keep the rect fresh while settled+enabled: after
@@ -6662,7 +6794,7 @@ export default class TilingWMExtension extends Extension {
         if (!bestWindow) return;
 
         const layout = this._getWorkspaceLayout(ws);
-        if (layout === 'dwindle') {
+        if (this._isBspLayout(layout)) {
             const tree = this._bspGetTree(ws);
             if (tree) {
                 this._bspSwapWindows(tree, focused, bestWindow);
@@ -6706,7 +6838,7 @@ export default class TilingWMExtension extends Extension {
         if (idx === -1 || tiledWindows.length <= 1) return;
 
         const layout = this._getWorkspaceLayout(ws);
-        if (layout === 'dwindle')
+        if (this._isBspLayout(layout))
             this._resizeDwindle(focused, ws, axis, delta);
         else
             this._resizeMasterStack(focused, ws, axis, delta);
@@ -6803,11 +6935,11 @@ export default class TilingWMExtension extends Extension {
 
         if (wasFloating) {
             const layout = this._getWorkspaceLayout(ws);
-            if (layout === 'dwindle')
+            if (this._isBspLayout(layout))
                 this._bspInsertForWorkspace(ws, focused);
         } else {
             const layout = this._getWorkspaceLayout(ws);
-            if (layout === 'dwindle') {
+            if (this._isBspLayout(layout)) {
                 const tree = this._bspGetTree(ws);
                 if (tree)
                     this._bspTrees.set(ws, this._bspRemove(tree, focused));
@@ -6930,7 +7062,7 @@ export default class TilingWMExtension extends Extension {
 
 
     _cycleLayout() {
-        const layouts = ['dwindle', 'master-stack', 'centered-master-stack', 'floating'];
+        const layouts = ['dwindle', 'spiral', 'master-stack', 'centered-master-stack', 'floating'];
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
         const current = this._getWorkspaceLayout(ws);
@@ -9889,7 +10021,7 @@ export default class TilingWMExtension extends Extension {
             this._grabInitialRatioH = 0;
             this._grabFollowW = 1;
             this._grabFollowH = 1;
-            const bsp = this._getWorkspaceLayout(ws) === 'dwindle';
+            const bsp = this._isBspLayout(this._getWorkspaceLayout(ws));
             if (bsp)
                 this._grabPickSplits(metaWindow, ws);
 
@@ -9938,7 +10070,7 @@ export default class TilingWMExtension extends Extension {
                 }
                 // Save the grab's ratios now, or a deferred window-set retile
                 // restores the pre-grab shape.
-                if (this._getWorkspaceLayout(ws) === 'dwindle')
+                if (this._isBspLayout(this._getWorkspaceLayout(ws)))
                     this._foldLiveRatiosIntoSavedShape(ws, this._bspGetTree(ws));
                 this._retileWorkspace(ws);
                 dropWs = ws;
@@ -9963,9 +10095,11 @@ export default class TilingWMExtension extends Extension {
         this._hideDropPreview();
         this._stopLiveResizeLoop();
         this._disconnectGrabBoundaryHooks();
+        this._dragGhost = null;
         this._dwindleDropCache = null;
         this._grabStartFrame = null;
         this._handOffLiveStretch(metaWindow);
+        this._unshrinkDraggedWindow();
         this._grabOp = null;
         this._grabWindow = null;
         // Retiles deferred by the grab. Not the drop's workspace again:
@@ -10049,7 +10183,7 @@ export default class TilingWMExtension extends Extension {
         if (!workArea) return;
 
         const layout = this._getWorkspaceLayout(ws);
-        if (layout === 'dwindle') {
+        if (this._isBspLayout(layout)) {
             const tree = this._bspGetTree(ws);
             const area = tree ? this._outsideArea(workArea) : null;
             if (area) {
@@ -10147,10 +10281,14 @@ export default class TilingWMExtension extends Extension {
             }
         }
 
-        this._moveTiledExcept(metaWindow);
-        if (layout === 'dwindle')
-            this._dwindleAnchorGrabbed(metaWindow);
-        else
+        if (layout === 'spiral') {
+            this._spiralLiveResize(metaWindow);
+        } else {
+            this._moveTiledExcept(metaWindow);
+            if (this._isBspLayout(layout))
+                this._dwindleAnchorGrabbed(metaWindow);
+        }
+        if (!this._isBspLayout(layout))
             this._enforceGrabBoundary(metaWindow);
         this._updateBordersDuringGrab();
     }
@@ -10268,6 +10406,129 @@ export default class TilingWMExtension extends Extension {
         }
     }
 
+    // Spiral drag: lay the others out on a clone without the dragged window,
+    // so zones are picked on the drop's layout. Over its own slot (`home`, its
+    // core once left) the live layout shows and a drop changes nothing.
+    _buildSpiralDragGhost(win, ws) {
+        const tree = this._bspGetTree(ws);
+        const workArea = this._primaryWorkArea(ws);
+        if (!tree || !this._isValidWorkArea(workArea)) return null;
+        const live = this._bspSlotRects(this._bspClone(tree), workArea);
+        const home = live.get(win) ?? null;
+        const ghost = home ? this._bspRemove(this._bspClone(tree), win) : this._bspClone(tree);
+        if (!ghost || ghost.type === 'empty') return null;
+        return { ws, win, workArea, tree: ghost, rects: this._bspSlotRects(ghost, workArea),
+            live, home, atHome: null, zones: new Map() };
+    }
+
+    _showSpiralDragLayout(g, atHome) {
+        if (g.atHome === atHome) return;
+        g.atHome = atHome;
+        // Stop an in-flight retile properly but keep its windows where they
+        // are drawn: the reflow continues from there.
+        const carry = this._stopTransforms(true, g.ws);
+        if (this._animating)
+            this._cancelAnimation();
+        const states = [];
+        for (const [w, r] of atHome ? g.live : g.rects) {
+            if (w === g.win || !w.get_compositor_private() || w.is_fullscreen()) continue;
+            const f = w.get_frame_rect();
+            // No commit yet: its first-frame retile re-flows the drag again.
+            if (f.width <= 0 || f.height <= 0) continue;
+            const s = { win: w, startX: f.x, startY: f.y, startW: f.width, startH: f.height,
+                targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
+            // Opened mid-drag: pop in at its slot, without the cursor warp.
+            if (this._newWindowSet?.has(w)) {
+                s.popin = true;
+                this._revealPlacedWindow(w);
+            }
+            states.push(s);
+        }
+        this._animTransforms(states, () => {}, carry);
+    }
+
+    // The workspace under a spiral drag changed: sync the live tree, then
+    // rebuild the ghost and re-flow if anything on screen changes.
+    _refreshSpiralDragGhost() {
+        const old = this._dragGhost;
+        const ws = old.ws;
+        this._syncDragTree(ws, old.win);
+        const g = this._buildSpiralDragGhost(old.win, ws);
+        const same = (a, b) => {
+            if (!a || !b) return a === b;
+            if (a.size !== undefined) {
+                if (a.size !== b.size) return false;
+                for (const [w, r] of a) {
+                    if (!same(r, b.get(w))) return false;
+                }
+                return true;
+            }
+            return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+        };
+        if (g && same(g.home, old.home) && same(g.rects, old.rects) && same(g.live, old.live))
+            return;
+        if (g) g.leftHome = old.leftHome;
+        this._dragGhost = g;
+        if (g && this._grabOp)
+            this._updateMoveDragPreview(old.win);
+    }
+
+    // As a retile would make it. A dragged window the tree does not hold yet
+    // is left out: the drop places it.
+    _syncDragTree(ws, win) {
+        const workArea = this._primaryWorkArea(ws);
+        const area = this._isValidWorkArea(workArea) ? this._outsideArea(workArea) : null;
+        if (!area) return;
+        const tree = this._bspGetTree(ws);
+        const held = !!(tree && this._bspFindLeaf(tree, win));
+        const tiled = this._getWindowsForWorkspace(ws)
+            .filter(w => !this._isFloating(w) && (held || w !== win));
+        this._bspTrees.set(ws, this._bspSyncTree(ws, tree, tiled, area,
+            this._settings.get_int('inside-gap')));
+    }
+
+    // Over the dragged window's slot (its core once left), the outside-gap
+    // strip included; the hysteresis keeps a wobble from re-flowing every
+    // neighbour.
+    _spiralAtHome(g, px, py) {
+        let h = g.home;
+        if (!h) return false;
+        const a = this._outsideArea(g.workArea);
+        const x = a ? Math.min(Math.max(px, a.x), a.x + a.w - 1) : px;
+        const y = a ? Math.min(Math.max(py, a.y), a.y + a.h - 1) : py;
+        if (g.leftHome) {
+            const mx = h.w * (1 - SPIRAL_HOME_CORE) / 2, my = h.h * (1 - SPIRAL_HOME_CORE) / 2;
+            h = { x: h.x + mx, y: h.y + my, w: h.w - 2 * mx, h: h.h - 2 * my };
+        }
+        const m = g.atHome === null ? 0 : g.atHome ? SPIRAL_HOME_HYSTERESIS_PX : -SPIRAL_HOME_HYSTERESIS_PX;
+        return x >= h.x - m && x < h.x + h.w + m && y >= h.y - m && y < h.y + h.h + m;
+    }
+
+    // Like Hyprland's smart_split: the target's triangle under the pointer
+    // picks the side; in a gap the closest leaf is the target.
+    _spiralDropZone(g, px, py) {
+        // Same clamped point as the target, so the preview matches the drop.
+        const pt = this._dropPoint(g.workArea, px, py);
+        if (!pt) return null;
+        [px, py] = pt;
+        const target = this._dropTargetAt(g.rects, g.workArea, px, py);
+        if (!target) return null;
+        const side = this._dropZoneSide(g.rects.get(target), px, py);
+        const key = `${target.get_id()}:${side}`;
+        if (!g.zones.has(key)) {
+            const drop = this._spiralDropTree(this._bspClone(g.tree), target, g.win, side);
+            g.zones.set(key, this._bspSlotRects(drop, g.workArea).get(g.win) ?? null);
+        }
+        const rect = g.zones.get(key);
+        return rect ? { target, side, rect } : null;
+    }
+
+    _spiralDropTree(tree, target, win, side) {
+        const dir = (side === 'left' || side === 'right') ? 'h' : 'v';
+        return this._bspInsertAtLeaf(tree, this._bspFindLeaf(tree, target), win, dir,
+            side === 'left' || side === 'top', 0.5);
+    }
+
     // Clamped into the work area: mutter stops a dragged titlebar below the
     // top bar while the pointer goes on. null on another monitor (no drop).
     _dropPoint(workArea, px, py) {
@@ -10353,6 +10614,105 @@ export default class TilingWMExtension extends Extension {
         return Math.hypot(f.x - s.x, f.y - s.y) >= (this._grabGrace ?? 10);
     }
 
+    // Visual only, about the grab point: the titlebar stays under the pointer.
+    _shrinkDraggedWindow(win) {
+        if (this._dragShrunk) return;
+        const actor = win.get_compositor_private();
+        const b = win.get_buffer_rect();
+        if (!actor || b.width <= 0 || b.height <= 0) return;
+        const [px, py] = global.get_pointer();
+        const d = { win, actor,
+            pivotX: Math.min(1, Math.max(0, (px - b.x) / b.width)),
+            pivotY: Math.min(1, Math.max(0, (py - b.y) / b.height)) };
+        this._dragShrunk = d;
+        actor.remove_all_transitions();
+        actor.set_pivot_point(d.pivotX, d.pivotY);
+        actor.ease({
+            scale_x: SPIRAL_DRAG_SCALE, scale_y: SPIRAL_DRAG_SCALE,
+            duration: this._scaledAnimMs(SPIRAL_DRAG_SHRINK_MS),
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+        });
+    }
+
+    // Hand the shrunk window to the driver where it is drawn: the release
+    // retile eases it to its slot.
+    _unshrinkDraggedWindow() {
+        const d = this._dragShrunk;
+        this._dragShrunk = null;
+        if (!d || d.win.get_compositor_private() !== d.actor) return;
+        const { win, actor } = d;
+        const f = win.get_frame_rect();
+        const b = win.get_buffer_rect();
+        const sx = actor.scale_x;
+        const sy = actor.scale_y;
+        actor.remove_all_transitions();
+        if (f.width <= 0 || f.height <= 0) {
+            actor.set_scale(1, 1);
+            return;
+        }
+        // The frame as drawn: scaled about the pivot, a point of the buffer.
+        const ox = b.x + d.pivotX * b.width;
+        const oy = b.y + d.pivotY * b.height;
+        const r = { x: ox + (f.x - ox) * sx, y: oy + (f.y - oy) * sy, w: f.width * sx, h: f.height * sy };
+        const carry = this._stopTransforms(true, win.get_workspace());
+        const states = [...carry.values()].map(p => ({ win: p.win, startX: p.startX, startY: p.startY,
+            startW: p.startW, startH: p.startH, targetX: p.targetX, targetY: p.targetY,
+            targetW: p.targetW, targetH: p.targetH }));
+        const at = { startX: r.x, startY: r.y, startW: r.w, startH: r.h,
+            targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
+        carry.set(win, { ...at, win, actor, t0: GLib.get_monotonic_time(), dur: 0, sent: null, op0: null,
+            visual: [r.x, r.y, r.w, r.h] });
+        states.push({ ...at, win });
+        this._animTransforms(states, () => {}, carry);
+    }
+
+    // Spiral live resize: re-send changed slots only and stretch every actor
+    // over its slot until its client commits, keeping edges flush with the
+    // cursor.
+    _spiralLiveResize(grabbed) {
+        const ws = grabbed.get_workspace();
+        if (!ws) return;
+        const tree = this._bspGetTree(ws);
+        if (!tree || !this._bspFindLeaf(tree, grabbed)) return;
+        if (!this._liveSent) this._liveSent = new Map();
+        if (!this._liveStretched) this._liveStretched = new Map();
+        for (const leaf of this._bspLeaves(tree)) {
+            const win = leaf.window;
+            if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
+            if (!(leaf._w > 0) || !(leaf._h > 0)) continue;
+            const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+            // mutter owns the grabbed window's geometry until the grab ends.
+            if (win !== grabbed) {
+                const last = this._liveSent.get(win);
+                if (!last || last.x !== slot.x || last.y !== slot.y || last.w !== slot.w || last.h !== slot.h) {
+                    this._liveSent.set(win, slot);
+                    try { win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h); } catch (_e) {}
+                }
+                this._stretchActorToSlot(win, slot);
+                continue;
+            }
+            // Past a min-size limit or on a full-span axis: draw the frame
+            // along that axis.
+            const f = win.get_frame_rect();
+            const clampW = (this._grabLowered && this._grabClampedW && f.width > slot.w) ||
+                (this._grabWidthSign !== 0 && !this._grabResizeNodeW);
+            const clampH = (this._grabLowered && this._grabClampedH && f.height > slot.h) ||
+                (this._grabHeightSign !== 0 && !this._grabResizeNodeH);
+            // `slot` itself unless overridden: a copy fails the flush identity
+            // test and is re-transformed (re-queueing a frame) every frame.
+            const draw = clampW || clampH ? { ...slot } : slot;
+            if (clampW) {
+                draw.x = f.x;
+                draw.w = f.width;
+            }
+            if (clampH) {
+                draw.y = f.y;
+                draw.h = f.height;
+            }
+            this._stretchActorToSlot(win, slot, draw);
+        }
+    }
+
     // On a monitor-edge axis mutter moves the frame off the slot: translate
     // the grabbed window back (never scaled).
     _dwindleAnchorGrabbed(grabbed) {
@@ -10425,7 +10785,7 @@ export default class TilingWMExtension extends Extension {
                 targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
             // sent: null: every commit but the slot's answers a queued grab
             // configure.
-            carry.set(win, { ...at, win, actor, t0: now, dur: 0, sent: null,
+            carry.set(win, { ...at, win, actor, t0: now, dur: 0, sent: null, op0: null,
                 visual: [r.x, r.y, r.w, r.h] });
             states.push({ ...at, win });
         }
@@ -10455,7 +10815,7 @@ export default class TilingWMExtension extends Extension {
 
         const layout = this._getWorkspaceLayout(ws);
         if (layout === 'floating') return;
-        if (layout === 'dwindle') {
+        if (this._isBspLayout(layout)) {
             const tree = this._bspGetTree(ws);
             if (!tree) return;
             const treeWins = this._bspCollectWindows(tree);
@@ -10494,7 +10854,7 @@ export default class TilingWMExtension extends Extension {
         const gap = insideGap;
         if (areaW <= 0 || areaH <= 0) return null;
 
-        if (layout === 'dwindle') {
+        if (this._isBspLayout(layout)) {
             const tree = this._bspGetTree(ws);
             if (!tree) return null;
             const leaf = this._bspFindLeaf(tree, win);
@@ -10891,7 +11251,32 @@ export default class TilingWMExtension extends Extension {
         const dragging = this._movedPastGrace(metaWindow);
         const [px, py] = global.get_pointer();
 
-        if (layout === 'dwindle') {
+        if (layout === 'spiral') {
+            let g = this._dragGhost;
+            if (!g && !dragging) {
+                this._hideDropPreview();
+                return;
+            }
+            if (!g || g.ws !== ws) {
+                this._syncDragTree(ws, metaWindow);
+                g = this._dragGhost = this._buildSpiralDragGhost(metaWindow, ws);
+            }
+            if (!g) {
+                this._hideDropPreview();
+                return;
+            }
+            this._shrinkDraggedWindow(metaWindow);
+            // Back inside the click guard is home too: that release drops
+            // nothing.
+            const atHome = !dragging || this._spiralAtHome(g, px, py);
+            if (!atHome) g.leftHome = true;
+            this._showSpiralDragLayout(g, atHome);
+            const rect = !dragging ? null : atHome ? g.home : this._spiralDropZone(g, px, py)?.rect;
+            if (rect)
+                this._showDropPreview(rect.x, rect.y, rect.w, rect.h);
+            else
+                this._hideDropPreview();
+        } else if (this._isBspLayout(layout)) {
             const rect = dragging ? this._dwindleDropPreview(metaWindow, ws, px, py) : null;
             if (rect)
                 this._showDropPreview(rect.x, rect.y, rect.w, rect.h);
@@ -11024,7 +11409,16 @@ export default class TilingWMExtension extends Extension {
         if (tiled.length <= 1) return;
 
         const layout = this._getWorkspaceLayout(ws);
-        if (layout === 'dwindle') {
+        if (layout === 'spiral') {
+            // Insert on the drag's layout (the ghost) where the zone was
+            // picked; home or no zone leaves the live tree alone.
+            const g = this._dragGhost?.ws === ws && this._dragGhost.win === window
+                ? this._dragGhost : this._buildSpiralDragGhost(window, ws);
+            if (!g || this._spiralAtHome(g, px, py)) return;
+            const zone = this._spiralDropZone(g, px, py);
+            if (!zone) return;
+            this._bspTrees.set(ws, this._spiralDropTree(g.tree, zone.target, window, zone.side));
+        } else if (this._isBspLayout(layout)) {
             const tree = this._bspGetTree(ws);
             const workArea = this._primaryWorkArea(ws);
             if (!tree || !this._isValidWorkArea(workArea)) return;

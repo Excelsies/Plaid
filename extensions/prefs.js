@@ -113,9 +113,10 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         singleEdgeRow.add_suffix(edgeGrid);
         group.add(singleEdgeRow);
 
-        const layoutNames = ['dwindle', 'master-stack', 'centered-master-stack', 'floating'];
+        const layoutNames = ['dwindle', 'spiral', 'master-stack', 'centered-master-stack', 'floating'];
         const layoutCaptions = {
             'dwindle': _('Dwindle'),
+            'spiral': _('Spiral'),
             'master-stack': _('Master-stack'),
             'centered-master-stack': _('Centered Master-stack'),
             'floating': _('Floating'),
@@ -204,7 +205,16 @@ export default class TilingWMPreferences extends ExtensionPreferences {
                 cr.fill();
             };
 
-            if (layout === 'dwindle') {
+            if (layout === 'spiral') {
+                // 50/50 halving: each new window takes half of the last one.
+                const hw = Math.floor((W - gap) / 2);
+                const hh = Math.floor((H - gap) / 2);
+                const qw = Math.floor((W - hw - gap - gap) / 2);
+                rect(x0, y0, hw, H);
+                rect(x0 + hw + gap, y0, W - hw - gap, hh);
+                rect(x0 + hw + gap, y0 + hh + gap, qw, H - hh - gap);
+                rect(x0 + hw + gap + qw + gap, y0 + hh + gap, W - hw - gap - qw - gap, H - hh - gap);
+            } else if (layout === 'dwindle') {
                 const r = 0.618;
                 const aw = Math.floor(W * r);
                 const ah = Math.floor(H * r);

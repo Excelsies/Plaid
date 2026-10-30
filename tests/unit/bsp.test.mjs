@@ -148,3 +148,39 @@ test('_bspLayout: never moves the grabbed window, re-sends only changed slots', 
   self._bspLayout(tree, 0, 0, 200, 100, 0, a);
   assert.equal(moves.length, 1); // same slot: not re-sent
 });
+
+test('_bspInsert: an explicit ratio overrides dwindle-ratio for the new split', () => {
+  const self = makeSelf({ 'dwindle-ratio': 0.618 });
+  const a = W('a'), b = W('b');
+  assert.equal(self._bspInsert(leaf(a), b, 0, 0, 200, 100, 0).ratio, 0.618);
+  assert.equal(self._bspInsert(leaf(a), b, 0, 0, 200, 100, 0, 0.5).ratio, 0.5);
+});
+
+test('_bspInsertAtLeaf splits the target on the given side', () => {
+  const self = makeSelf();
+  const a = W('a'), b = W('b'), c = W('c');
+  const tree = split('h', 0.5, leaf(a), leaf(b));
+  const after = self._bspInsertAtLeaf(tree, tree.second, c, 'v', true, 0.5);
+  assert.equal(after.second.type, 'split');
+  assert.equal(after.second.direction, 'v');
+  assert.equal(after.second.first.window, c);
+  assert.equal(after.second.second.window, b);
+  const right = self._bspInsertAtLeaf(leaf(a), null, c, 'h', false, 0.5);
+  assert.equal(right.type, 'leaf'); // not the target: unchanged
+});
+
+test('_bspSplitRatio: spiral halves, dwindle uses dwindle-ratio', () => {
+  const layouts = new Map([['s', 'spiral'], ['d', 'dwindle']]);
+  const self = makeSelf({ 'dwindle-ratio': 0.618 }, { _getWorkspaceLayout: (ws) => layouts.get(ws) });
+  assert.equal(self._bspSplitRatio('s'), 0.5);
+  assert.equal(self._bspSplitRatio('d'), 0.618);
+  assert.equal(self._bspSplitRatio(null), 0.618);
+});
+
+test('_isBspLayout covers dwindle and spiral only', () => {
+  const self = makeSelf();
+  assert.equal(self._isBspLayout('dwindle'), true);
+  assert.equal(self._isBspLayout('spiral'), true);
+  for (const l of ['master-stack', 'centered-master-stack', 'floating', ''])
+    assert.equal(self._isBspLayout(l), false);
+});

@@ -60,13 +60,14 @@ test('_shiftWorkspaceIndexKeys: persisted rules move with their workspace, futur
   assert.deepEqual([...self._persistedMasterByIndex], [[2, 0.6]]);
 });
 
-test('_shiftWorkspaceIndexKeys: saved shapes move with their workspace', () => {
+test('_shiftWorkspaceIndexKeys: saved shapes keyed "index:layout" move with their workspace', () => {
   const { self } = wsSelf([{}, {}, {}]);
-  self._persistedDwindleByIndex = new Map([[3, 'a'], [5, 'c']]);
-  self._persistedDwindleRaw = new Map([[3, 'h0.6(l,l)']]);
+  self._persistedDwindleByIndex = new Map([['3:dwindle', 'a'], ['3:spiral', 'b'], ['5:spiral', 'c']]);
+  self._persistedDwindleRaw = new Map([['3:dwindle', 'h0.6(l,l)']]);
   self._shiftWorkspaceIndexKeys(2, -1, 4);
-  assert.deepEqual([...self._persistedDwindleByIndex].sort(), [[2, 'a'], [5, 'c']]);
-  assert.deepEqual([...self._persistedDwindleRaw], [[2, 'h0.6(l,l)']]);
+  assert.deepEqual([...self._persistedDwindleByIndex].sort(),
+    [['2:dwindle', 'a'], ['2:spiral', 'b'], ['5:spiral', 'c']]);
+  assert.deepEqual([...self._persistedDwindleRaw], [['2:dwindle', 'h0.6(l,l)']]);
 });
 
 test('_shiftWorkspaceIndexKeys: a workspace appended at the end moves no rule', () => {

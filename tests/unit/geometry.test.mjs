@@ -132,3 +132,15 @@ test('_pointRectDistSq is 0 inside the rect and the squared edge distance outsid
   assert.equal(self._pointRectDistSq(0, 0, 100, 100, 130, 50), 900);
   assert.equal(self._pointRectDistSq(0, 0, 100, 100, -30, -40), 2500);
 });
+
+test('_dropZoneSide picks the triangle between the rect diagonals', () => {
+  const self = makeSelf();
+  const r = { x: 0, y: 0, w: 400, h: 100 };
+  assert.equal(self._dropZoneSide(r, 380, 50), 'right');
+  assert.equal(self._dropZoneSide(r, 20, 50), 'left');
+  // A wide rect still has top/bottom zones around its centre.
+  assert.equal(self._dropZoneSide(r, 200, 5), 'top');
+  assert.equal(self._dropZoneSide(r, 200, 95), 'bottom');
+  // On a diagonal the vertical side wins.
+  assert.equal(self._dropZoneSide(r, 0, 0), 'top');
+});

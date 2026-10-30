@@ -101,7 +101,7 @@ _PLAID_TABLE=(
     "outside-gap-bottom|i|Bottom outside gap in pixels"
     "outside-gap-left|i|Left outside gap in pixels"
     "outside-gap-right|i|Right outside gap in pixels"
-    "layout|s|Layout mode (dwindle, master-stack, centered-master-stack, floating)"
+    "layout|s|Layout mode (dwindle, spiral, master-stack, centered-master-stack, floating)"
     "dwindle-ratio|d|Dwindle split ratio"
     "master-ratio|d|Master area ratio"
     "borders-enabled|b|Show window borders"

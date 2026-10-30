@@ -47,7 +47,7 @@
     <key name="layout" type="s">
       <default>'dwindle'</default>
       <summary>Layout mode</summary>
-      <description>dwindle, master-stack, centered-master-stack, or floating</description>
+      <description>dwindle, spiral, master-stack, centered-master-stack, or floating</description>
     </key>
 
     <key name="workspace-layouts" type="as">
@@ -216,7 +216,7 @@
     <key name="workspace-dwindle-trees" type="as">
       <default><![CDATA[[]]]></default>
       <summary>Persisted dwindle split arrangements per workspace</summary>
-      <description>Entries in the form "index:shape" where shape encodes the tree's split directions and ratios (e.g. 3:h0.8480(l,l)). Restored when a workspace's window set changes so resized arrangements survive logins</description>
+      <description>Entries in the form "index:layout:shape" (layout dwindle or spiral) where shape encodes the tree's split directions and ratios (e.g. 3:dwindle:h0.8480(l,l)); untagged "index:shape" entries are read as dwindle. Restored when a workspace's window set changes so resized arrangements survive logins</description>
     </key>
 
     <!-- Keybindings: Window Movement -->
@@ -371,7 +371,7 @@
     <key name="cycle-layout" type="as">
       <default><![CDATA[['<Super><Shift>grave']]]></default>
       <summary>Cycle layout</summary>
-      <description>Cycle between dwindle, master-stack, and centered-master-stack</description>
+      <description>Cycle between dwindle, spiral, master-stack, and centered-master-stack</description>
     </key>
 
     <!-- Keybindings: Scratchpad -->

@@ -102,3 +102,16 @@ test('sync.sh syncs the modules directory', () => {
   const sync = readFileSync(join(root, 'sync.sh'), 'utf8');
   assert.ok(sync.includes('$SOURCE/modules'), 'sync.sh must copy extensions/modules');
 });
+
+test('every layout list names the same layouts as LAYOUT_NAMES', () => {
+  const block = extensionJs.match(/const LAYOUT_NAMES = \{([\s\S]*?)\};/);
+  assert.ok(block, 'LAYOUT_NAMES block not found');
+  const names = [...block[1].matchAll(/'([^']+)':/g)].map((m) => m[1]);
+  const lists = [...allJs.matchAll(/\[('dwindle'(?:, '[a-z-]+')+)\]/g)].map((m) => m[1]);
+  assert.ok(lists.length >= 3, 'expected the persisted, cycle and prefs layout lists');
+  for (const list of lists)
+    assert.deepEqual([...list.matchAll(/'([^']+)'/g)].map((m) => m[1]), names);
+  const layoutKey = schemaXml.match(/<key name="layout"[\s\S]*?<description>([^<]*)<\/description>/);
+  for (const name of names)
+    assert.ok(layoutKey[1].includes(name), `layout "${name}" missing from the layout key description`);
+});
