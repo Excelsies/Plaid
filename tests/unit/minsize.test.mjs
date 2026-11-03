@@ -73,6 +73,47 @@ test('_clampTreeToMinSizes: unsatisfiable mins fall back to the min-width split'
   assert.equal(tree.ratio, 0.5); // 300 / (300+300)
 });
 
+// Size hints: GNOME 50 returns [ok, w, h]; a plain [w, h] must read the same.
+test('unpackSizeHint: accepts both [ok, w, h] and [w, h]', () => {
+  const self = makeSelf();
+  assert.deepEqual(self.bsp.unpackSizeHint([true, 360, 410]), [true, 360, 410]);
+  assert.deepEqual(self.bsp.unpackSizeHint([false, 0, 0]), [false, 0, 0]);
+  assert.deepEqual(self.bsp.unpackSizeHint([360, 410]), [true, 360, 410]);
+  assert.deepEqual(self.bsp.unpackSizeHint(null), [false, 0, 0]);
+  assert.deepEqual(self.bsp.unpackSizeHint([360]), [false, 0, 0]);
+});
+
+test('_getWindowMinSize: reads the width from an [ok, w, h] hint (regression: read ok as w)', () => {
+  const self = makeSelf({}, { _minSizeOverrides: new Map(), _observedMinSizes: new Map() });
+  assert.deepEqual(self._getWindowMinSize(fakeWin({ minSize: [360, 410] })), { w: 360, h: 410 });
+  assert.deepEqual(self._getWindowMinSize(fakeWin({ minHint: [360, 410] })), { w: 360, h: 410 });
+  assert.deepEqual(self._getWindowMinSize(fakeWin({ minHint: [false, 360, 410] })), { w: 0, h: 0 });
+});
+
+test('windowMinSizeHint: converts the client hint to a frame size', () => {
+  const self = makeSelf();
+  // A CSD buffer: the client size includes a 14px shadow on each side.
+  assert.deepEqual(self.bsp.windowMinSizeHint(fakeWin({ minSize: [528, 406], frameDelta: [-28, -29] })),
+    { w: 500, h: 377 });
+  // An unset axis stays 0 rather than picking up the delta.
+  assert.deepEqual(self.bsp.windowMinSizeHint(fakeWin({ minSize: [528, 0], frameDelta: [-28, -29] })),
+    { w: 500, h: 0 });
+  assert.equal(self.bsp.windowMinSizeHint(fakeWin({ minSize: [0, 0] })), null);
+});
+
+test('_isFixedSizeWindow: min === max, for either hint shape', () => {
+  const self = makeSelf();
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minSize: [400, 300], maxSize: [400, 300] })), true);
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minHint: [400, 300], maxHint: [400, 300] })), true);
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minSize: [400, 300], maxSize: [400, 900] })), false);
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minSize: [400, 300] })), false);
+  // An unset hint is not a size, whatever it carries.
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minHint: [false, 400, 300], maxSize: [400, 300] })), false);
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minSize: [400, 300], maxHint: [false, 400, 300] })), false);
+  // The ok flag is not a width: [true, 400, 400] vs [true, 400, 900] differ.
+  assert.equal(self._isFixedSizeWindow(fakeWin({ minHint: [true, 400, 400], maxHint: [true, 400, 900] })), false);
+});
+
 function masterSelf(masterRatio) {
   return makeSelf({}, {
     _masterRatios: new Map(),

@@ -296,6 +296,36 @@ export class Bsp {
         return map;
     }
 
+    // get_min_size()/get_max_size() as [ok, w, h]. GNOME 50 returns that; a
+    // plain [w, h] counts as set, any other shape as unset.
+    unpackSizeHint(r) {
+        if (!Array.isArray(r) || r.length < 2) return [false, 0, 0];
+        const [ok, w, h] = r.length >= 3 ? [!!r[0], r[1], r[2]] : [true, r[0], r[1]];
+        return [ok, Number.isFinite(w) ? w : 0, Number.isFinite(h) ? h : 0];
+    }
+
+    // The min-size hint as a FRAME size, or null. Hints are in client
+    // coordinates (CSD shadow included, SSD titlebar excluded), so add mutter's
+    // client-to-frame delta, measured on a probe rect.
+    windowMinSizeHint(win) {
+        const raw = win.get_min_size();
+        if (!win._plaidHintShapeLogged) {
+            win._plaidHintShapeLogged = true;
+            this.core.debugLog(`size hint: ${win.get_wm_class_instance() || '?'} min=${JSON.stringify(raw)}`);
+        }
+        const [ok, w, h] = this.unpackSizeHint(raw);
+        if (!ok || (w <= 0 && h <= 0)) return null;
+        const probe = win.get_frame_rect();
+        probe.x = 0;
+        probe.y = 0;
+        probe.width = 1000;
+        probe.height = 1000;
+        const f = win.client_rect_to_frame_rect(probe);
+        const dw = f.width - 1000;
+        const dh = f.height - 1000;
+        return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
+    }
+
     getWindowMinSize(win) {
         let entry = null;
         for (const c of this.core.winClassCandidates(win)) {
@@ -323,10 +353,10 @@ export class Bsp {
             // hints. An explicit min-size override still wins (checked above).
             if (win._plaidSettleUntil && win._plaidSettleUntil > Date.now())
                 return { w: 0, h: 0 };
-            {
-                const [mw, mh] = win.get_min_size();
-                w = Number.isFinite(mw) ? mw : 0;
-                h = Number.isFinite(mh) ? mh : 0;
+            const min = this.windowMinSizeHint(win);
+            if (min) {
+                w = min.w;
+                h = min.h;
             }
         }
         // Some apps (ghostty) report no minimum, so raise the floor with the size

@@ -218,7 +218,13 @@ export function fakeWin(opts = {}) {
     get_wm_class: () => opts.wmClass ?? null,
     get_gtk_application_id: () => opts.appId ?? null,
     get_title: () => opts.title ?? '',
-    get_min_size: () => opts.minSize ?? [0, 0],
+    // GNOME 50 shape: [ok, w, h]. `minHint`/`maxHint` pass a raw shape through.
+    get_min_size: () => opts.minHint ?? (opts.minSize ? [true, ...opts.minSize] : [false, 0, 0]),
+    get_max_size: () => opts.maxHint ?? (opts.maxSize ? [true, ...opts.maxSize] : [false, 0, 0]),
+    client_rect_to_frame_rect: (r) => {
+      const [dw, dh] = opts.frameDelta ?? [0, 0];
+      return { ...r, width: r.width + dw, height: r.height + dh };
+    },
     get_window_type: () => opts.type ?? 0,
     get_pid: () => opts.pid ?? 0,
     get_compositor_private: () => opts.actor ?? null,
