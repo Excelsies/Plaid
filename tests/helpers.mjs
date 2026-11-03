@@ -220,6 +220,9 @@ export function fakeWin(opts = {}) {
     get_wm_class: () => opts.wmClass ?? null,
     get_gtk_application_id: () => opts.appId ?? null,
     get_title: () => opts.title ?? '',
+    get_pid: () => opts.pid ?? 0,
+    get_monitor: () => opts.monitor ?? 0,
+    get_transient_for: () => opts.transientFor ?? null,
     // GNOME 50 shape: [ok, w, h]. `minHint`/`maxHint` pass a raw shape through.
     get_min_size: () => opts.minHint ?? (opts.minSize ? [true, ...opts.minSize] : [false, 0, 0]),
     get_max_size: () => opts.maxHint ?? (opts.maxSize ? [true, ...opts.maxSize] : [false, 0, 0]),

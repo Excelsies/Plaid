@@ -449,6 +449,8 @@ export class Bsp {
         if (!node) return false;
         if (node.type === 'leaf') {
             if (!parent || !node.window) return false;
+            // A kept fullscreen leaf's frame is the monitor's, not its slot's.
+            if (node.window.is_fullscreen()) return false;
             const f = node.window.get_frame_rect();
             if (f.width === 0 || f.height === 0) return false;
             // parentAxis is the PARENT split's usable span (its w/h minus the

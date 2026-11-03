@@ -84,7 +84,15 @@ export class Windows extends PlaidSubsystem {
         }
     }
 
+    // Excluded from tiling right now: floating, or fullscreen (nothing may
+    // move, mask or border it). A fullscreen tile keeps its dwindle leaf
+    // (isFullscreenTile).
     isFloating(win) {
+        return this.floatsWhenWindowed(win) || win.is_fullscreen();
+    }
+
+    // Floating by toggle, rule or type: what the window is when not fullscreen.
+    floatsWhenWindowed(win) {
         if (this.core._toggleFloatWindows && this.core._toggleFloatWindows.has(win)) return true;
         // Auto-floated because no slot could meet its real size minimum —
         // excluded from tiling until released (see _releaseMinLimitedWindows).
@@ -99,12 +107,21 @@ export class Windows extends PlaidSubsystem {
         // The process cmdline is available immediately — and the verdict is
         // cached per PID (process-lifetime stable).
         if (this.isFloatProcessWindow(win)) return true;
-        if (win.is_fullscreen()) return true;
         if (win.get_window_type() !== Meta.WindowType.NORMAL) return true;
         if (win.is_skip_taskbar()) return true;
         if (win.get_transient_for()) return true;
         if (this.isFixedSizeWindow(win)) return true;
         return false;
+    }
+
+    // Its leaf stays as a placeholder: pruned, nothing gives the window its
+    // slot back when it leaves fullscreen. Only on the tiled (primary)
+    // monitor: elsewhere the leaf would hold a hole for good.
+    isFullscreenTile(win, ws) {
+        return win.is_fullscreen() && !win.minimized && win.get_workspace() === ws &&
+            win.get_monitor() === global.display.get_primary_monitor() &&
+            !!this.core._windowWorkspaces && this.core._windowWorkspaces.has(win) &&
+            !this.floatsWhenWindowed(win);
     }
 
     isFloatProcessWindow(win) {
@@ -480,8 +497,16 @@ export class Windows extends PlaidSubsystem {
             // ("2 blur glitch areas" when revealing the
             // scratchpad). A float's minimized state never changes the tiled
             // layout — skip the retile. _scratchpadRemove still retiles
-            // explicitly, so the intentional path is unaffected.
-            if (this.isFloating(win)) return;
+            // explicitly, so the intentional path is unaffected. A
+            // fullscreen tile does retile: its kept leaf would leave a hole.
+            if (this.floatsWhenWindowed(win)) return;
+            const ws = win.get_workspace();
+            if (ws) this.core.layouts.retileWorkspace(ws);
+        }) });
+        sigIds.push({ emitter: win, id: this.connectObject(win, 'notify::fullscreen', () => {
+            // Leaving fullscreen, mutter restores the frame saved on entry,
+            // stale if the layout changed since.
+            if (!this.core._settings || win.is_fullscreen() || this.floatsWhenWindowed(win)) return;
             const ws = win.get_workspace();
             if (ws) this.core.layouts.retileWorkspace(ws);
         }) });
@@ -819,7 +844,8 @@ export class Windows extends PlaidSubsystem {
         }
         if (!this.isFloating(win)) return;
         const ws = win.get_workspace();
-        if (ws) {
+        // A fullscreen tile keeps its leaf (video players retitle constantly).
+        if (ws && !this.isFullscreenTile(win, ws)) {
             const tree = this.core.bsp.bspGetTree(ws);
             if (tree && this.core.bsp.bspCollectWindows(tree).includes(win)) {
                 this.core._bspTrees.set(ws, this.core.bsp.bspRemove(tree, win));
