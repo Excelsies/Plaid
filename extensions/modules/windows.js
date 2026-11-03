@@ -477,6 +477,13 @@ export class Windows extends PlaidSubsystem {
                 const order = this.getWorkspaceOrder(oldWs);
                 const idx = order.indexOf(win);
                 if (idx !== -1) order.splice(idx, 1);
+                // Leave the old tree now: a grab defers this retile to its
+                // end, and until then the old slot stays a drop target
+                // (drag-scroll carries a window off mid-grab).
+                if (oldWs !== newWs) {
+                    const tree = this.core.bsp.bspGetTree(oldWs);
+                    if (tree) this.core._bspTrees.set(oldWs, this.core.bsp.bspRemove(tree, win));
+                }
                 this.core.layouts.retileWorkspace(oldWs);
             }
             if (newWs) {

@@ -9,11 +9,14 @@
 // Register it with: node --import ./tests/register.mjs --test tests/
 
 const GI_SOURCES = {
-  Clutter: 'export default { Orientation: { HORIZONTAL: 0, VERTICAL: 1 }, AnimationMode: { EASE_OUT_CUBIC: 0 }, get_default_backend: undefined };',
+  Clutter: 'export default { Orientation: { HORIZONTAL: 0, VERTICAL: 1 }, AnimationMode: { EASE_OUT_CUBIC: 0 }, get_default_backend: undefined, ' +
+    'EVENT_PROPAGATE: false, EVENT_STOP: true, EventType: { BUTTON_RELEASE: 7, SCROLL: 8 }, ' +
+    'ScrollDirection: { UP: 0, DOWN: 1, LEFT: 2, RIGHT: 3, SMOOTH: 4 }, ModifierType: { MOD4_MASK: 1 << 26 }, ' +
+    'Grab: class Grab {}, Event: { add_filter: () => 1, remove_filter: () => {} } };',
   Cogl: 'export default { SnippetHook: { FRAGMENT: 1, VERTEX: 2, TEXTURE_LOOKUP: 3 } };',
   GObject: 'export default { registerClass: () => { throw new Error("GObject.registerClass invoked at import time"); } };',
   Gio: 'export default {};',
-  GLib: 'export default { PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true, idle_add: () => 1, timeout_add: () => 1, source_remove: () => true, MainContext: { default: () => ({ find_source_by_id: () => true }) } };',
+  GLib: 'export default { PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true, idle_add: () => 1, timeout_add: () => 1, source_remove: () => true, get_monotonic_time: () => 0, MainContext: { default: () => ({ find_source_by_id: () => true }) } };',
   Graphene: 'export default {};',
   Meta: 'export default { WindowType: { NORMAL: 0 }, GrabOp: { NONE: 0, KEYBOARD_RESIZING_UNKNOWN: 769 }, KeyBindingAction: {}, prefs_get_keybinding_action: () => 0, external_binding_name_for_action: () => null };',
   Shell: 'export default {};',
@@ -27,6 +30,10 @@ const RESOURCE_SOURCES = [
     'overrideMethod(o, n, f) { const orig = o[n]; this.#saved.push([o, n, orig]); o[n] = f(orig); } ' +
     'clear() { for (const [o, n, orig] of this.#saved.reverse()) o[n] = orig; this.#saved = []; } }'],
   [/\/modalDialog\.js$/, 'export class ModalDialog {}'],
+  // Mutable stand-ins: tests set wm/overview fields and read the popped grabs.
+  [/\/ui\/main\.js$/, 'export const wm = {};\nexport const overview = { visible: false };\n' +
+    'export const sessionMode = { currentMode: \'user\', isLocked: false, connectObject() {}, disconnectObject() {} };\n' +
+    'export const popped = [];\nexport function popModal(grab) { popped.push(grab); }\n'],
   [/\/workspaceSwitcherPopup\.js$/, 'export class WorkspaceSwitcherPopup {}\nexport class MonitorWorkspaceSwitcherPopup {}'],
 ];
 

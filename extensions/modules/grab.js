@@ -25,6 +25,7 @@ export class Grab extends PlaidSubsystem {
             if (!this.core._settings || !this.core._settings.get_boolean('mouse-resize')) return;
             if (!this.core._settings.get_boolean('enabled')) return;
             this.handleGrabBegin(metaWindow, grabOp);
+            this.core.dragScroll.begin(metaWindow, grabOp);
         });
         this.connectObject(global.display, 'grab-op-end', (_d, metaWindow, grabOp) => {
             this.handleGrabEnd(metaWindow, grabOp);
@@ -75,6 +76,7 @@ export class Grab extends PlaidSubsystem {
         this.core._grabStartX = startX;
         this.core._grabStartY = startY;
         this.core._grabStartFrame = { x: frame.x, y: frame.y };
+        this.core._grabCarried = null;
         this.core._grabGrace = this.computeGrabGraceThreshold();
 
         if (this.isResizeGrab(grabOp)) {
@@ -136,6 +138,8 @@ export class Grab extends PlaidSubsystem {
     }
 
     handleGrabEnd(metaWindow, grabOp) {
+        // No scroll may carry the window once the grab is over.
+        this.core.dragScroll.end();
         const wasTracking = this.core._grabOp !== null;
         let dropWs = null;
 
@@ -184,6 +188,8 @@ export class Grab extends PlaidSubsystem {
         this.core._grabOp = null;
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;
+        this.core._grabCarried = null;
+        // Also the workspace a carried window left (drag-scroll).
         this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
         this.core.borders.startBorderAnimation();
@@ -216,8 +222,10 @@ export class Grab extends PlaidSubsystem {
 
     // The window's travel since grab begin, not the pointer's: mutter emits
     // grab-op-begin after the client's drag threshold, and Escape puts the
-    // frame back while the pointer stays where it was.
+    // frame back while the pointer stays where it was. A window carried to
+    // another workspace was dragged wherever it is released.
     movedPastGrace(win) {
+        if (win && this.core._grabCarried === win) return true;
         const start = this.core._grabStartFrame;
         if (!start || !win) return false;
         const f = win.get_frame_rect();
@@ -741,6 +749,7 @@ export class Grab extends PlaidSubsystem {
         this.core._grabOp = null;
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;
+        this.core._grabCarried = null;
         super.destroy();
     }
 }

@@ -29,6 +29,7 @@ import { Signals } from './signals.js';
 import { Actions } from './actions.js';
 import { DragPreview } from './drag-preview.js';
 import { Updater } from './updater.js';
+import { DragScroll } from './drag-scroll.js';
 
 export class PlaidCore {
     constructor(ext) {
@@ -57,6 +58,7 @@ export class PlaidCore {
         this.actions = new Actions(this);
         this.dragPreview = new DragPreview(this);
         this.updater = new Updater(this);
+        this.dragScroll = new DragScroll(this);
     }
 
     compileTitlePatterns(titles) {
@@ -173,6 +175,7 @@ export class PlaidCore {
         this._grabStartX = 0;
         this._grabStartY = 0;
         this._grabStartFrame = null;
+        this._grabCarried = null;
         this._grabWidthSign = 0;
         this._grabHeightSign = 0;
         this._grabResizeNodeW = null;
@@ -488,6 +491,7 @@ export class PlaidCore {
         this.bgApp.destroy();
         this.workspaces.destroy();
         this.placement.destroy();
+        this.dragScroll.destroy();
         this.grab.destroy();
         this.keybindings.destroy();
         this.actions.destroy();

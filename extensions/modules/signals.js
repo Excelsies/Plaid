@@ -244,6 +244,9 @@ export class Signals extends PlaidSubsystem {
                 if (this.core.windows.reassertFloatingTransients()) settleChanged = true;
                 return GLib.SOURCE_CONTINUE;
             });
+            // Re-activating the last focused window would raise it over the
+            // window drag-scroll is carrying here.
+            if (this.core.dragScroll.carrying(ws)) return;
             const windows = this.core.windows.getWindowsForWorkspace(ws);
             if (windows.length === 0) return;
             let target = this.core._lastFocusedPerWorkspace.get(ws);
@@ -499,6 +502,9 @@ export class Signals extends PlaidSubsystem {
         }
         if (this.core._retileAfterGrab)
             this.core._retileAfterGrab.clear();
+        // The drag-scroll event filter is not a GLib source.
+        this.core.dragScroll.end();
+        this.core._grabCarried = null;
 
         if (this.core._windowWorkspaces) {
             for (const win of this.core._windowWorkspaces.keys()) {

@@ -28,6 +28,11 @@ export class DragPreview {
 
     updateMoveDragPreview(metaWindow) {
         if (!metaWindow || !this.core._settings) return;
+        // Sliding to a drag-scroll target: a zone would draw over the slide.
+        if (this.core.dragScroll.active() && this.core.dragScroll.sliding()) {
+            this.hideDropPreview();
+            return;
+        }
         const ws = metaWindow.get_workspace();
         if (!ws) return;
         // Click-vs-drag gate: keep the overlay hidden until the window

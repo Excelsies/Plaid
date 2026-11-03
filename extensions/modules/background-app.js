@@ -19,6 +19,40 @@ import * as WorkspaceThumbnailModule from 'resource:///org/gnome/shell/ui/worksp
 import { sessionState } from './session-state.js';
 import { PlaidSubsystem } from './subsystem.js';
 
+// The workspace `step` (+1/-1) away from `from` among the real ones: the
+// parking workspace is skipped and the ends wrap. Null when `from` is not a
+// real workspace. Shared by the get_neighbor wrap and drag-scroll; reads the
+// session's parking state, since the wrap outlives a core.
+function realNeighbor(from, step) {
+    const wm = global.workspace_manager;
+    const n = wm.get_n_workspaces();
+    // Resolve the parking slot by IDENTITY, with its known front/trailing
+    // home as a fallback. A stale Meta.Workspace must never let the hidden
+    // parking back into the cycle — it renders as a second "Workspace 1".
+    const parkingWs = sessionState.parkingWorkspace;
+    let parkingIdx = -1;
+    for (let i = 0; parkingWs && i < n; i++) {
+        if (wm.get_workspace_by_index(i) === parkingWs) {
+            parkingIdx = i;
+            break;
+        }
+    }
+    if (parkingIdx < 0 && (parkingWs || sessionState.parkingFront))
+        parkingIdx = sessionState.parkingFront ? 0 : Math.max(0, n - 2);
+    const real = [];
+    for (let i = 0; i < n; i++) {
+        if (i === parkingIdx) continue;
+        const ws = wm.get_workspace_by_index(i);
+        if (ws) real.push(ws);
+    }
+    const idx = real.indexOf(from);
+    if (idx < 0) return null;
+    // A single real workspace has nowhere to wrap to; deny the move so the
+    // shell does not append one (which would fight the reservation).
+    if (real.length < 2) return from;
+    return real[(idx + step + real.length) % real.length];
+}
+
 export class BackgroundApp extends PlaidSubsystem {
     constructor(core) {
         super(core);
@@ -1016,6 +1050,10 @@ export class BackgroundApp extends PlaidSubsystem {
         this.hideParkingCard();
     }
 
+    realNeighbor(from, step) {
+        return realNeighbor(from, step);
+    }
+
     applyBackgroundAppHiding() {
         // The wraps are session-owned: a lock cycle destroys the core but not
         // the shell's prototypes. Adopt an existing wrap instead of stacking a
@@ -1064,30 +1102,8 @@ export class BackgroundApp extends PlaidSubsystem {
             }
             if (!leftDirs.includes(direction) && !rightDirs.includes(direction))
                 return origGetNeighbor.call(this, direction);
-            const wm = global.workspace_manager;
-            const n = wm.get_n_workspaces();
-            // Resolve the parking slot by IDENTITY, with its known front/trailing
-            // home as a fallback. A stale Meta.Workspace must never let the hidden
-            // parking back into the cycle — it renders as a second "Workspace 1".
-            const parkingWs = sessionState.parkingWorkspace;
-            let parkingIdx = wsIndex(parkingWs);
-            if (parkingIdx < 0 && (parkingWs || sessionState.parkingFront))
-                parkingIdx = sessionState.parkingFront ? 0 : Math.max(0, n - 2);
-            const real = [];
-            for (let i = 0; i < n; i++) {
-                if (i === parkingIdx) continue;
-                const ws = wm.get_workspace_by_index(i);
-                if (ws) real.push(ws);
-            }
-            const idx = real.indexOf(this);
-            if (idx < 0)
-                return origGetNeighbor.call(this, direction);
-            // A single real workspace has nowhere to wrap to; deny the move so the
-            // shell does not append one (which would fight the reservation).
-            if (real.length < 2)
-                return this;
             const step = leftDirs.includes(direction) ? -1 : 1;
-            return real[(idx + step + real.length) % real.length];
+            return realNeighbor(this, step) ?? origGetNeighbor.call(this, direction);
         };
         const origUpdateVisibility =
             WorkspacesViewModule.WorkspacesView.prototype._updateVisibility;

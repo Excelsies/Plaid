@@ -76,6 +76,7 @@ function resetCoreState(core, settings) {
   core._grabStartX = 0;
   core._grabStartY = 0;
   core._grabStartFrame = null;
+  core._grabCarried = null;
   core._grabWidthSign = 0;
   core._grabHeightSign = 0;
   core._grabResizeNodeW = null;
