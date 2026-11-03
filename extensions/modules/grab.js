@@ -68,12 +68,13 @@ export class Grab extends PlaidSubsystem {
 
         this.core._grabOp = grabOp;
 
-        // Capture the pointer for every tracked grab — the move-grab path
-        // (e.g. SSD titlebar clicks) must compare against the real click
-        // position, not the constructor's zeroed coords.
+        // Capture the pointer (the resize loop's origin) and the frame (the
+        // move path's click-vs-drag origin, see movedPastGrace) for every
+        // tracked grab, not the constructor's zeroed coords.
         const [startX, startY] = global.get_pointer();
         this.core._grabStartX = startX;
         this.core._grabStartY = startY;
+        this.core._grabStartFrame = { x: frame.x, y: frame.y };
         this.core._grabGrace = this.computeGrabGraceThreshold();
 
         if (this.isResizeGrab(grabOp)) {
@@ -143,16 +144,11 @@ export class Grab extends PlaidSubsystem {
             if (ws) {
                 if (this.isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
-                    // window starts a move grab with no real movement — only
-                    // reposition when the pointer actually travelled.
-                    {
-                        const [ex, ey] = global.get_pointer();
-                        const dx = ex - this.core._grabStartX;
-                        const dy = ey - this.core._grabStartY;
-                        const grace = this.core._grabGrace ?? 10;
-                        if (Math.hypot(dx, dy) >= grace)
-                            this.core.windows.repositionWindow(metaWindow, ws);
-                    }
+                    // window starts a move grab with no real movement, and
+                    // Escape restores the frame before grab-op-end — only
+                    // reposition when the window actually travelled.
+                    if (this.movedPastGrace(metaWindow))
+                        this.core.windows.repositionWindow(metaWindow, ws);
                 }
                 this.core.layouts.retileWorkspace(ws);
                 dropWs = ws;
@@ -180,6 +176,7 @@ export class Grab extends PlaidSubsystem {
         this.disconnectGrabBoundaryHooks();
         this.core._grabOp = null;
         this.core._grabWindow = null;
+        this.core._grabStartFrame = null;
         this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
         this.core.borders.startBorderAnimation();
@@ -208,6 +205,16 @@ export class Grab extends PlaidSubsystem {
             this.core.debugLog(`retile: drained after grab ws=[${order.map(ws => this.core.geometry.wsIndex(ws)).join(',')}]`);
         for (const ws of order)
             this.core.layouts.retileWorkspace(ws);
+    }
+
+    // The window's travel since grab begin, not the pointer's: mutter emits
+    // grab-op-begin after the client's drag threshold, and Escape puts the
+    // frame back while the pointer stays where it was.
+    movedPastGrace(win) {
+        const start = this.core._grabStartFrame;
+        if (!start || !win) return false;
+        const f = win.get_frame_rect();
+        return Math.hypot(f.x - start.x, f.y - start.y) >= (this.core._grabGrace ?? 10);
     }
 
     isResizeGrab(grabOp) {
@@ -718,6 +725,7 @@ export class Grab extends PlaidSubsystem {
         this.disconnectGrabBoundaryHooks();
         this.core._grabOp = null;
         this.core._grabWindow = null;
+        this.core._grabStartFrame = null;
         super.destroy();
     }
 }

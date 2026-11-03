@@ -97,3 +97,61 @@ test('_onShellShutdown: drops retiles deferred by a grab', () => {
   self._onShellShutdown();
   assert.equal(self._retileAfterGrab.size, 0);
 });
+
+// A move grab with the pointer far from the press: only the window's travel
+// decides whether it was a drop.
+function moveEndSelf(frame) {
+  const repositioned = [];
+  const { self } = grabSelf({
+    _repositionWindow: (win, ws) => repositioned.push([win, ws]),
+  });
+  self._grabOp = MOVE;
+  self._grabStartX = 100;
+  self._grabStartY = 100;
+  self._grabStartFrame = { x: 0, y: 0 };
+  self._grabGrace = 10;
+  const ws = {};
+  const win = { ...grabbed(ws), get_frame_rect: () => ({ ...frame }) };
+  withWorkspaces([ws], ws, () => {
+    globalThis.global.get_pointer = () => [900, 700];
+    self._handleGrabEnd(win, MOVE);
+  });
+  return { self, repositioned };
+}
+
+test('_handleGrabEnd: a drag that did not move the window is not a drop (Escape)', () => {
+  const { self, repositioned } = moveEndSelf({ x: 0, y: 0, width: 800, height: 600 });
+  assert.deepEqual(repositioned, []);
+  assert.equal(self._grabStartFrame, null);
+});
+
+test('_handleGrabEnd: a window moved past the grace is dropped', () => {
+  const { repositioned } = moveEndSelf({ x: 400, y: 300, width: 800, height: 600 });
+  assert.equal(repositioned.length, 1);
+});
+
+test('updateMoveDragPreview: hidden until the window, not the pointer, travelled', () => {
+  let hidden = 0;
+  let targeted = 0;
+  const ws = {};
+  const self = makeSelf({}, {
+    _hideDropPreview: () => hidden++,
+    _getWorkspaceLayout: () => 'dwindle',
+    _getWindowsForWorkspace: () => [{}, {}],
+    _isFloating: () => false,
+    _computeDwindleDropTarget: () => { targeted++; return null; },
+  });
+  self._grabStartFrame = { x: 0, y: 0 };
+  self._grabGrace = 10;
+  let frame = { x: 0, y: 0, width: 800, height: 600 };
+  const win = { get_workspace: () => ws, get_frame_rect: () => ({ ...frame }) };
+  withWorkspaces([ws], ws, () => {
+    globalThis.global.get_pointer = () => [900, 700];
+    self.dragPreview.updateMoveDragPreview(win);
+    assert.equal(targeted, 0);
+    frame = { x: 300, y: 0, width: 800, height: 600 };
+    self.dragPreview.updateMoveDragPreview(win);
+  });
+  assert.equal(targeted, 1);
+  assert.equal(hidden, 2);
+});
