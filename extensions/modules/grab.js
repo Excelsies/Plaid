@@ -142,14 +142,21 @@ export class Grab extends PlaidSubsystem {
         if (wasTracking && metaWindow && !this.core.windows.isFloating(metaWindow)) {
             const ws = metaWindow.get_workspace();
             if (ws) {
+                let edited = this.isResizeGrab(grabOp) && this.resizeMovedRatio();
                 if (this.isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
                     // window starts a move grab with no real movement, and
                     // Escape restores the frame before grab-op-end — only
                     // reposition when the window actually travelled.
-                    if (this.movedPastGrace(metaWindow))
+                    if (this.movedPastGrace(metaWindow)) {
                         this.core.windows.repositionWindow(metaWindow, ws);
+                        edited = true;
+                    }
                 }
+                // Keep the grab's edit, or a deferred window-set retile
+                // restores the pre-grab shape.
+                if (edited && this.core.windows.getWorkspaceLayout(ws) === 'dwindle')
+                    this.core.layouts.refreshSavedShape(ws, this.core.bsp.bspGetTree(ws));
                 this.core.layouts.retileWorkspace(ws);
                 dropWs = ws;
                 { metaWindow.raise(); }
@@ -215,6 +222,14 @@ export class Grab extends PlaidSubsystem {
         if (!start || !win) return false;
         const f = win.get_frame_rect();
         return Math.hypot(f.x - start.x, f.y - start.y) >= (this.core._grabGrace ?? 10);
+    }
+
+    // A dwindle resize grab that moved one of its splits.
+    resizeMovedRatio() {
+        const w = this.core._grabResizeNodeW;
+        const h = this.core._grabResizeNodeH;
+        return !!((w && w.ratio !== this.core._grabInitialRatioW) ||
+            (h && h.ratio !== this.core._grabInitialRatioH));
     }
 
     isResizeGrab(grabOp) {

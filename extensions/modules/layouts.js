@@ -615,9 +615,9 @@ export class Layouts {
         // Restore saved split ratios ONLY when the window set changed
         // (fresh session build, a window opened, or one closed). A plain
         // retile after a manual resize has the same leaf signature → no
-        // reconcile → live ratios are never stomped; the resize itself
-        // already scheduled a save (retiles are the save trigger), so the
-        // saved shape stays current for the next window-set change.
+        // reconcile → live ratios are never stomped. The saved shape only
+        // catches up at the debounced save, so the edits themselves (grab
+        // end, keyboard resize) refresh it at once (refreshSavedShape).
         if (tree && this.core._dwindleLeafSigs) {
             const sig = tiledWindows.map(w => w.get_id()).join(',');
             if (this.core._dwindleLeafSigs.get(workspace) !== sig) {
@@ -632,6 +632,21 @@ export class Layouts {
         this.core.bsp.treeMinSizes(tree, gap);
         this.core.bsp.clampTreeToMinSizes(tree, areaW, areaH, gap);
         this.core.bsp.bspLayout(tree, areaX, areaY, areaW, areaH, gap);
+    }
+
+    // The saved shape is re-read only after the 10s save: a window opened or
+    // closed meanwhile restored the shape from before the last resize or drop.
+    // After such an edit, take now what the save will write (the whole live
+    // shape; the reconcile's leaf-count guard still decides what a window-set
+    // change restores). Never on a plain retile: a restore in progress (login,
+    // a window closed and reopened) would lose the bigger saved shape.
+    refreshSavedShape(workspace, tree) {
+        if (!tree || tree.type !== 'split' || !this.core._persistedDwindleByIndex) return;
+        const idx = this.core.geometry.wsIndex(workspace);
+        // Same slots as the save: index 0 (the parking slot) is never stored.
+        if (idx <= 0) return;
+        const shape = this.core.bsp.dwindleShapeFromString(this.core.bsp.dwindleShapeToString(tree));
+        if (shape) this.core._persistedDwindleByIndex.set(idx, shape);
     }
 
 }

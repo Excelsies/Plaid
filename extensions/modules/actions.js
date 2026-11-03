@@ -186,6 +186,7 @@ export class Actions extends PlaidSubsystem {
                 const inFirst = this.core.bsp.bspFindPath(split.first, focused, []);
                 const signedDelta = inFirst ? delta : -delta;
                 split.ratio = Math.max(0.15, Math.min(0.85, split.ratio + signedDelta / axisSize));
+                this.core.layouts.refreshSavedShape(workspace, tree);
                 return;
             }
         }
