@@ -161,6 +161,7 @@ export class PlaidCore {
         this._observedMinSizes = new Map();
         this._minLimitedWindows = new Set();
         this._pendingWarp = new Set();
+        this._retileAfterGrab = new Set();
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = new Map();
         this._stackDiagnostics = new Set();
@@ -540,6 +541,7 @@ export class PlaidCore {
         this._observedMinSizes = null;
         this._minLimitedWindows = null;
         this._pendingWarp = null;
+        this._retileAfterGrab = null;
         this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = null;
         this._stackDiagnostics = null;

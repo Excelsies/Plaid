@@ -27,7 +27,15 @@ export class Layouts {
         if (!this.core._settings.get_boolean('enabled')) {
             return;
         }
-        if (this.core._grabOp) return;
+        if (this.core._grabOp) {
+            // Deferred, not dropped: a window set changed mid-grab would keep
+            // its hole. handleGrabEnd drains the set.
+            if (this.core._retileAfterGrab) {
+                this.core._retileAfterGrab.add(workspace);
+                this.core.debugLog(`retile: deferred ws=${this.core.geometry.wsIndex(workspace)} (grab active)`);
+            }
+            return;
+        }
         const tiledWindows = this.core.windows.getWindowsForWorkspace(workspace)
             .filter(w => !this.core.windows.isFloating(w));
         if (tiledWindows.length === 0) {

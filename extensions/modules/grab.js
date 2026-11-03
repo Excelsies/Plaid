@@ -136,6 +136,7 @@ export class Grab extends PlaidSubsystem {
 
     handleGrabEnd(metaWindow, grabOp) {
         const wasTracking = this.core._grabOp !== null;
+        let dropWs = null;
 
         if (wasTracking && metaWindow && !this.core.windows.isFloating(metaWindow)) {
             const ws = metaWindow.get_workspace();
@@ -154,6 +155,7 @@ export class Grab extends PlaidSubsystem {
                     }
                 }
                 this.core.layouts.retileWorkspace(ws);
+                dropWs = ws;
                 { metaWindow.raise(); }
             }
         }
@@ -178,8 +180,34 @@ export class Grab extends PlaidSubsystem {
         this.disconnectGrabBoundaryHooks();
         this.core._grabOp = null;
         this.core._grabWindow = null;
+        this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
         this.core.borders.startBorderAnimation();
+    }
+
+    // Retiles deferred by the grab, active workspace first. Not the drop's
+    // workspace again: rescheduled, it would wait behind the throttle.
+    drainRetilesAfterGrab(dropWs) {
+        const deferred = this.core._retileAfterGrab;
+        if (!deferred || deferred.size === 0) return;
+        if (!this.core._settings || this.core._shuttingDown) {
+            deferred.clear();
+            return;
+        }
+        const pending = new Set(deferred);
+        deferred.clear();
+        const active = global.workspace_manager.get_active_workspace();
+        const order = [];
+        for (let i = 0; i < global.workspace_manager.get_n_workspaces(); i++) {
+            const ws = global.workspace_manager.get_workspace_by_index(i);
+            if (ws === dropWs || !pending.has(ws)) continue;
+            if (ws === active) order.unshift(ws);
+            else order.push(ws);
+        }
+        if (order.length > 0)
+            this.core.debugLog(`retile: drained after grab ws=[${order.map(ws => this.core.geometry.wsIndex(ws)).join(',')}]`);
+        for (const ws of order)
+            this.core.layouts.retileWorkspace(ws);
     }
 
     isResizeGrab(grabOp) {

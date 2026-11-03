@@ -64,6 +64,7 @@ function resetCoreState(core, settings) {
   core._observedMinSizes = new Map();
   core._minLimitedWindows = new Set();
   core._pendingWarp = new Set();
+  core._retileAfterGrab = new Set();
   core._lastMonitorsGeom = null;
   core._pinnedAdjustCounts = new Map();
   core._stackDiagnostics = new Set();

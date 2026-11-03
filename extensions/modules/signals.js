@@ -178,6 +178,7 @@ export class Signals extends PlaidSubsystem {
                     // later fires against a dead workspace.
                     this.core._dwindleLeafSigs.delete(workspace);
                     this.core._queuedAnimWorkspaces.delete(workspace);
+                    this.core._retileAfterGrab.delete(workspace);
                     if (this.core._pendingRetileIds.has(workspace)) {
                         GLib.source_remove(this.core._pendingRetileIds.get(workspace));
                         this.core._pendingRetileIds.delete(workspace);
@@ -455,6 +456,8 @@ export class Signals extends PlaidSubsystem {
                 GLib.source_remove(id);
             this.core._pendingRetileIds.clear();
         }
+        if (this.core._retileAfterGrab)
+            this.core._retileAfterGrab.clear();
 
         if (this.core._windowWorkspaces) {
             for (const win of this.core._windowWorkspaces.keys()) {
