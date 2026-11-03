@@ -22,7 +22,10 @@ const GI_SOURCES = {
 };
 
 const RESOURCE_SOURCES = [
-  [/\/extensions\/extension\.js$/, 'export class Extension {}\nexport function gettext(s) { return s; }'],
+  [/\/extensions\/extension\.js$/, 'export class Extension {}\nexport function gettext(s) { return s; }\n' +
+    'export class InjectionManager { #saved = []; ' +
+    'overrideMethod(o, n, f) { const orig = o[n]; this.#saved.push([o, n, orig]); o[n] = f(orig); } ' +
+    'clear() { for (const [o, n, orig] of this.#saved.reverse()) o[n] = orig; this.#saved = []; } }'],
   [/\/modalDialog\.js$/, 'export class ModalDialog {}'],
   [/\/workspaceSwitcherPopup\.js$/, 'export class WorkspaceSwitcherPopup {}\nexport class MonitorWorkspaceSwitcherPopup {}'],
 ];

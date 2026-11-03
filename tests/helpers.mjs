@@ -47,6 +47,7 @@ function resetCoreState(core, settings) {
   core._savedRects = new Map();
   core._workspaceLayoutsSaveId = 0;
   core._saveDirtySince = 0;
+  core._layoutSaveClosed = false;
   core._stackSettleId = 0;
   core._pickFocusId = null;
   core._conflictScanId = 0;

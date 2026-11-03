@@ -16,7 +16,7 @@ export class Persistence {
         // Trailing (quiet-period) debounce: every change RESETS the timer, so
         // exactly one write lands 10s after interaction stops. A fixed-from-
         // first-event window would hammer dconf during sustained resizing.
-        if (!this.core._settings || this.core._shuttingDown) return;
+        if (!this.core._settings || this.core._shuttingDown || this.core._layoutSaveClosed) return;
         const now = Date.now();
         if (!this.core._saveDirtySince) this.core._saveDirtySince = now;
         // Starvation cap: under back-to-back activity the quiet timer keeps
@@ -107,8 +107,9 @@ export class Persistence {
         // Persisted layouts/ratios are RULES keyed by workspace slot (index):
         // "whatever workspace occupies slot N uses layout Y". Parsed once at enable
         // and read by the getters at use time — no binding to workspace objects
-        // (which churn during login restores). Rules for slots beyond the current
-        // workspace count persist and apply when those slots spawn.
+        // (which churn during login restores); a removal or an insert shifts the
+        // slots after it (shiftWorkspaceIndexKeys). Rules for slots beyond the
+        // current workspace count persist and apply when those slots spawn.
         this.core._persistedLayoutByIndex = new Map();
         this.core._persistedMasterByIndex = new Map();
         this.core._persistedStackByIndex = new Map();
@@ -155,6 +156,35 @@ export class Persistence {
         }
     }
 
+    // A workspace was inserted (delta +1) or removed (delta -1) at `index`:
+    // shift the per-index layouts, ratios and saved shapes (live and
+    // persisted, slots beyond the workspace count too) and re-derive the
+    // windows' cached indices. A BGAPP parking at slot 0 keeps that slot: no
+    // rule moves into or out of it.
+    shiftWorkspaceIndexKeys(index, delta) {
+        const parking = this.core._backgroundAppParkingWs;
+        const floor = parking && global.workspace_manager.get_workspace_by_index(0) === parking ? 1 : 0;
+        const from = delta > 0 ? Math.max(index, floor) : index;
+        let shifted = false;
+        for (const map of [this.core._workspaceLayouts, this.core._masterRatios, this.core._stackRatios,
+            this.core._pinnedAdjustCounts, this.core._persistedLayoutByIndex,
+            this.core._persistedMasterByIndex, this.core._persistedStackByIndex,
+            this.core._persistedDwindleByIndex, this.core._persistedDwindleRaw]) {
+            if (!map) continue;
+            const moved = [...map].filter(([k]) => k >= from && k >= floor);
+            for (const [k] of moved) map.delete(k);
+            for (const [k, v] of moved) {
+                if (delta < 0 && k === index) continue;
+                if (k + delta >= floor) map.set(k + delta, v);
+            }
+            if (moved.length > 0) shifted = true;
+        }
+        this.core.windows.refreshWorkspaceIndices();
+        if (!shifted) return;
+        this.core.debugLog(`workspaces: index state from ${from} shifted by ${delta}`);
+        this.scheduleSaveLayouts();
+    }
+
     parsePersistedDwindleShapes() {
         // "index:shape" slot rules, same keying as workspace-layouts: the shape
         // carries only structure + ratios (no window refs) — leaves are
@@ -184,6 +214,9 @@ export class Persistence {
     }
 
     destroy() {
+        // The final save below is the last one: teardown that follows (the
+        // BGAPP releasing a trailing parking) must not schedule another.
+        this.core._layoutSaveClosed = true;
         if (this.core._workspaceLayoutsSaveId) {
             GLib.source_remove(this.core._workspaceLayoutsSaveId);
             this.core._workspaceLayoutsSaveId = 0;

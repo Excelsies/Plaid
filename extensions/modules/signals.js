@@ -7,6 +7,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import { bumpMonitorDims } from './blur.js';
 import { PlaidSubsystem } from './subsystem.js';
@@ -15,6 +16,8 @@ import { PlaidSubsystem } from './subsystem.js';
 export class Signals extends PlaidSubsystem {
     constructor(core) {
         super(core);
+        this._injections = new InjectionManager();
+        this._pendingInsert = null;
     }
 
     connectSignals() {
@@ -148,45 +151,13 @@ export class Signals extends PlaidSubsystem {
             this.connectObject(this.core._mutterSettings,
                 'changed::dynamic-workspaces', () => this.core.bgApp.checkDynamicWorkspaces());
         }
-        this.connectObject(global.workspace_manager, 'workspace-added', (_m, index) => {
-            const ws = global.workspace_manager.get_workspace_by_index(index);
-            this.core._workspaceOrders.set(ws, []);
-            this.core.bgApp.scheduleBackgroundAppParkingFix();
-        });
-        this.connectObject(global.workspace_manager, 'workspace-removed', () => {
-            this.core.bgApp.scheduleBackgroundAppParkingFix();
-            for (const [workspace] of this.core._workspaceOrders) {
-                let valid = false;
-                for (let i = 0; i < global.workspace_manager.get_n_workspaces(); i++) {
-                    if (global.workspace_manager.get_workspace_by_index(i) === workspace) {
-                        valid = true;
-                        break;
-                    }
-                }
-                if (!valid) {
-                    this.core._workspaceOrders.delete(workspace);
-                    this.core._masterRatios.delete(this.core.geometry.wsIndex(workspace));
-                    this.core._stackRatios.delete(this.core.geometry.wsIndex(workspace));
-                    this.core._bspTrees.delete(workspace);
-                    this.core._workspaceLayouts.delete(this.core.geometry.wsIndex(workspace));
-                    this.core._lastFocusedPerWorkspace.delete(workspace);
-                    // Workspace-keyed, workspace-object key — a retained
-                    // GJS wrapper per removed workspace otherwise.
-                    this.core._lastRetileTimes.delete(workspace);
-                    // The workspace-object-keyed maps missed here: a
-                    // retained wrapper + a pending retile timeout that
-                    // later fires against a dead workspace.
-                    this.core._dwindleLeafSigs.delete(workspace);
-                    this.core._queuedAnimWorkspaces.delete(workspace);
-                    this.core._retileAfterGrab.delete(workspace);
-                    if (this.core._pendingRetileIds.has(workspace)) {
-                        GLib.source_remove(this.core._pendingRetileIds.get(workspace));
-                        this.core._pendingRetileIds.delete(workspace);
-                    }
-                    this.core.persistence.scheduleSaveLayouts();
-                }
-            }
-        });
+        this.connectObject(global.workspace_manager, 'workspace-added', (_m, index) =>
+            this.onWorkspaceAdded(index));
+        this.hookInsertWorkspace();
+        this.connectObject(global.workspace_manager, 'workspace-removed', (_m, index) =>
+            this.onWorkspaceRemoved(index));
+        this.connectObject(global.workspace_manager, 'workspaces-reordered', () =>
+            this.core.windows.refreshWorkspaceIndices());
         this.connectObject(global.workspace_manager, 'active-workspace-changed', () => {
             this.core.dropdown.scheduleDropdownWorkspaceSync();
             this.core.bgApp.raiseBackgroundAppClone();
@@ -357,6 +328,76 @@ export class Signals extends PlaidSubsystem {
 
     }
 
+    onWorkspaceAdded(index) {
+        const ws = global.workspace_manager.get_workspace_by_index(index);
+        this.core._workspaceOrders.set(ws, []);
+        // The append of an insertWorkspace(): shift now, before the shell
+        // moves the windows and activates their new workspace.
+        const insert = this._pendingInsert;
+        if (insert && index === insert.before) {
+            this._pendingInsert = null;
+            this.core.persistence.shiftWorkspaceIndexKeys(insert.pos, +1);
+        }
+        this.core.bgApp.scheduleBackgroundAppParkingFix();
+    }
+
+    // mutter only appends workspaces (workspace-added moves nothing). The
+    // shell's insertWorkspace() appends one and moves the windows at `pos` and
+    // after up one workspace (a drop between overview thumbnails, a move left
+    // from the first workspace): their per-index state moves with them.
+    hookInsertWorkspace(wm = Main.wm) {
+        const signals = this;
+        this._injections.overrideMethod(wm, 'insertWorkspace', original => function (pos) {
+            if (signals.core._settings)
+                signals._pendingInsert = { pos, before: global.workspace_manager.get_n_workspaces() };
+            try {
+                original.call(this, pos);
+            } finally {
+                signals._pendingInsert = null;
+            }
+        });
+    }
+
+    // A removal renumbers every workspace after `index`: the per-index state
+    // moves with its workspace (shiftWorkspaceIndexKeys).
+    onWorkspaceRemoved(index) {
+        this.core.bgApp.scheduleBackgroundAppParkingFix();
+        this.core.persistence.shiftWorkspaceIndexKeys(index, -1);
+        for (const [workspace] of this.core._workspaceOrders) {
+            let valid = false;
+            for (let i = 0; i < global.workspace_manager.get_n_workspaces(); i++) {
+                if (global.workspace_manager.get_workspace_by_index(i) === workspace) {
+                    valid = true;
+                    break;
+                }
+            }
+            if (!valid) {
+                this.core._workspaceOrders.delete(workspace);
+                this.core._bspTrees.delete(workspace);
+                this.core._lastFocusedPerWorkspace.delete(workspace);
+                // Workspace-keyed, workspace-object key — a retained
+                // GJS wrapper per removed workspace otherwise.
+                this.core._lastRetileTimes.delete(workspace);
+                // The workspace-object-keyed maps missed here: a
+                // retained wrapper + a pending retile timeout that
+                // later fires against a dead workspace.
+                this.core._dwindleLeafSigs.delete(workspace);
+                this.core._queuedAnimWorkspaces.delete(workspace);
+                this.core._retileAfterGrab.delete(workspace);
+                if (this.core._pendingRetileIds.has(workspace)) {
+                    GLib.source_remove(this.core._pendingRetileIds.get(workspace));
+                    this.core._pendingRetileIds.delete(workspace);
+                }
+                this.core.persistence.scheduleSaveLayouts();
+            }
+        }
+        // The renumbered workspaces, with their own layouts again.
+        for (let i = index; i < global.workspace_manager.get_n_workspaces(); i++) {
+            const ws = global.workspace_manager.get_workspace_by_index(i);
+            if (ws) this.core.layouts.retileWorkspace(ws);
+        }
+    }
+
     trackSource(id) {
         if (id && this.core._sourceIds) this.core._sourceIds.add(id);
         return id;
@@ -506,6 +547,7 @@ export class Signals extends PlaidSubsystem {
     }
 
     destroy() {
+        this._injections.clear();
         this.removeAllSources();
         this.disconnectSignals();
         if (this.core._stackSettleId) {

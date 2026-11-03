@@ -186,7 +186,8 @@ export class Windows extends PlaidSubsystem {
         // the SAME index space — the lookup is deterministic per workspace
         // index, so a recreated workspace (dynamic-workspace churn) resolves
         // identically every time. Object-keyed live entries caused layout
-        // flip-flops when workspaces were removed and recreated.
+        // flip-flops when workspaces were removed and recreated. Inserts and
+        // removals shift these keys (shiftWorkspaceIndexKeys).
         const idx = this.core.geometry.wsIndex(workspace);
         const live = this.core._workspaceLayouts.get(idx);
         if (live) return live;

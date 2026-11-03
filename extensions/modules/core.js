@@ -144,6 +144,7 @@ export class PlaidCore {
         this._savedRects = new Map();
         this._workspaceLayoutsSaveId = 0;
         this._saveDirtySince = 0;
+        this._layoutSaveClosed = false;
         this._stackSettleId = 0;
         this._pickFocusId = null;
         this._conflictScanId = 0;
