@@ -111,7 +111,7 @@ test('grab begin and loop: a Spiral resize picks the grabbed edge\'s divider, ho
   }
 });
 
-test('grab begin: a Spiral pointer resize is measured from the press; a keyboard one and dwindle from the pointer', () => {
+test('grab begin: a tiled pointer resize is measured from the press (Spiral, dwindle, master-stack); a keyboard one from the pointer', () => {
   const a = win('a', { x: 0, y: 0, width: 500, height: 500 });
   const b = win('b', { x: 500, y: 0, width: 500, height: 500 });
   const tree = split('h', 0.5, leaf(a), leaf(b));
@@ -131,9 +131,17 @@ test('grab begin: a Spiral pointer resize is measured from the press; a keyboard
     self.grab.handleGrabBegin(b, W_EDGE | 0x100);
     assert.equal(self._grabStartX, 508, 'keyboard: the pointer');
     self._grabOp = null;
-    self.windows.getWorkspaceLayout = () => 'dwindle';
+    for (const layout of ['dwindle', 'master-stack']) {
+      self._grabOp = null;
+      self.windows.getWorkspaceLayout = () => layout;
+      self.grab.handleGrabBegin(b, W_EDGE);
+      assert.equal(self._grabStartX, 500, `${layout}: from the press`);
+    }
+    // A floating window: mutter's own resize, the pointer.
+    self._grabOp = null;
+    self.windows.isFloating = () => true;
     self.grab.handleGrabBegin(b, W_EDGE);
-    assert.equal(self._grabStartX, 508, 'dwindle: the pointer');
+    assert.equal(self._grabStartX, 508, 'floating: the pointer');
   } finally {
     GLib.timeout_add = origT;
     globalThis.global = old;
@@ -165,6 +173,40 @@ test('grab end: a release before the last tick still applies the last motion (a 
     ptr = [400, 250]; // released before the loop ticked
     self.grab.handleGrabEnd(b, 1 | (1 << 12));
     assert.equal(tree.ratio, 0.4);
+  } finally {
+    GLib.timeout_add = origT;
+    globalThis.global = old;
+  }
+});
+
+test('grab begin and loop: a dwindle resize picks the grabbed edge\'s divider and holds the inner one', () => {
+  const a = win('a', { x: 0, y: 0, width: 500, height: 500 });
+  const b = win('b', { x: 500, y: 0, width: 250, height: 500 });
+  const c = win('c', { x: 750, y: 0, width: 250, height: 500 });
+  const tree = split('h', 0.5, leaf(a), split('h', 0.5, leaf(b), leaf(c)));
+  const self = resizeSelf(tree);
+  self.windows.getWorkspaceLayout = () => 'dwindle';
+  const old = globalThis.global;
+  let ptr = [500, 250];
+  globalThis.global = { ...old, get_pointer: () => [...ptr, 0],
+    workspace_manager: { get_active_workspace: () => WS, get_n_workspaces: () => 1, get_workspace_by_index: () => WS } };
+  const origT = GLib.timeout_add;
+  let loop = null;
+  GLib.timeout_add = (_p, _ms, cb) => { loop = cb; return 7; };
+  try {
+    b.get_window_type = () => 0;
+    self.grab.pressAnchor = () => null;
+    self.grab.moveTiledExcept = () => {};
+    self.grab.enforceGrabBoundary = () => {};
+    // b's left edge (W = 1): the root divider, not the b|c split nearest b.
+    self.grab.handleGrabBegin(b, 1 | (1 << 12));
+    assert.equal(self._grabResizeNodeW, tree);
+    assert.equal(self._grabInnerW.node, tree.second);
+    ptr = [400, 250];
+    loop();
+    assert.equal(tree.ratio, 0.4);
+    const inner = tree.second;
+    assert.equal(inner._x + Math.floor(inner._w * inner.ratio), 750, 'b\'s right edge stays');
   } finally {
     GLib.timeout_add = origT;
     globalThis.global = old;

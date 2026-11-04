@@ -60,7 +60,8 @@ export class Grab extends PlaidSubsystem {
     // after a cursor-shape change (a resize edge's cursor comes before the
     // press).
     trackPressPointer(tracker) {
-        // Only a Spiral resize reads the press: other layouts pay nothing.
+        // Only a tiled group's resize reads the press: a workspace that tiles
+        // nothing pays nothing.
         if (!this.pressTrackWanted()) return;
         this._pressTrackUntil = GLib.get_monotonic_time() / 1000 + PRESS_TRACK_MS;
         this.recordPressPointer();
@@ -73,12 +74,11 @@ export class Grab extends PlaidSubsystem {
         });
     }
 
-    // A Spiral group on the active workspace.
+    // A tiled group on the active workspace.
     pressTrackWanted() {
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws || !this.core._settings) return false;
-        return this.core.monitors.tiledMonitors().some(mon =>
-            this.core.monitors.groupPlaces(ws, mon) && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral');
+        return this.core.monitors.tiledMonitors().some(mon => this.core.monitors.groupPlaces(ws, mon));
     }
 
     recordPressPointer() {
@@ -146,13 +146,14 @@ export class Grab extends PlaidSubsystem {
 
         // Capture the pointer (the resize loop's origin) and the frame (the
         // move path's click-vs-drag origin, see movedPastGrace) for every
-        // tracked grab, not the constructor's zeroed coords. A Spiral pointer
-        // resize is measured from the press (pressAnchor).
+        // tracked grab, not the constructor's zeroed coords. A tiled pointer
+        // resize is measured from the press (pressAnchor), as mutter measures
+        // it: grab-op-begin comes after the pointer has already moved.
         const keyboard = (grabOp & 0x100) !== 0; // META_GRAB_OP_WINDOW_FLAG_KEYBOARD
         const grabMon = this.core.monitors.windowMon(metaWindow);
-        const spiralResize = this.isResizeGrab(grabOp) && !keyboard && !this.core.windows.isFloating(metaWindow) &&
-            this.core.monitors.groupPlaces(ws, grabMon) && this.core.windows.getWorkspaceLayout(ws, grabMon) === 'spiral';
-        const [startX, startY] = (spiralResize && this.pressAnchor(metaWindow)) || global.get_pointer();
+        const tiledResize = this.isResizeGrab(grabOp) && !keyboard && !this.core.windows.isFloating(metaWindow) &&
+            this.core.monitors.groupPlaces(ws, grabMon);
+        const [startX, startY] = (tiledResize && this.pressAnchor(metaWindow)) || global.get_pointer();
         this.core._grabStartX = startX;
         this.core._grabStartY = startY;
         this.core._grabStartFrame = { x: frame.x, y: frame.y };
@@ -176,34 +177,15 @@ export class Grab extends PlaidSubsystem {
             this.core._grabHeightSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
             const mon = this.core.monitors.windowMon(metaWindow);
             const places = this.core.monitors.groupPlaces(ws, mon);
-            // Spiral moves the divider under the grabbed edge.
-            const spiral = places && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
-            const tree = places && !spiral ? this.core.bsp.bspGetTree(ws, mon) : null;
+            const layout = places ? this.core.windows.getWorkspaceLayout(ws, mon) : null;
+            const spiral = layout === 'spiral';
             this.core._grabResizeNodeW = null;
             this.core._grabResizeNodeH = null;
             this.core._grabInitialRatioW = 0;
             this.core._grabInitialRatioH = 0;
-            if (spiral)
+            // BSP layouts move the divider under the grabbed edge.
+            if (isBspLayout(layout))
                 this.pickSplits(metaWindow, ws);
-
-            if (tree) {
-                const path = [];
-                this.core.bsp.bspFindPath(tree, metaWindow, path);
-                for (let i = path.length - 1; i >= 0; i--) {
-                    if (path[i].direction === 'h' && this.core._grabWidthSign !== 0 && !this.core._grabResizeNodeW) {
-                        this.core._grabResizeNodeW = path[i];
-                        this.core._grabInitialRatioW = path[i].ratio;
-                        if (!this.core.bsp.bspFindPath(path[i].first, metaWindow, []))
-                            this.core._grabWidthSign = -this.core._grabWidthSign;
-                    }
-                    if (path[i].direction === 'v' && this.core._grabHeightSign !== 0 && !this.core._grabResizeNodeH) {
-                        this.core._grabResizeNodeH = path[i];
-                        this.core._grabInitialRatioH = path[i].ratio;
-                        if (!this.core.bsp.bspFindPath(path[i].first, metaWindow, []))
-                            this.core._grabHeightSign = -this.core._grabHeightSign;
-                    }
-                }
-            }
 
             this.core._grabInitialMasterRatio = places ? this.core.layouts.getMasterRatio(ws, mon) : 0.5;
             this.core._grabInitialStackRatios = new Map(places ? this.core.layouts.getStackRatios(ws, mon) : []);
@@ -410,17 +392,23 @@ export class Grab extends PlaidSubsystem {
         c._grabInitialRatioH = c._grabResizeNodeH?.ratio ?? 0;
     }
 
-    // Spiral: the picked dividers follow the pointer's travel (no minimums,
-    // bsp.minimumsIgnored); `inner` is re-solved so the anchored edge stays
-    // where mutter keeps it. Leaves the tree tagged.
-    updateGrabSplits(tree, dx, dy, gap, area) {
+    // The picked dividers follow the pointer's travel; `inner` is re-solved so
+    // the anchored edge stays where mutter keeps it. A Spiral divider passes
+    // any minimum (bsp.minimumsIgnored); a dwindle one stops at both subtrees'
+    // minimums. Leaves the tree tagged.
+    updateGrabSplits(tree, dx, dy, gap, area, ws, mon) {
         const c = this.core;
+        const free = c.bsp.minimumsIgnored(ws, mon);
+        if (!free) c.bsp.treeMinSizes(tree, gap, ws, mon);
         const nodeW = c._grabResizeNodeW;
         const nodeH = c._grabResizeNodeH;
         if (nodeW)
-            this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap);
+            this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap, free);
         if (nodeH)
-            this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap);
+            this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap, free);
+        // Re-clamp the splits below, or a narrowing subtree draws its min-size
+        // window squashed for the whole grab.
+        if (!free) c.bsp.clampTreeToMinSizes(tree, area.w, area.h, gap);
         c.bsp.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
         for (const inner of [c._grabInnerW, c._grabInnerH]) {
             if (!inner) continue;
@@ -429,17 +417,31 @@ export class Grab extends PlaidSubsystem {
             const start = isH ? n._x : n._y;
             const split = inner.inFirst ? inner.anchor - start : inner.anchor - gap - start;
             // +0.5: the layout floors (axis - gap) * ratio back to `split`.
-            this.setGrabRatio(n, (split + 0.5) / ((isH ? n._w : n._h) - gap), gap);
+            this.setGrabRatio(n, (split + 0.5) / ((isH ? n._w : n._h) - gap), gap, free);
             c.bsp.bspTagGeometry(n, n._x, n._y, n._w, n._h, gap);
         }
     }
 
-    // A tagged Spiral split's ratio, within [0.05, 0.95] (Hyprland's 0.1..1.9
-    // of 2): no minimum bounds it.
-    setGrabRatio(node, raw, gap) {
-        const axisSize = (node.direction === 'h' ? node._w : node._h) - gap;
-        if (!(axisSize > 0) || !Number.isFinite(raw)) return;
-        node.ratio = Math.max(0.05, Math.min(0.95, raw));
+    // A tagged split's ratio. Spiral (free): within [0.05, 0.95] (Hyprland's
+    // 0.1..1.9 of 2), no minimum bounds it. Otherwise within both children's
+    // minimums (the tree's _minW/_minH). true: the raw ratio was clamped.
+    setGrabRatio(node, raw, gap, free) {
+        const isH = node.direction === 'h';
+        const axisSize = (isH ? node._w : node._h) - gap;
+        if (!(axisSize > 0) || !Number.isFinite(raw)) return false;
+        if (free) {
+            node.ratio = Math.max(0.05, Math.min(0.95, raw));
+            return node.ratio !== raw;
+        }
+        const min1 = (isH ? node.first?._minW : node.first?._minH) || 0;
+        const min2 = (isH ? node.second?._minW : node.second?._minH) || 0;
+        const minRatio = min1 / axisSize;
+        const maxRatio = 1 - min2 / axisSize;
+        const lo = maxRatio <= minRatio
+            ? (min1 + min2 > 0 ? min1 / (min1 + min2) : 0.15) : minRatio;
+        const hi = maxRatio <= minRatio ? lo : maxRatio;
+        node.ratio = Math.max(lo, Math.min(hi, raw));
+        return node.ratio !== raw;
     }
 
     startGrabLoop(metaWindow, mode) {
@@ -477,45 +479,7 @@ export class Grab extends PlaidSubsystem {
                     if (tree) {
                         const area = this.core.geometry.outsideArea(workArea);
                         if (!area) return GLib.SOURCE_CONTINUE;
-                        const areaX = area.x;
-                        const areaY = area.y;
-                        const areaW = area.w;
-                        const areaH = area.h;
-
-                        this.core.bsp.treeMinSizes(tree, gap, ws, mon);
-                        if (this.core._grabResizeNodeW) {
-                            const axis = this.core._grabResizeNodeW._w;
-                            if (axis - gap > 0) {
-                                const axisSize = axis - gap;
-                                const minW1 = this.core._grabResizeNodeW.first._minW || 0;
-                                const minW2 = this.core._grabResizeNodeW.second._minW || 0;
-                                const minRatio = minW1 / axisSize;
-                                const maxRatio = 1 - minW2 / axisSize;
-                                const lo = maxRatio <= minRatio
-                                    ? (minW1 + minW2 > 0 ? minW1 / (minW1 + minW2) : 0.15) : minRatio;
-                                const hi = maxRatio <= minRatio ? lo : maxRatio;
-                                const raw = this.core._grabInitialRatioW + (dx * this.core._grabWidthSign) / axisSize;
-                                if (Number.isFinite(raw))
-                                    this.core._grabResizeNodeW.ratio = Math.max(lo, Math.min(hi, raw));
-                            }
-                        }
-                        if (this.core._grabResizeNodeH) {
-                            const axis = this.core._grabResizeNodeH._h;
-                            if (axis - gap > 0) {
-                                const axisSize = axis - gap;
-                                const minH1 = this.core._grabResizeNodeH.first._minH || 0;
-                                const minH2 = this.core._grabResizeNodeH.second._minH || 0;
-                                const minRatio = minH1 / axisSize;
-                                const maxRatio = 1 - minH2 / axisSize;
-                                const lo = maxRatio <= minRatio
-                                    ? (minH1 + minH2 > 0 ? minH1 / (minH1 + minH2) : 0.15) : minRatio;
-                                const hi = maxRatio <= minRatio ? lo : maxRatio;
-                                const raw = this.core._grabInitialRatioH + (dy * this.core._grabHeightSign) / axisSize;
-                                if (Number.isFinite(raw))
-                                    this.core._grabResizeNodeH.ratio = Math.max(lo, Math.min(hi, raw));
-                            }
-                        }
-                        this.core.bsp.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
+                        this.updateGrabSplits(tree, dx, dy, gap, area, ws, mon);
                     }
                 } else if (places && (layout === 'master-stack' || layout === 'centered-master-stack')) {
                     const area = this.core.geometry.outsideArea(workArea);
@@ -636,7 +600,7 @@ export class Grab extends PlaidSubsystem {
         if (!area) return true;
         const [x, y] = global.get_pointer();
         this.updateGrabSplits(tree, x - this.core._grabStartX, y - this.core._grabStartY,
-            this.core._settings.get_int('inside-gap'), area);
+            this.core._settings.get_int('inside-gap'), area, ws, mon);
         this.spiralLiveResize(win);
         return true;
     }

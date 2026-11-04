@@ -28,10 +28,10 @@ function pressSelf(pointer, layout = 'spiral') {
   return { self, restore: () => { globalThis.global = old; } };
 }
 
-test('trackPressPointer: with a Spiral group, the pointer is recorded after a cursor change, for 3 s', () => {
+test('trackPressPointer: with a tiled group (Spiral, dwindle or master-stack), the pointer is recorded after a cursor change, for 3 s', () => {
   clock = 1000;
   const ptr = { at: [10, 10] };
-  const { self, restore } = pressSelf(ptr);
+  const { self, restore } = pressSelf(ptr, 'master-stack');
   try {
     const t = tracker();
     self.grab.trackPressPointer(t);
@@ -90,9 +90,10 @@ test('trail: the last 8 positions', () => {
   }
 });
 
-test('trackPressPointer: nothing is recorded or hooked without a Spiral group on the active workspace', () => {
+test('trackPressPointer: nothing is recorded or hooked without a tiled group on the active workspace', () => {
   clock = 0;
-  const { self, restore } = pressSelf({ at: [1, 1] }, 'master-stack');
+  const { self, restore } = pressSelf({ at: [1, 1] }, 'floating');
+  self.monitors.groupPlaces = () => false;
   try {
     const t = tracker();
     self.grab.trackPressPointer(t);
