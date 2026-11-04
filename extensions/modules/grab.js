@@ -145,8 +145,13 @@ export class Grab extends PlaidSubsystem {
 
         // Capture the pointer (the resize loop's origin) and the frame (the
         // move path's click-vs-drag origin, see movedPastGrace) for every
-        // tracked grab, not the constructor's zeroed coords.
-        const [startX, startY] = global.get_pointer();
+        // tracked grab, not the constructor's zeroed coords. A Spiral pointer
+        // resize is measured from the press (pressAnchor).
+        const keyboard = (grabOp & 0x100) !== 0; // META_GRAB_OP_WINDOW_FLAG_KEYBOARD
+        const grabMon = this.core.monitors.windowMon(metaWindow);
+        const spiralResize = this.isResizeGrab(grabOp) && !keyboard && !this.core.windows.isFloating(metaWindow) &&
+            this.core.monitors.groupPlaces(ws, grabMon) && this.core.windows.getWorkspaceLayout(ws, grabMon) === 'spiral';
+        const [startX, startY] = (spiralResize && this.pressAnchor(metaWindow)) || global.get_pointer();
         this.core._grabStartX = startX;
         this.core._grabStartY = startY;
         this.core._grabStartFrame = { x: frame.x, y: frame.y };
@@ -170,11 +175,15 @@ export class Grab extends PlaidSubsystem {
             this.core._grabHeightSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
             const mon = this.core.monitors.windowMon(metaWindow);
             const places = this.core.monitors.groupPlaces(ws, mon);
-            const tree = places ? this.core.bsp.bspGetTree(ws, mon) : null;
+            // Spiral moves the divider under the grabbed edge.
+            const spiral = places && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
+            const tree = places && !spiral ? this.core.bsp.bspGetTree(ws, mon) : null;
             this.core._grabResizeNodeW = null;
             this.core._grabResizeNodeH = null;
             this.core._grabInitialRatioW = 0;
             this.core._grabInitialRatioH = 0;
+            if (spiral)
+                this.pickSplits(metaWindow, ws);
 
             if (tree) {
                 const path = [];
@@ -200,10 +209,13 @@ export class Grab extends PlaidSubsystem {
 
             this.startGrabLoop(metaWindow, 'resize');
             this.disconnectGrabBoundaryHooks();
-            this.core._grabSizeChangedId = this.connectObject(metaWindow, 'size-changed', () =>
-                this.enforceGrabBoundary(metaWindow));
-            this.core._grabPositionChangedId = this.connectObject(metaWindow, 'position-changed', () =>
-                this.enforceGrabBoundary(metaWindow));
+            // Spiral never configures the grabbed window mid-grab.
+            if (!spiral) {
+                this.core._grabSizeChangedId = this.connectObject(metaWindow, 'size-changed', () =>
+                    this.enforceGrabBoundary(metaWindow));
+                this.core._grabPositionChangedId = this.connectObject(metaWindow, 'position-changed', () =>
+                    this.enforceGrabBoundary(metaWindow));
+            }
         } else if (this.isMoveGrab(grabOp) && !this.core.windows.isFloating(metaWindow)) {
             this.startGrabLoop(metaWindow, 'move');
         } else {
@@ -221,6 +233,10 @@ export class Grab extends PlaidSubsystem {
         if (wasTracking && metaWindow && !this.core.windows.isFloating(metaWindow)) {
             const ws = metaWindow.get_workspace();
             if (ws) {
+                // The release can come before the tick that applies the last
+                // motion: one more, or a fast flick ends one motion short.
+                if (this.isResizeGrab(grabOp) && this.core._liveResizeId)
+                    this.spiralResizeTick(metaWindow);
                 let edited = this.isResizeGrab(grabOp) && this.resizeMovedRatio();
                 if (this.isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
@@ -457,7 +473,11 @@ export class Grab extends PlaidSubsystem {
                 // A group that places nothing has no split to move.
                 const places = this.core.monitors.groupPlaces(ws, mon);
                 const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-                if (places && isBspLayout(layout)) {
+                if (places && layout === 'spiral') {
+                    this.spiralResizeTick(metaWindow);
+                    this.core.borders.updateBordersDuringGrab();
+                    return GLib.SOURCE_CONTINUE;
+                } else if (places && isBspLayout(layout)) {
                     const tree = this.core.bsp.bspGetTree(ws, mon);
                     if (tree) {
                         const area = this.core.geometry.outsideArea(workArea);
@@ -604,6 +624,71 @@ export class Grab extends PlaidSubsystem {
 
             return GLib.SOURCE_CONTINUE;
         });
+    }
+
+    // One step of a Spiral resize: the splits from the pointer's travel since
+    // the press, every window stretched over its slot. false: the window's
+    // group is not a placing Spiral group.
+    spiralResizeTick(win) {
+        const ws = win.get_workspace();
+        if (!ws) return false;
+        const mon = this.core.monitors.windowMon(win);
+        if (!this.core.monitors.groupPlaces(ws, mon) || this.core.windows.getWorkspaceLayout(ws, mon) !== 'spiral')
+            return false;
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+        const tree = this.core.bsp.bspGetTree(ws, mon);
+        const area = tree && workArea ? this.core.geometry.outsideArea(workArea) : null;
+        if (!area) return true;
+        const [x, y] = global.get_pointer();
+        this.updateGrabSplits(tree, x - this.core._grabStartX, y - this.core._grabStartY,
+            this.core._settings.get_int('inside-gap'), area);
+        this.spiralLiveResize(win);
+        return true;
+    }
+
+    // Spiral live resize: re-send changed slots only and stretch every actor
+    // over its slot until its client commits, keeping edges flush with the
+    // cursor. The tree is tagged (updateGrabSplits).
+    spiralLiveResize(grabbed) {
+        const ws = grabbed.get_workspace();
+        if (!ws) return;
+        const tree = this.core.bsp.bspGetTree(ws, this.core.monitors.windowMon(grabbed));
+        if (!tree || !this.core.bsp.bspFindLeaf(tree, grabbed)) return;
+        if (!this.core._liveSent) this.core._liveSent = new Map();
+        if (!this.core._liveStretched) this.core._liveStretched = new Map();
+        for (const leaf of this.core.bsp.bspLeaves(tree)) {
+            const win = leaf.window;
+            if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
+            if (!(leaf._w > 0) || !(leaf._h > 0)) continue;
+            const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+            // mutter owns the grabbed window's geometry until the grab ends.
+            if (win !== grabbed) {
+                const last = this.core._liveSent.get(win);
+                if (!last || last.x !== slot.x || last.y !== slot.y || last.w !== slot.w || last.h !== slot.h) {
+                    this.core._liveSent.set(win, slot);
+                    win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
+                }
+                this.core.transforms.stretchActorToSlot(win, slot);
+                continue;
+            }
+            // An axis no divider follows (the window spans it, or the edge is
+            // a monitor edge with nothing to mirror): draw the frame there.
+            const f = win.get_frame_rect();
+            const clampW = this.core._grabWidthSign !== 0 && !this.core._grabResizeNodeW;
+            const clampH = this.core._grabHeightSign !== 0 && !this.core._grabResizeNodeH;
+            // `slot` itself unless overridden: a copy fails the flush identity
+            // test and is re-transformed every tick.
+            const draw = clampW || clampH ? { ...slot } : slot;
+            if (clampW) {
+                draw.x = f.x;
+                draw.w = f.width;
+            }
+            if (clampH) {
+                draw.y = f.y;
+                draw.h = f.height;
+            }
+            this.core.transforms.stretchActorToSlot(win, slot, draw);
+        }
     }
 
     stopLiveResizeLoop() {
