@@ -142,6 +142,7 @@ export class Grab extends PlaidSubsystem {
         // mutter moves the grabbed window from here on: an eased transform
         // would hold it off the pointer.
         this.core.transforms.release(metaWindow);
+        this.core.spiral.clearGhosts();
 
         // Capture the pointer (the resize loop's origin) and the frame (the
         // move path's click-vs-drag origin, see movedPastGrace) for every
@@ -279,7 +280,11 @@ export class Grab extends PlaidSubsystem {
         this.core.dragPreview.hideDropPreview();
         this.stopLiveResizeLoop();
         this.disconnectGrabBoundaryHooks();
+        // After the drop: ghosts, then the stretch and the shrink handed to
+        // the release retile from where they are drawn.
+        this.core.spiral.clearGhosts();
         this.core.transforms.handOffLiveStretch(metaWindow);
+        this.core.spiral.unshrinkDraggedWindow();
         this.core._grabOp = null;
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;

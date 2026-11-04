@@ -132,6 +132,9 @@ function resetCoreState(core, settings) {
   core._transformTimeline = null;
   core._liveSent = null;
   core._liveStretched = null;
+  core._dragGhost = null;
+  core._dropGhost = null;
+  core._dragShrunk = null;
   core._landings = new Map();
   landingViews(core);
   core._observedMinSizes = new Map();

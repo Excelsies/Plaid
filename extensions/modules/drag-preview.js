@@ -44,7 +44,9 @@ export class DragPreview {
         if (!ws) return;
         // Click-vs-drag gate: keep the overlay hidden until the window
         // actually travelled — a titlebar click must not show a drag preview.
-        if (!this.core.grab.movedPastGrace(metaWindow)) {
+        // A Spiral drag that has started shows its home layout instead.
+        const dragging = this.core.grab.movedPastGrace(metaWindow);
+        if (!dragging && !this.core._dragGhost) {
             this.hideDropPreview();
             return;
         }
@@ -54,7 +56,7 @@ export class DragPreview {
         const src = monitors.windowMon(metaWindow);
         const ptrMon = monitors.monitorAt(px, py);
         if (ptrMon !== src && monitors.monitorTiled(ptrMon)) {
-            const rect = this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect;
+            const rect = dragging ? this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect : null;
             if (rect)
                 this.showDropPreview(rect.x, rect.y, rect.w, rect.h);
             else
@@ -73,6 +75,14 @@ export class DragPreview {
         }
 
         const layout = this.core.windows.getWorkspaceLayout(ws, src);
+        if (layout === 'spiral') {
+            this.core.spiral.updateDragPreview(metaWindow, ws, px, py, dragging);
+            return;
+        }
+        if (!dragging) {
+            this.hideDropPreview();
+            return;
+        }
         if (isBspLayout(layout)) {
             const leaf = this.computeDwindleDropTarget(ws, px, py, src);
             if (leaf && leaf.type === 'leaf') {

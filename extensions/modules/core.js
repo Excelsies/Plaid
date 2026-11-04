@@ -32,6 +32,7 @@ import { Updater } from './updater.js';
 import { DragScroll } from './drag-scroll.js';
 import { Monitors } from './monitors.js';
 import { Transforms } from './transforms.js';
+import { Spiral } from './spiral.js';
 
 export class PlaidCore {
     constructor(ext) {
@@ -63,6 +64,7 @@ export class PlaidCore {
         this.dragScroll = new DragScroll(this);
         this.monitors = new Monitors(this);
         this.transforms = new Transforms(this);
+        this.spiral = new Spiral(this);
     }
 
     compileTitlePatterns(titles) {
@@ -185,6 +187,9 @@ export class PlaidCore {
         this._transformTimeline = null;
         this._liveSent = null;
         this._liveStretched = null;
+        this._dragGhost = null;
+        this._dropGhost = null;
+        this._dragShrunk = null;
         this._landings = new Map();
         this._observedMinSizes = new Map();
         this._pendingWarp = new Set();
@@ -571,6 +576,7 @@ export class PlaidCore {
         this.dropdown.destroy();
         this.bgApp.destroy();
         this.workspaces.destroy();
+        this.spiral.destroy();
         this.placement.destroy();
         this.transforms.destroy();
         this.dragScroll.destroy();

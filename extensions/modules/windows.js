@@ -987,7 +987,9 @@ export class Windows extends PlaidSubsystem {
         if (tiled.length <= 1) return;
 
         const layout = this.getWorkspaceLayout(ws, mon);
-        if (isBspLayout(layout)) {
+        if (layout === 'spiral') {
+            if (!this.core.spiral.drop(window, ws, mon, px, py)) return;
+        } else if (isBspLayout(layout)) {
             const targetLeaf = this.core.dragPreview.computeDwindleDropTarget(ws, px, py, mon);
             if (!targetLeaf || targetLeaf.type !== 'leaf') return;
 

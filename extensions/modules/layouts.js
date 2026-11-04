@@ -27,6 +27,10 @@ export class Layouts {
         if (!this.core._settings.get_boolean('enabled')) {
             return;
         }
+        // A Spiral drag lays its group out itself: re-flow its ghost, or a
+        // closed window's dead leaf would come back with the drop.
+        if (this.core._grabOp && this.core._dragGhost?.ws === workspace)
+            this.core.spiral.refreshDragGhost();
         if (this.core._grabOp) {
             // Deferred, not dropped: a window set changed mid-grab would keep
             // its hole. handleGrabEnd drains the set.

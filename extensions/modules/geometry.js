@@ -59,6 +59,16 @@ export class Geometry {
         return dx * dx + dy * dy;
     }
 
+    // The side of `r` a drop at (px, py) lands on: the diagonals cut it into
+    // four triangles and the one under the point wins.
+    dropZoneSide(r, px, py) {
+        const dx = px - (r.x + r.w / 2);
+        const dy = py - (r.y + r.h / 2);
+        if (Math.abs(dy) * r.w < Math.abs(dx) * r.h)
+            return dx > 0 ? 'right' : 'left';
+        return dy > 0 ? 'bottom' : 'top';
+    }
+
     // Clamped into the work area: mutter stops a dragged titlebar below the
     // top bar while the pointer goes on. null off monitor `monIdx` (default
     // the primary): no drop there.

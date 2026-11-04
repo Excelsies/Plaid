@@ -120,6 +120,8 @@ export class DragScroll extends PlaidSubsystem {
         }
         // Carried in, it was dragged wherever it is released (movedPastGrace).
         this.core._grabCarried = win;
+        // The ghosts belong to the workspace being left.
+        this.core.spiral.clearGhosts();
         this.core.dragPreview.hideDropPreview();
         const slideMs = SLIDE_MS * this.core.placement.getAnimationTime() * 10;
         this._holdUntil = GLib.get_monotonic_time() + slideMs * 1000;
@@ -133,6 +135,7 @@ export class DragScroll extends PlaidSubsystem {
         const slide = this.shellSlide();
         this._slide = slide?.sliding ? slide.anim._switchData : null;
         win.raise();
+        this.core.spiral.shrinkSlideClone(win);
     }
 
     // Main.wm._workspaceAnimation is private. Read only in the shape it has

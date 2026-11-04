@@ -142,6 +142,8 @@ export class Signals extends PlaidSubsystem {
         this.connectObject(Main.layoutManager, 'monitors-changed', () => {
             bumpMonitorDims();
             this.core.monitors.invalidate();
+            // Ghosts hold the old monitors' slots: rebuilt on the next tick.
+            this.core.spiral.clearGhosts();
             this.core.dragPreview.updateDropOverlaySize();
             this.core.bgApp.refillBackgroundApp();
             // An unplugged monitor's windows join the monitor they are on now.
@@ -528,6 +530,7 @@ export class Signals extends PlaidSubsystem {
 
         this.core.borders.stopBorderAnimation();
         this.core.transforms.clearLiveStretch();
+        this.core.spiral.reset();
         this.core.placement.cancelAnimation();
     }
 
