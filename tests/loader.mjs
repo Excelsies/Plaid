@@ -35,6 +35,8 @@ const RESOURCE_SOURCES = [
     'export const sessionMode = { currentMode: \'user\', isLocked: false, connectObject() {}, disconnectObject() {} };\n' +
     'export const popped = [];\nexport function popModal(grab) { popped.push(grab); }\n'],
   [/\/workspaceSwitcherPopup\.js$/, 'export class WorkspaceSwitcherPopup {}\nexport class MonitorWorkspaceSwitcherPopup {}'],
+  [/\/workspacesView\.js$/, 'export class WorkspacesView {}'],
+  [/\/workspaceThumbnail\.js$/, 'export class ThumbnailsBox {}'],
 ];
 
 function resourceSource(url) {

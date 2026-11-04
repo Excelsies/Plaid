@@ -32,6 +32,11 @@ export const sessionState = {
     // every field to null and silently skip the parking hide.
     bgAppWindow: null,
 
+    // Pids of the windows the core counts as the BGAPP (its own and its
+    // helpers'). The wrappers cannot read /proc; they skip these windows, so
+    // they keep hidden the parking the core left the app's windows on.
+    bgAppPids: new Set(),
+
     // Overview/switcher wrap bookkeeping. Owned by the session, not the core,
     // so a lock cycle can reuse the existing wraps instead of stacking new
     // ones over closures that point at a dead core.

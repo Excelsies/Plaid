@@ -291,11 +291,16 @@ export class BackgroundApp extends PlaidSubsystem {
         // counting them made every hide guard bail out and exposed ws0.
         if (!ws) return false;
         return ws.list_windows().some(w =>
-            w && w !== this.core._backgroundAppWin &&
-            w !== sessionState.bgAppWindow &&
-            !w.is_on_all_workspaces() &&
-            !this.isBgAppProcessWindow(w) &&
-            !(this.core._settings && this.matchesBackgroundApp(w)));
+            w && !w.is_on_all_workspaces() && !this.isBackgroundAppWindow(w));
+    }
+
+    // A window of the BGAPP: the adopted one, or one the env marker or the
+    // marker pid set matches. Its pid is noted for the wrappers (parkingIsClear).
+    isBackgroundAppWindow(w) {
+        const match = w === this.core._backgroundAppWin || w === sessionState.bgAppWindow ||
+            this.isBgAppProcessWindow(w) || (!!this.core._settings && this.matchesBackgroundApp(w));
+        if (match && w.get_pid() > 0) sessionState.bgAppPids.add(w.get_pid());
+        return match;
     }
 
     hideParkingCard() {
@@ -1081,7 +1086,8 @@ export class BackgroundApp extends PlaidSubsystem {
             // count as parking content — that was the ws0-visible bug.
             return !ws.list_windows().some(w =>
                 w && w !== sessionState.bgAppWindow &&
-                !w.is_on_all_workspaces());
+                !w.is_on_all_workspaces() &&
+                !sessionState.bgAppPids.has(w.get_pid()));
         };
 
         const origGetNeighbor = Meta.Workspace.prototype.get_neighbor;
@@ -1122,7 +1128,8 @@ export class BackgroundApp extends PlaidSubsystem {
         };
         const origRedisplay = MonitorWorkspaceSwitcherPopup.prototype.redisplay;
         const wrappedRedisplay = function (activeWorkspaceIndex) {
-            const parkingIdx = wsIndex(sessionState.parkingWorkspace);
+            const parkingWs = sessionState.parkingWorkspace;
+            const parkingIdx = parkingIsClear(parkingWs) ? wsIndex(parkingWs) : -1;
             const wm = global.workspace_manager;
             this._list.destroy_all_children();
             for (let i = 0; i < wm.n_workspaces; i++) {
@@ -1274,11 +1281,7 @@ export class BackgroundApp extends PlaidSubsystem {
             if (!parking) return;
             const wm = global.workspace_manager;
             const users = parking.list_windows().filter(w =>
-                w && w !== this.core._backgroundAppWin &&
-                w !== sessionState.bgAppWindow &&
-                !w.is_on_all_workspaces() &&
-                !this.isBgAppProcessWindow(w) &&
-                !this.matchesBackgroundApp(w));
+                w && !w.is_on_all_workspaces() && !this.isBackgroundAppWindow(w));
             const active = wm.get_active_workspace();
             if (users.length === 0 && active !== parking) {
                 this.hideParkingCard();
@@ -1638,10 +1641,13 @@ export class BackgroundApp extends PlaidSubsystem {
                     // workspace — never remove it. Only the appended trailing
                     // fallback parking is removable. Sticky windows (the DDT)
                     // and the BGAPP itself do not make the parking occupied.
+                    // Teardown cancelled the marker sweep: no matcher here, only
+                    // the adopted window, the env marker and the pids the core
+                    // noted while it ran.
+                    const appWindow = w => w === sessionState.bgAppWindow ||
+                        this.isBgAppProcessWindow(w) || sessionState.bgAppPids.has(w.get_pid());
                     const empty = !parking.list_windows().some(w =>
-                        w && !w.is_on_all_workspaces() &&
-                        w !== sessionState.bgAppWindow &&
-                        !this.isBgAppProcessWindow(w));
+                        w && !w.is_on_all_workspaces() && !appWindow(w));
                     if (!this.core._backgroundAppParkingFront && empty)
                         global.workspace_manager.remove_workspace(parking, this.core.currentTime());
                 }
@@ -1656,6 +1662,9 @@ export class BackgroundApp extends PlaidSubsystem {
                 sessionState.bgAppWindow = null;
             }
         }
+        // The app's pids go with it (a restart, a release); a lock cycle keeps
+        // them with the app.
+        if (!sessionState.lockCycle) sessionState.bgAppPids.clear();
     }
 
     closeBackgroundAppWindow(win) {
