@@ -451,11 +451,13 @@ export class Windows extends PlaidSubsystem {
         sigIds.push({ emitter: win, id: this.connectObject(win, 'position-changed', () => {
             this.core.borders.updateBorders();
             this.convertMaximizedToGaps(win);
+            this.releaseSideTile(win);
             this.trackFloatGeometry(win);
         }) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'size-changed', () => {
             this.core.borders.updateBorders();
             this.convertMaximizedToGaps(win);
+            this.releaseSideTile(win);
             this.trackFloatGeometry(win);
             // Settle window (event-driven client-resize correction): a
             // freshly placed window can be re-sized by the client itself
@@ -779,6 +781,26 @@ export class Windows extends PlaidSubsystem {
         this.core.debugLog(`maximize: converting to gapped rect=(${rect.x},${rect.y},${rect.w},${rect.h})`);
         { win.unmaximize(); }
         this.moveWindow(win, rect.x, rect.y, rect.w, rect.h);
+    }
+
+    // A tiled Spiral window that mutter tiled to a screen half (maximized on
+    // one axis: an edge drop, Super+Left/Right) goes back to its slot, as a
+    // Hyprland tile never leaves its layout. Not during a grab: the
+    // size-changed of a tile made at the release comes after it.
+    releaseSideTile(win) {
+        if (!this.core._settings || this.core._shuttingDown || !win) return false;
+        if (!this.core._settings.get_boolean('enabled') || this.core._grabOp) return false;
+        if (!win.get_maximize_flags || win.get_maximize_flags() === 0 || win.is_maximized()) return false;
+        if (win.is_fullscreen() || this.isFloating(win) || !this.core._windowWorkspaces.has(win)) return false;
+        const ws = win.get_workspace();
+        const mon = this.core.monitors.windowMon(win);
+        if (!ws || mon < 0 || !this.core.monitors.groupPlaces(ws, mon) || this.getWorkspaceLayout(ws, mon) !== 'spiral')
+            return false;
+        this.core.debugLog(`side tile: released ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
+            `ws=${this.core.geometry.wsIndex(ws)} flags=${win.get_maximize_flags()}`);
+        win.unmaximize();
+        this.core.layouts.retileWorkspace(ws);
+        return true;
     }
 
     handleFloatMaximize(win) {

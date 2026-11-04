@@ -337,8 +337,10 @@ export class PlaidCore {
                 for (const win of ws.list_windows()) {
                     if (this.windows.shouldManage(win)) {
                         this.windows.addWindow(win, resumeLike);
-                        if (!resumeLockCycle)
+                        if (!resumeLockCycle) {
                             this.windows.convertMaximizedToGaps(win);
+                            this.windows.releaseSideTile(win);
+                        }
                     } else if (this.windows.isFloating(win)) {
                         this.windows.restoreFloatNaturalRect(win);
                         if (!resumeLockCycle)

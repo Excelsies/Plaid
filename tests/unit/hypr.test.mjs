@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
 
 // Hyprland's rules for Spiral groups; dwindle keeps its own.
@@ -456,4 +459,70 @@ test('removeWindow drops the open box', () => {
   self.layouts.retileWorkspace = () => {};
   self.windows.removeWindow(w);
   assert.equal(w._plaidOpenBox, null);
+});
+
+// Y4: a mutter half tile on a Spiral tile is released to its slot.
+
+function sideSelf(layout, { flags = 2, maximized = false } = {}) {
+  const self = groupSelf(layout);
+  const w = win('s', { maximized });
+  const calls = [];
+  w.get_maximize_flags = () => flags;
+  w.unmaximize = () => calls.push('unmaximize');
+  self._windowWorkspaces.set(w, WS);
+  self.layouts.retileWorkspace = (ws) => calls.push(ws === WS ? 'retile' : 'retile?');
+  return { self, w, calls };
+}
+
+test('releaseSideTile: a side-tiled Spiral tile is unmaximized and retiled; dwindle and master-stack keep it', () => {
+  for (const [layout, flags, want] of [
+    ['spiral', 2, ['unmaximize', 'retile']], ['spiral', 1, ['unmaximize', 'retile']],
+    ['dwindle', 2, []], ['master-stack', 2, []], ['centered-master-stack', 2, []]]) {
+    const { self, w, calls } = sideSelf(layout, { flags });
+    assert.equal(self.windows.releaseSideTile(w), want.length > 0, `${layout} flags ${flags}`);
+    assert.deepEqual(calls, want, `${layout} flags ${flags}`);
+  }
+});
+
+test('releaseSideTile: no release when maximized both ways, unflagged, grabbed, floating, fullscreen, unmanaged, not placing or disabled', () => {
+  const cases = {
+    maximized: ({ w }) => { w.get_maximize_flags = () => 3; w.is_maximized = () => true; },
+    unflagged: ({ w }) => { w.get_maximize_flags = () => 0; },
+    grab: ({ self }) => { self._grabOp = 1; },
+    floating: ({ self }) => { self.windows.isFloating = () => true; },
+    fullscreen: ({ w }) => { w.is_fullscreen = () => true; },
+    unmanaged: ({ self, w }) => { self._windowWorkspaces.delete(w); },
+    'not placing': ({ self }) => { self.monitors.groupPlaces = () => false; },
+    'no monitor': ({ self }) => { self.monitors.windowMon = () => -1; },
+    disabled: ({ self }) => { self._settings = { ...self._settings, get_boolean: () => false }; },
+    'shutting down': ({ self }) => { self._shuttingDown = true; },
+  };
+  for (const [name, set] of Object.entries(cases)) {
+    const ctx = sideSelf('spiral');
+    set(ctx);
+    assert.equal(ctx.self.windows.releaseSideTile(ctx.w), false, name);
+    assert.deepEqual(ctx.calls, [], name);
+  }
+});
+
+test('window signals: a size or position change releases a Spiral side tile', () => {
+  for (const signal of ['size-changed', 'position-changed']) {
+    const { self, w, calls } = sideSelf('spiral');
+    const handlers = new Map();
+    w.connectObject = (name, fn) => handlers.set(name, fn);
+    w.get_compositor_private = () => null;
+    self.borders.updateBorders = () => {};
+    self.windows.trackFloatGeometry = () => {};
+    self.grab.maybeReassertSlot = () => {};
+    self.windows.connectWindowSignals(w);
+    handlers.get(signal)();
+    assert.deepEqual(calls, ['unmaximize', 'retile'], signal);
+  }
+});
+
+// The enable pass gives a tile mutter tiled while Plaid was off its slot
+// back, as it converts a maximized one.
+test('static: enable releases a side tile beside convertMaximizedToGaps', () => {
+  const core = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'extensions', 'modules', 'core.js'), 'utf8');
+  assert.match(core, /this\.windows\.addWindow\(win, resumeLike\);\s*if \(!resumeLockCycle\) \{\s*this\.windows\.convertMaximizedToGaps\(win\);\s*this\.windows\.releaseSideTile\(win\);/);
 });
