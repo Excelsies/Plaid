@@ -10,6 +10,7 @@
 import GLib from 'gi://GLib';
 
 import { Monitors } from './monitors.js';
+import { LAYOUT_NAMES, isBspLayout } from './helpers.js';
 
 
 export class Persistence {
@@ -86,7 +87,7 @@ export class Persistence {
                 // leaf / empty PRESERVES the previously-saved shape.
                 const tree = this.core._bspTrees.get(ws);
                 if (tree && tree.type === 'split' &&
-                    this.core.windows.getWorkspaceLayout(ws, null) === 'dwindle')
+                    isBspLayout(this.core.windows.getWorkspaceLayout(ws, null)))
                     dwindleRaw.set(i, this.core.bsp.dwindleShapeToString(tree));
             }
             // The other monitors: "CONNECTOR:" + the same entry. A
@@ -107,7 +108,7 @@ export class Persistence {
                     const key = monitors.groupKeyFor(i, conn);
                     monLayouts.set(key, layout);
                     const tree = this.core._bspTrees.get(monitors.groupObj(ws, mon));
-                    if (tree && tree.type === 'split' && layout === 'dwindle')
+                    if (tree && tree.type === 'split' && isBspLayout(layout))
                         dwindleRaw.set(key, this.core.bsp.dwindleShapeToString(tree));
                 }
             }
@@ -177,7 +178,7 @@ export class Persistence {
                 const [idxStr, layout] = entry.split(':');
                 const idx = parseInt(idxStr, 10);
                 if (idx <= 0 || !Number.isInteger(idx)) continue;
-                if (!['dwindle', 'master-stack', 'centered-master-stack', 'floating'].includes(layout)) continue;
+                if (!Object.hasOwn(LAYOUT_NAMES, layout)) continue;
                 this.core._persistedLayoutByIndex.set(monitors.groupKeyFor(idx, conn), layout);
             }
             for (const { conn, entry } of this.persistedEntries('workspace-master-ratios', 'monitor-workspace-master-ratios')) {

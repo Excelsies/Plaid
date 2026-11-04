@@ -43,11 +43,22 @@ test('schema declares every PLAID_KEYBIND_KEYS entry', () => {
     assert.ok(schemaKeys.has(key), `keybinding "${key}" missing from the schema`);
 });
 
-test('every literal settings key read from this._settings exists in the schema', () => {
-  const used = [...allJs.matchAll(/this\._settings\.get_(?:int|double|boolean|string|strv)\('([^']+)'\)/g)]
-    .map((m) => m[1]);
+// Read or written through the extension's settings: this._settings (the
+// entry point), this.core._settings (the subsystems), settings (prefs).
+const SETTINGS_KEY_RE = /(?:\bthis\.(?:core\.)?_settings|\bsettings)\.(?:get|set)_(?:int|double|boolean|string|strv)\('([^']+)'/g;
+
+test('every literal settings key read or written through the settings exists in the schema', () => {
+  // Calibration: lines copied verbatim from the modules.
+  const cal = [
+    "        const gap = this.core._settings.get_int('inside-gap');",
+    "            this.core._settings.set_strv('workspace-layouts', layouts);",
+    "        const layout = settings.get_string('layout');",
+  ].join('\n');
+  assert.deepEqual([...cal.matchAll(SETTINGS_KEY_RE)].map((m) => m[1]), ['inside-gap', 'workspace-layouts', 'layout']);
+  const used = [...allJs.matchAll(SETTINGS_KEY_RE)].map((m) => m[1]);
+  assert.ok(new Set(used).size >= 50, `only ${new Set(used).size} keys found: the scan lost its population`);
   const missing = [...new Set(used)].filter((k) => !schemaKeys.has(k));
-  assert.deepEqual(missing, [], `settings keys read but not declared: ${missing.join(', ')}`);
+  assert.deepEqual(missing, [], `settings keys used but not declared: ${missing.join(', ')}`);
 });
 
 test('metadata uuid/shell-version are consistent', () => {

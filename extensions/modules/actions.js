@@ -9,7 +9,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { ModalDialog } from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import { LAYOUT_NAMES } from './helpers.js';
+import { LAYOUT_NAMES, isBspLayout } from './helpers.js';
 import { PlaidSubsystem } from './subsystem.js';
 
 
@@ -76,7 +76,7 @@ export class Actions extends PlaidSubsystem {
         const layout = this.core.windows.getWorkspaceLayout(ws, mon);
         if (monitors.windowConn(bestWindow) !== monitors.windowConn(focused)) {
             monitors.swapAcrossGroups(ws, focused, bestWindow);
-        } else if (layout === 'dwindle') {
+        } else if (isBspLayout(layout)) {
             const tree = this.core.bsp.bspGetTree(ws, mon);
             if (tree) {
                 this.core.bsp.bspSwapWindows(tree, focused, bestWindow);
@@ -123,7 +123,7 @@ export class Actions extends PlaidSubsystem {
         if (idx === -1 || tiledWindows.length <= 1) return;
 
         const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-        if (layout === 'dwindle')
+        if (isBspLayout(layout))
             this.resizeDwindle(focused, ws, axis, delta, mon);
         else
             this.core.layouts.resizeMasterStack(focused, ws, axis, delta, mon);
@@ -218,7 +218,7 @@ export class Actions extends PlaidSubsystem {
         if (!ws) return;
 
         const mon = this.core.monitors.windowMon(focused);
-        if (this.core.monitors.groupPlaces(ws, mon) && this.core.windows.getWorkspaceLayout(ws, mon) === 'dwindle') {
+        if (this.core.monitors.groupPlaces(ws, mon) && isBspLayout(this.core.windows.getWorkspaceLayout(ws, mon))) {
             if (wasFloating)
                 this.core.bsp.bspInsertForWorkspace(ws, focused, mon);
             else
@@ -318,7 +318,7 @@ export class Actions extends PlaidSubsystem {
 
     // The focused monitor's layout only.
     cycleLayout() {
-        const layouts = ['dwindle', 'master-stack', 'centered-master-stack', 'floating'];
+        const layouts = ['dwindle', 'spiral', 'master-stack', 'centered-master-stack', 'floating'];
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
         const mon = this.core.monitors.activeMonitor(ws);

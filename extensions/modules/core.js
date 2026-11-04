@@ -159,6 +159,7 @@ export class PlaidCore {
         this._stackRatios = new Map();
         this._bspTrees = new Map();
         this._dwindleLeafSigs = new Map();
+        this._bspLaidOutAs = new Map();
         this._lastFocusedPerWorkspace = new Map();
         this._savedRects = new Map();
         this._workspaceLayoutsSaveId = 0;
@@ -613,6 +614,7 @@ export class PlaidCore {
         this._stackRatios = null;
         this._bspTrees = null;
         this._dwindleLeafSigs = null;
+        this._bspLaidOutAs = null;
         this._lastRetileTimes = null;
         this._lastFocusedPerWorkspace = null;
         this._lastRealFocusedWindow = null;

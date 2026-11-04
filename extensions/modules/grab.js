@@ -5,6 +5,7 @@
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { PlaidSubsystem } from './subsystem.js';
+import { isBspLayout } from './helpers.js';
 
 // --- Grab-Based Mouse Resize & Swap ---
 
@@ -235,7 +236,7 @@ export class Grab extends PlaidSubsystem {
                 // restores the pre-grab shape. After a drop on another
                 // monitor, that monitor's.
                 const mon = this.core.monitors.windowMon(metaWindow);
-                if (edited && this.core.windows.getWorkspaceLayout(ws, mon) === 'dwindle')
+                if (edited && isBspLayout(this.core.windows.getWorkspaceLayout(ws, mon)))
                     this.core.layouts.refreshSavedShape(ws, this.core.bsp.bspGetTree(ws, mon), mon);
                 this.core.layouts.retileWorkspace(ws);
                 dropWs = ws;
@@ -456,7 +457,7 @@ export class Grab extends PlaidSubsystem {
                 // A group that places nothing has no split to move.
                 const places = this.core.monitors.groupPlaces(ws, mon);
                 const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-                if (places && layout === 'dwindle') {
+                if (places && isBspLayout(layout)) {
                     const tree = this.core.bsp.bspGetTree(ws, mon);
                     if (tree) {
                         const area = this.core.geometry.outsideArea(workArea);
@@ -622,7 +623,7 @@ export class Grab extends PlaidSubsystem {
 
         if (!this.core.monitors.groupPlaces(ws, mon)) return;
         const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-        if (layout === 'dwindle') {
+        if (isBspLayout(layout)) {
             const tree = this.core.bsp.bspGetTree(ws, mon);
             if (!tree) return;
             const treeWins = this.core.bsp.bspCollectWindows(tree);
@@ -662,7 +663,7 @@ export class Grab extends PlaidSubsystem {
         const gap = insideGap;
         if (areaW <= 0 || areaH <= 0) return null;
 
-        if (layout === 'dwindle') {
+        if (isBspLayout(layout)) {
             const tree = this.core.bsp.bspGetTree(ws, mon);
             if (!tree) return null;
             const leaf = this.core.bsp.bspFindLeaf(tree, win);

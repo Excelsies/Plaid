@@ -4,10 +4,17 @@
 
 export const LAYOUT_NAMES = {
     'dwindle': 'Dwindle',
+    'spiral': 'Spiral',
     'master-stack': 'Master-stack',
     'centered-master-stack': 'Centered Master-stack',
     'floating': 'Floating',
 };
+
+// The layouts tiled from a BSP tree: Spiral is dwindle with 50/50 splits,
+// Hyprland-style insertion and its own drag and animation.
+export function isBspLayout(layout) {
+    return layout === 'dwindle' || layout === 'spiral';
+}
 
 // Canonical form of an accelerator for comparison: '<Shift><Super>h' and
 // '<Super><Shift>h' are the same shortcut (GTK, mutter, and users write the

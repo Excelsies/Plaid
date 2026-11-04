@@ -7,6 +7,8 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import { isBspLayout } from './helpers.js';
+
 const PREVIEW_STYLE = 'background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4;';
 const DROP_PREVIEW_FADE_MS = 120;
 const DROP_PREVIEW_GLIDE_MS = 80;
@@ -71,7 +73,7 @@ export class DragPreview {
         }
 
         const layout = this.core.windows.getWorkspaceLayout(ws, src);
-        if (layout === 'dwindle') {
+        if (isBspLayout(layout)) {
             const leaf = this.computeDwindleDropTarget(ws, px, py, src);
             if (leaf && leaf.type === 'leaf') {
                 this.showDropPreview(leaf._x, leaf._y, leaf._w, leaf._h);
@@ -102,7 +104,7 @@ export class DragPreview {
         const tiled = this.core.monitors.getWindowsForGroup(ws, mon)
             .filter(w => !this.core.windows.isFloating(w) && w !== win);
         if (tiled.length === 0) return { rect: this.core.geometry.singleWindowRect(workArea) };
-        if (layout === 'dwindle') {
+        if (isBspLayout(layout)) {
             const leaf = this.computeDwindleDropTarget(ws, px, py, mon);
             if (!leaf || leaf.type !== 'leaf') return null;
             const target = leaf.window;

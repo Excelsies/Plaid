@@ -7,6 +7,8 @@
 
 import Meta from 'gi://Meta';
 
+import { isBspLayout } from './helpers.js';
+
 
 
 
@@ -91,12 +93,20 @@ export class Bsp {
         return { type: 'split', direction: dir, ratio, first, second };
     }
 
-    bspInsert(node, win, x, y, w, h, gap) {
+    // Split ratio for new windows: Spiral halves the target (as Hyprland),
+    // dwindle keeps dwindle-ratio.
+    bspSplitRatio(ws, mon) {
+        if (ws && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral') return 0.5;
+        return this.core._settings.get_double('dwindle-ratio');
+    }
+
+    // ratio null: dwindle-ratio.
+    bspInsert(node, win, x, y, w, h, gap, ratio = null) {
         if (!node) return this.bspMakeLeaf(win);
         if (node.type === 'empty') return this.bspMakeLeaf(win);
         if (node.type === 'leaf') {
             const dir = w >= h ? 'h' : 'v';
-            const ratio = this.core._settings.get_double('dwindle-ratio');
+            if (ratio === null) ratio = this.core._settings.get_double('dwindle-ratio');
             return this.bspMakeSplit(dir, ratio, node, this.bspMakeLeaf(win));
         }
         const isH = node.direction === 'h';
@@ -104,9 +114,9 @@ export class Bsp {
         const split = Math.floor((axisSize - gap) * node.ratio);
         const secondSize = axisSize - split - gap;
         if (isH)
-            node.second = this.bspInsert(node.second, win, x + split + gap, y, secondSize, h, gap);
+            node.second = this.bspInsert(node.second, win, x + split + gap, y, secondSize, h, gap, ratio);
         else
-            node.second = this.bspInsert(node.second, win, x, y + split + gap, w, secondSize, gap);
+            node.second = this.bspInsert(node.second, win, x, y + split + gap, w, secondSize, gap, ratio);
         return node;
     }
 
@@ -277,6 +287,92 @@ export class Bsp {
         return node;
     }
 
+    // Split targetLeaf with newWin on an explicit side (drop zones): dir 'h'
+    // = side by side, 'v' = stacked; newFirst puts newWin left/top.
+    bspInsertAtLeaf(node, targetLeaf, newWin, dir, newFirst, ratio) {
+        if (!node || node.type === 'empty') return node;
+        if (node.type === 'leaf') {
+            if (node !== targetLeaf) return node;
+            const leaf = this.bspMakeLeaf(newWin);
+            return newFirst
+                ? this.bspMakeSplit(dir, ratio, leaf, node)
+                : this.bspMakeSplit(dir, ratio, node, leaf);
+        }
+        node.first = this.bspInsertAtLeaf(node.first, targetLeaf, newWin, dir, newFirst, ratio);
+        node.second = this.bspInsertAtLeaf(node.second, targetLeaf, newWin, dir, newFirst, ratio);
+        return node;
+    }
+
+    // Spiral splits the focused tiled window (else the leaf under or closest
+    // to the pointer) along its longer side; the new window takes the half
+    // the pointer is in. The warp to each revealed window leaves the pointer
+    // on the slot's integer centre, the second half: the classic spiral when
+    // unsteered. `tree` must be tagged.
+    spiralInsertNew(ws, tree, win, area, mon) {
+        const [px, py] = global.get_pointer();
+        let target = null;
+        let by = 'focus';
+        const focus = global.display.focus_window;
+        if (focus && focus !== win && focus.get_workspace() === ws && !this.core.windows.isFloating(focus))
+            target = this.bspFindLeaf(tree, focus);
+        if (!target && px >= area.x && px < area.x + area.w && py >= area.y && py < area.y + area.h) {
+            target = this.bspFindLeafAtPoint(tree, area.x, area.y, area.w, area.h, px, py,
+                this.core._settings.get_int('inside-gap'));
+            by = 'pointer';
+        }
+        if (!target || target.type !== 'leaf') {
+            target = null;
+            by = 'nearest';
+            let best = Infinity;
+            for (const leaf of this.bspLeaves(tree)) {
+                const d = this.core.geometry.pointRectDistSq(leaf._x, leaf._y, leaf._w, leaf._h, px, py);
+                if (d < best) {
+                    best = d;
+                    target = leaf;
+                }
+            }
+        }
+        if (!target) return this.bspMakeLeaf(win);
+        const dir = target._w >= target._h ? 'h' : 'v';
+        const newFirst = dir === 'h'
+            ? px < target._x + Math.floor(target._w / 2)
+            : py < target._y + Math.floor(target._h / 2);
+        this.core.debugLog(`spiral: insert ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
+            `ws=${this.core.geometry.wsIndex(ws)} at ${target.window?.get_wm_class_instance() || '?'} ` +
+            `(${by}) ${dir}${newFirst ? ' first' : ' second'}`);
+        return this.bspInsertAtLeaf(tree, target, win, dir, newFirst, this.bspSplitRatio(ws, mon));
+    }
+
+    // Prune leaves of windows that left (a fullscreen tile keeps its leaf) and
+    // insert missing ones: dwindle appends, Spiral splits next to the focus or
+    // pointer (spiralInsertNew).
+    syncTree(workspace, tree, tiledWindows, area, gap, mon) {
+        const ratio = this.bspSplitRatio(workspace, mon);
+        if (!tree) {
+            for (const win of tiledWindows)
+                tree = tree ? this.bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio) : this.bspMakeLeaf(win);
+            return tree;
+        }
+        const tiled = new Set(tiledWindows);
+        for (const tw of this.bspCollectWindows(tree)) {
+            if (!tiled.has(tw) && !this.core.windows.isFullscreenTile(tw, workspace, mon))
+                tree = this.bspRemove(tree, tw);
+        }
+        const inTree = new Set(this.bspCollectWindows(tree));
+        const spiral = this.core.windows.getWorkspaceLayout(workspace, mon) === 'spiral';
+        for (const win of tiledWindows) {
+            if (inTree.has(win)) continue;
+            if (spiral && tree.type !== 'empty') {
+                this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+                tree = this.spiralInsertNew(workspace, tree, win, area, mon);
+            } else {
+                tree = this.bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio);
+            }
+            inTree.add(win);
+        }
+        return tree;
+    }
+
     bspTagGeometry(node, x, y, w, h, gap) {
         if (!node) return;
         node._x = x;
@@ -316,7 +412,12 @@ export class Bsp {
         const areaW = area.w;
         const areaH = area.h;
 
-        if (tree) {
+        const spiral = this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
+        const ratio = this.bspSplitRatio(ws, mon);
+        if (tree && spiral && atPointer) {
+            this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
+            tree = this.spiralInsertNew(ws, tree, win, area, mon);
+        } else if (tree) {
             const [px, py] = global.get_pointer();
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
             // Leaf-pick only when the pointer is INSIDE the tiling area —
@@ -331,14 +432,21 @@ export class Bsp {
                 ? this.bspFindLeafAtPoint(tree, areaX, areaY, areaW, areaH, px, py, gap)
                 : null;
             if (target) {
-                tree = this.bspReplaceLeaf(tree, target, win);
+                tree = this.bspReplaceLeaf(tree, target, win, ratio);
             } else {
-                tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
+                tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, ratio);
             }
         } else {
-            tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
+            tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, ratio);
         }
         this.bspSetTree(ws, mon, tree);
+        // Spiral tags the new leaf now (same min clamp as the retile), so the
+        // pre-map placement has its slot before the next layout pass.
+        if (spiral) {
+            this.treeMinSizes(tree, gap);
+            this.clampTreeToMinSizes(tree, areaW, areaH, gap);
+            this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
+        }
     }
 
     parseMinSizeOverrides(entries) {

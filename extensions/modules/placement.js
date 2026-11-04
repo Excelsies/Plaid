@@ -5,6 +5,8 @@ import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 
+import { isBspLayout } from './helpers.js';
+
 // Counted misses: per slot before it is accepted, and per window across
 // slots (a layout that keeps moving the slot), reset when it lands.
 const LANDING_RETRIES = 3;
@@ -433,7 +435,7 @@ export class Placement {
             const min = this.core.bsp.getWindowMinSize(win);
             const minSrc = min.w > 0 || min.h > 0 ? `min=${min.w}x${min.h}` : 'min=none';
             let changed = false;
-            if (layout === 'dwindle') {
+            if (isBspLayout(layout)) {
                 const tree = this.core.bsp.bspGetTree(ws, mon);
                 if (!tree) return;
                 changed = this.core.bsp.adjustForConstraints(tree, null, true, area.x, area.y, areaW, areaH, gap, 0);
@@ -798,7 +800,7 @@ export class Placement {
                     if (f.width > 0 && f.height > 0)
                         this.core._animTargets.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
                 }
-            } else if (layout === 'dwindle')
+            } else if (isBspLayout(layout))
                 this.core.layouts.retileDwindle(workspace, tiled, mon);
             else if (layout === 'centered-master-stack')
                 this.core.layouts.retileCenteredMasterStack(workspace, tiled, null, mon);

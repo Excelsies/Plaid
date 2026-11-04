@@ -13,6 +13,7 @@
 // the record in place (syncKeyedPrimary).
 
 import { PlaidSubsystem } from './subsystem.js';
+import { isBspLayout } from './helpers.js';
 import { sessionState } from './session-state.js';
 
 // A frame the configure ticks sent counts as theirs this long (a late commit).
@@ -172,7 +173,7 @@ export class Monitors extends PlaidSubsystem {
     // A removed workspace takes its groups' trees and signatures with it.
     forgetWorkspaceGroups(ws) {
         const objs = [ws, ...(this.core._groupObjs?.get(ws)?.values() ?? [])];
-        for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs]) {
+        for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs, this.core._bspLaidOutAs]) {
             for (const k of objs) map?.delete(k);
         }
         this.core._groupObjs?.delete(ws);
@@ -274,7 +275,7 @@ export class Monitors extends PlaidSubsystem {
                 const g = byConn.get(cur);
                 if (!g) continue;
                 byConn.delete(cur);
-                for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs]) {
+                for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs, this.core._bspLaidOutAs]) {
                     if (!map?.has(g)) continue;
                     if (!map.get(ws)) map.set(ws, map.get(g));
                     map.delete(g);
@@ -300,7 +301,7 @@ export class Monitors extends PlaidSubsystem {
             for (const [k, v] of entries) map.set(rekey(k), v);
         }
         const objEntries = [];
-        for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs]) {
+        for (const map of [this.core._bspTrees, this.core._dwindleLeafSigs, this.core._bspLaidOutAs]) {
             if (!map) continue;
             objEntries.push([map, [...map]]);
             map.clear();
@@ -435,7 +436,7 @@ export class Monitors extends PlaidSubsystem {
             const ws = wm.get_workspace_by_index(i);
             const key = this.groupKeyFor(i, conn);
             const tree = ws && this.core._bspTrees.get(this.groupObjFor(ws, conn));
-            if (!tree || tree.type !== 'split' || this.core.windows.layoutForKey(key) !== 'dwindle') continue;
+            if (!tree || tree.type !== 'split' || !isBspLayout(this.core.windows.layoutForKey(key))) continue;
             const shape = this.core.bsp.dwindleShapeToString(tree);
             this.core._persistedDwindleRaw?.set(key, shape);
             this.core._persistedDwindleByIndex?.set(key, this.core.bsp.dwindleShapeFromString(shape));
@@ -466,7 +467,7 @@ export class Monitors extends PlaidSubsystem {
         }
         const mon = this.connMon(conn);
         if (this.groupPlaces(ws, mon) && !this.core.windows.isFloating(win) &&
-            this.core.windows.getWorkspaceLayout(ws, mon) === 'dwindle')
+            isBspLayout(this.core.windows.getWorkspaceLayout(ws, mon)))
             this.core.bsp.bspInsertForWorkspace(ws, win, mon, cause === 'drop' || cause === 'grab-end');
         this.core.layouts.retileWorkspace(ws);
         return true;

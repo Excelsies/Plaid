@@ -12,8 +12,8 @@ Full docs live on the [wiki](https://github.com/Plyply99/Plaid/wiki).
 
 ## Features
 
-- **Four layouts**: Dwindle (BSP), Master-stack, Centered Master-stack, and
-  Floating. Per workspace layouts.
+- **Five layouts**: Dwindle (BSP), Spiral (BSP with even 50/50 splits),
+  Master-stack, Centered Master-stack, and Floating. Per workspace layouts.
 - **Every monitor tiles**: each monitor has its own layout per workspace; a
   window moved or dragged to another monitor joins that monitor's layout, and
   focus/swap keys cross monitor edges.

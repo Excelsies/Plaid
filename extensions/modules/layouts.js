@@ -589,33 +589,26 @@ export class Layouts {
         const areaY = area.y;
         const areaW = area.w;
         const areaH = area.h;
-
-        if (tree) {
-            const treeWins = this.core.bsp.bspCollectWindows(tree);
-            for (const tw of treeWins) {
-                if (!tiledWindows.includes(tw) && !this.core.windows.isFullscreenTile(tw, workspace, mon)) {
-                    tree = this.core.bsp.bspRemove(tree, tw);
-                }
-            }
-            let currentWins = this.core.bsp.bspCollectWindows(tree);
-            for (const win of tiledWindows) {
-                if (!currentWins.includes(win)) {
-                    tree = this.core.bsp.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
-                    currentWins = this.core.bsp.bspCollectWindows(tree);
-                }
-            }
-            this.core._bspTrees.set(key, tree);
-        } else {
-            tree = null;
-            for (const win of tiledWindows) {
-                if (tree) {
-                    tree = this.core.bsp.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
-                } else {
-                    tree = this.core.bsp.bspMakeLeaf(win);
-                }
-            }
-            this.core._bspTrees.set(key, tree);
+        // A dwindle/Spiral switch resets every split to the new layout's
+        // ratio, then restores its own saved shape below.
+        const layout = this.core.windows.getWorkspaceLayout(workspace, mon);
+        // Per group, not on the tree: a close can make a subtree the root.
+        const was = this.core._bspLaidOutAs?.get(key);
+        const switched = !!tree && !!was && was !== layout;
+        if (switched) {
+            const ratio = this.core.bsp.bspSplitRatio(workspace, mon);
+            const reset = node => {
+                if (!node || node.type !== 'split') return;
+                node.ratio = ratio;
+                reset(node.first);
+                reset(node.second);
+            };
+            reset(tree);
+            this.core.debugLog(`${layout}: reset ws=${this.core.geometry.wsIndex(workspace)} splits to ${ratio.toFixed(3)} (was ${was})`);
         }
+
+        tree = this.core.bsp.syncTree(workspace, tree, tiledWindows, area, gap, mon);
+        this.core._bspTrees.set(key, tree);
 
         // Restore saved split ratios ONLY when the window set changed
         // (fresh session build, a window opened, or one closed). A plain
@@ -625,7 +618,7 @@ export class Layouts {
         // end, keyboard resize) refresh it at once (refreshSavedShape).
         if (tree && this.core._dwindleLeafSigs) {
             const sig = tiledWindows.map(w => w.get_id()).join(',');
-            if (this.core._dwindleLeafSigs.get(key) !== sig) {
+            if (switched || this.core._dwindleLeafSigs.get(key) !== sig) {
                 this.core._dwindleLeafSigs.set(key, sig);
                 const savedShape = this.core._persistedDwindleByIndex &&
                     this.core._persistedDwindleByIndex.get(this.core.monitors.groupKey(workspace, mon));
@@ -637,6 +630,7 @@ export class Layouts {
         this.core.bsp.treeMinSizes(tree, gap);
         this.core.bsp.clampTreeToMinSizes(tree, areaW, areaH, gap);
         this.core.bsp.bspLayout(tree, areaX, areaY, areaW, areaH, gap);
+        if (tree) this.core._bspLaidOutAs?.set(key, layout);
     }
 
     // The saved shape is re-read only after the 10s save: a window opened or

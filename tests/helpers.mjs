@@ -106,6 +106,7 @@ function resetCoreState(core, settings) {
   core._stackRatios = new Map();
   core._bspTrees = new Map();
   core._dwindleLeafSigs = new Map();
+  core._bspLaidOutAs = new Map();
   core._lastFocusedPerWorkspace = new Map();
   core._savedRects = new Map();
   core._workspaceLayoutsSaveId = 0;

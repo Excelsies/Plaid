@@ -5,6 +5,7 @@ import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { PlaidSubsystem } from './subsystem.js';
+import { isBspLayout } from './helpers.js';
 
 export class Windows extends PlaidSubsystem {
     constructor(core) {
@@ -329,7 +330,7 @@ export class Windows extends PlaidSubsystem {
             }
             if (!this.isFloating(win) && this.core.monitors.groupPlaces(ws, mon)) {
                 const layout = this.getWorkspaceLayout(ws, mon);
-                if (layout === 'dwindle')
+                if (isBspLayout(layout))
                     this.core.bsp.bspInsertForWorkspace(ws, win, mon);
             }
         }
@@ -433,7 +434,7 @@ export class Windows extends PlaidSubsystem {
             const idx = order.indexOf(win);
             if (idx !== -1) order.splice(idx, 1);
             const mon = this.core.monitors.connMon(conn);
-            if (mon < 0 || this.getWorkspaceLayout(ws, mon) === 'dwindle')
+            if (mon < 0 || isBspLayout(this.getWorkspaceLayout(ws, mon)))
                 this.core.monitors.removeFromGroupTree(win, ws, conn);
             this.core.layouts.retileWorkspace(ws);
         }
@@ -985,7 +986,7 @@ export class Windows extends PlaidSubsystem {
         if (tiled.length <= 1) return;
 
         const layout = this.getWorkspaceLayout(ws, mon);
-        if (layout === 'dwindle') {
+        if (isBspLayout(layout)) {
             const targetLeaf = this.core.dragPreview.computeDwindleDropTarget(ws, px, py, mon);
             if (!targetLeaf || targetLeaf.type !== 'leaf') return;
 

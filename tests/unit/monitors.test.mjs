@@ -654,20 +654,20 @@ test('cycleLayout: only the focused monitor\'s layout changes, its popup on that
   const shown = [];
   const { self, retiles } = groupSelf(ws, [a, c], { _showPopup: (...args) => shown.push(args) });
   self.actions.cycleLayout();
-  assert.equal(self.windows.getWorkspaceLayout(ws, 1), 'master-stack');
+  assert.equal(self.windows.getWorkspaceLayout(ws, 1), 'spiral');
   assert.equal(self.windows.getWorkspaceLayout(ws, 0), 'dwindle');
-  assert.deepEqual([...self._workspaceLayouts], [['1@DP-2', 'master-stack']]);
+  assert.deepEqual([...self._workspaceLayouts], [['1@DP-2', 'spiral']]);
   assert.equal(shown[0][4], 1);
   global.display.focus_window = a;
   self.actions.cycleLayout();
-  assert.deepEqual([...self._workspaceLayouts].sort(), [[1, 'master-stack'], ['1@DP-2', 'master-stack']]);
+  assert.deepEqual([...self._workspaceLayouts].sort(), [[1, 'spiral'], ['1@DP-2', 'spiral']]);
   assert.equal(shown[1][4], 0);
   assert.equal(retiles.length, 2);
   // No focus: the pointer's monitor.
   global.display.focus_window = null;
   global.display.get_current_monitor = () => 1;
   self.actions.cycleLayout();
-  assert.equal(self.windows.getWorkspaceLayout(ws, 1), 'centered-master-stack');
+  assert.equal(self.windows.getWorkspaceLayout(ws, 1), 'master-stack');
 });
 
 test('maybeReassertSlot: a window already on another monitor is not pulled back', () => {
@@ -1381,6 +1381,40 @@ test('onWorkspaceRemoved: every monitor\'s tree of the removed workspace goes', 
   self.signals.onWorkspaceRemoved(2);
   assert.equal(self._bspTrees.size, 0);
   assert.equal(self._dwindleLeafSigs.size, 0);
+});
+
+test('syncKeyedPrimary: the laid-out marker moves with each group (no split reset on a primary change)', () => {
+  const [, ws] = stubGlobal({ primary: 1 });
+  const a = W('a', ws, 0), c = W('c', ws, 1), d = W('d', ws, 1);
+  const { self } = groupSelf(ws, [a, c, d]);
+  self._keyedPrimary = 'DP-1';
+  self._workspaceLayouts = new Map([[1, 'spiral'], ['1@DP-2', 'dwindle']]);
+  const g2 = self.monitors.groupObjFor(ws, 'DP-2');
+  self._bspTrees.set(g2, split('h', 0.7, leaf(c), leaf(d)));
+  self._bspLaidOutAs.set(ws, 'spiral');
+  self._bspLaidOutAs.set(g2, 'dwindle');
+  assert.equal(self.monitors.syncKeyedPrimary(), true);
+  // DP-2 is primary now: the workspace key is its group's.
+  assert.equal(self._bspLaidOutAs.get(ws), 'dwindle');
+  assert.equal(self._bspLaidOutAs.get(self.monitors.groupObjFor(ws, 'DP-1')), 'spiral');
+  self._animTargets = new Map();
+  self.layouts.retileDwindle(ws, [c, d], 1);
+  assert.equal(self.bsp.bspGetTree(ws, 1).ratio, 0.7, 'dwindle\'s split kept');
+});
+
+test('the laid-out marker: kept when the stand-in is named, forgotten with the workspace', () => {
+  const [, ws] = stubGlobal({ conns: ['', 'DP-2'] });
+  const a = W('a', ws, 0);
+  const { self } = groupSelf(ws, [a], { _scheduleRegroup: () => {} });
+  self._windowMonitors.set(a, '#0');
+  self._bspLaidOutAs.set(self.monitors.groupObjFor(ws, 'DP-1'), 'spiral');
+  globalThis.global.backend = stubGlobalBackend(['DP-1', 'DP-2']);
+  self.monitors.invalidate();
+  self.monitors.syncKeyedPrimary();
+  assert.equal(self._bspLaidOutAs.get(ws), 'spiral');
+  self._bspLaidOutAs.set(self.monitors.groupObjFor(ws, 'DP-2'), 'dwindle');
+  self.monitors.forgetWorkspaceGroups(ws);
+  assert.equal(self._bspLaidOutAs.size, 0);
 });
 
 test('syncKeyedPrimary: naming the stand-in brings back what was saved for the name', () => {
