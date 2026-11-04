@@ -196,20 +196,6 @@ export class Actions extends PlaidSubsystem {
         const focused = this.getActiveWindow();
         if (!focused) return;
 
-        // A min-limited window (auto-floated because no slot met its minimum)
-        // was never user-floated — toggling releases it back to tiling instead
-        // of marking it floated.
-        if (this.core._minLimitedWindows && this.core._minLimitedWindows.has(focused)) {
-            this.core.placement.releaseMinLimitedWindow(focused);
-            const ws = focused.get_workspace();
-            if (ws) {
-                if (this.core.windows.getWorkspaceLayout(ws) === 'dwindle')
-                    this.core.bsp.bspInsertForWorkspace(ws, focused);
-                this.core.layouts.retileWorkspace(ws);
-            }
-            return;
-        }
-
         const wasFloating = this.core._toggleFloatWindows.has(focused);
         if (wasFloating) {
             this.core._toggleFloatWindows.delete(focused);
@@ -326,7 +312,6 @@ export class Actions extends PlaidSubsystem {
         const layouts = ['dwindle', 'master-stack', 'centered-master-stack', 'floating'];
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
-        this.core.placement.releaseMinLimitedWindows();
         const current = this.core.windows.getWorkspaceLayout(ws);
         const idx = layouts.indexOf(current);
         const next = layouts[(idx + 1) % layouts.length];

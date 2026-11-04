@@ -61,9 +61,8 @@ function resetCoreState(core, settings) {
   core._animStartedAt = 0;
   core._landingRetries = new Map();
   core._mismatchFrames = new Map();
-  core._landingGivenUp = new Set();
+  core._landingAccepted = new Map();
   core._observedMinSizes = new Map();
-  core._minLimitedWindows = new Set();
   core._pendingWarp = new Set();
   core._retileAfterGrab = new Set();
   core._lastMonitorsGeom = null;

@@ -6,6 +6,16 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
 
+// Counted misses: per slot before it is accepted, and per window across
+// slots (a layout that keeps moving the slot), reset when it lands.
+const LANDING_RETRIES = 3;
+const LANDING_MISSES = 9;
+
+// A slot as a landing key: the frame it asks for, in whole pixels.
+function landingKey(x, y, w, h) {
+    return `${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`;
+}
+
 // --- Master-Stack Helpers ---
 
 export class Placement {
@@ -264,12 +274,12 @@ export class Placement {
             if (this.verifyAnimationLanding(s, 'new', true)) {
                 this.core.debugLog(`place: attempt ${tries} verified — fading at target`);
                 fadeIn(true);
-            } else if (this.core._landingGivenUp && this.core._landingGivenUp.has(s.win)) {
-                this.core.debugLog('place: given-up set — fading');
+            } else if (this.landingAccepted(s.win, s.targetX, s.targetY, s.targetW, s.targetH)) {
+                this.core.debugLog('place: slot accepted — fading');
                 fadeIn();
             } else {
-                // Bounded: the pure landing verify never populates the
-                // given-up set, so an endless retry here would wedge the whole
+                // Bounded: the pure landing verify never accepts a slot, so
+                // an endless retry here would wedge the whole
                 // animation pipeline (_animating stays true, later retiles
                 // queue forever, new windows sit hidden until the reveal
                 // timer pops them at the center). Give up after ~1.5s and
@@ -344,7 +354,7 @@ export class Placement {
         let off = 0;
         for (const win of tiled) {
             if (win.minimized || win.is_fullscreen()) continue;
-            if (this.core._landingGivenUp && this.core._landingGivenUp.has(win)) continue;
+            if (this.core._landingAccepted && this.core._landingAccepted.has(win)) continue;
             const slot = this.core.grab.windowSlotRect(win, ws, layout, workArea, gap);
             if (!slot) continue;
             const f = win.get_frame_rect();
@@ -454,7 +464,9 @@ export class Placement {
                 this.core.debugLog(`anim: landing skipped (window gone) ${kind} id=${win ? win.get_id() : '?'}`);
             return false;
         }
-        if (this.core._landingGivenUp && this.core._landingGivenUp.has(win)) return false;
+        const accepted = this.landingAccepted(win, s.targetX, s.targetY, s.targetW, s.targetH);
+        // An accepted slot ends when the layout gives the window another.
+        if (!accepted && this.core._landingAccepted) this.core._landingAccepted.delete(win);
         const f = win.get_frame_rect();
         // The deferred new-window placement must land PRECISELY (pure
         // mode): the 16px tolerance silently accepted off-landings like
@@ -464,6 +476,8 @@ export class Placement {
         const tol = kind === 'new' && pure ? 4 : 16;
         if (Math.abs(f.x - s.targetX) > tol || Math.abs(f.y - s.targetY) > tol ||
             Math.abs(f.width - s.targetW) > tol || Math.abs(f.height - s.targetH) > tol) {
+            // An accepted slot is not retried; landing on it still counts.
+            if (accepted) return false;
             if (!pure) {
                 this.core.debugLog(`anim: landing mismatch (${kind}) ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized} ` +
                     `frame=(${f.x},${f.y},${f.width},${f.height}) target=(${s.targetX},${s.targetY},${s.targetW},${s.targetH})`);
@@ -483,8 +497,8 @@ export class Placement {
                 // after placement (XWayland Emacs: 1936x1185). That is not a
                 // minimum-size refusal — learning it as one bent the dwindle
                 // ratio to the client's own frame and persisted the result.
-                // Wait out the settle window; stable clients still bend and
-                // float through the normal retry path afterwards.
+                // Wait out the settle window; stable clients still bend
+                // through the normal retry path afterwards.
                 const settling = !!(win._plaidSettleUntil && win._plaidSettleUntil > Date.now());
                 if (!settling && prev && refusesShrink &&
                     Math.abs(f.x - prev.x) <= 1 && Math.abs(f.y - prev.y) <= 1 &&
@@ -492,13 +506,11 @@ export class Placement {
                     this.recordObservedMin(win, f, { w: s.targetW, h: s.targetH });
                     this.adjustPinnedTree(win, win.get_workspace());
                 }
-                this.retryLanding(win);
+                this.retryLanding(win, s, settling);
             }
             return false;
         } else {
-            if (this.core._landingRetries) this.core._landingRetries.delete(win);
-            if (this.core._landingGivenUp) this.core._landingGivenUp.delete(win);
-            if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
+            this.releaseLanding(win);
             if (this.core._pendingWarp && this.core._pendingWarp.has(win)) {
                 this.core._pendingWarp.delete(win);
                 this.core.windows.moveCursorToWindow(win);
@@ -511,7 +523,7 @@ export class Placement {
                 // this function also runs on the 'tiled' verify path of
                 // every animated retile, where killing an armed settle
                 // poll would silently skip the client-resize correction
-                // for give-up windows. The poll self-expires at 6s.
+                // for windows whose slot was accepted. The poll self-expires at 6s.
                 if (win._plaidInvisibleTimer) {
                     GLib.source_remove(win._plaidInvisibleTimer);
                     win._plaidInvisibleTimer = 0;
@@ -550,46 +562,47 @@ export class Placement {
         this.core.debugLog(`min-learned: ${w}x${h} for ${win.get_wm_class_instance() || '?'}`);
     }
 
-    releaseMinLimitedWindow(win) {
-        if (!this.core._minLimitedWindows || !win) return;
-        this.core._minLimitedWindows.delete(win);
-        this.core._landingGivenUp.delete(win);
-        this.core._landingRetries.delete(win);
-        this.core._mismatchFrames.delete(win);
+    // A slot's landing state: its retry count, and whether it was accepted.
+    releaseLanding(win) {
+        if (!win) return;
+        if (this.core._landingRetries) this.core._landingRetries.delete(win);
+        if (this.core._landingAccepted) this.core._landingAccepted.delete(win);
+        if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
     }
 
-    releaseMinLimitedWindows() {
-        // Let windows auto-floated for the size minimum rejoin: their learned
-        // minimums now let the partition allocate a fitting slot.
-        if (!this.core._minLimitedWindows || this.core._minLimitedWindows.size === 0) return;
-        const wins = [...this.core._minLimitedWindows];
-        for (const win of wins)
-            this.releaseMinLimitedWindow(win);
-        this.core.debugLog(`min-limited: released ${wins.length} window(s)`);
+    // The window was left at this slot after its retries; another slot
+    // gets a fresh budget while the window's total allows it.
+    landingAccepted(win, x, y, w, h) {
+        const key = this.core._landingAccepted ? this.core._landingAccepted.get(win) : undefined;
+        return key !== undefined && key === landingKey(x, y, w, h);
     }
 
-    retryLanding(win) {
-        if (!this.core._landingRetries || !this.core._landingGivenUp || !this.core._settings || !win) return;
+    retryLanding(win, s, settling = false) {
+        if (!this.core._landingRetries || !this.core._landingAccepted || !this.core._settings || !win) return;
         if (!win.get_compositor_private()) {
             this.core.debugLog(`anim: landing retry skipped (window gone) id=${win.get_id()}`);
             return;
         }
-        const n = (this.core._landingRetries.get(win) || 0) + 1;
-        if (n > 3 || this.core.windows.isFixedSizeWindow(win)) {
-            this.core._landingRetries.delete(win);
-            this.core._landingGivenUp.add(win);
+        // While it settles the poll re-asserts the slot and its end retiles;
+        // a miss there is not counted.
+        if (settling) return;
+        const key = landingKey(s.targetX, s.targetY, s.targetW, s.targetH);
+        const prev = this.core._landingRetries.get(win);
+        const n = (prev && prev.key === key ? prev.n : 0) + 1;
+        const total = (prev ? prev.total : 0) + 1;
+        if (n > LANDING_RETRIES || total > LANDING_MISSES) {
+            // Never floated: the window keeps its leaf, and its slot is not
+            // re-requested until the layout gives it another.
+            this.core._landingRetries.set(win, { key, n: 0, total });
+            this.core._landingAccepted.set(win, key);
             if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
-            // Auto-float (tracked apart from the user's float toggle) so the
-            // tiler stops fighting its minimum; released on the next layout
-            // change (or float toggle) so it can rejoin once a slot fits.
-            this.core._minLimitedWindows.add(win);
-            // The window is floating now — clear the pending-warp state so a
-            // masked window is never left invisible: _landingGivenUp makes
-            // every future _verifyAnimationLanding return false, so the
-            // success branch that clears _pendingWarp can never run again,
-            // and the mask uniform stays at 0 (the whole output multiplied
-            // by it — no content, no border) until a title/wm-class notify
-            // or close. Mirror the backstop-reveal block.
+            // Clear the pending-warp state so a masked window is never left
+            // invisible: an accepted slot makes every later
+            // verifyAnimationLanding return false, so the success branch
+            // that clears _pendingWarp does not run for it, and the mask
+            // uniform stays at 0 (the whole output multiplied by it — no
+            // content, no border) until a title/wm-class notify or close.
+            // Mirror the backstop-reveal block.
             if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
             {
                 const a = win.get_compositor_private();
@@ -604,21 +617,16 @@ export class Placement {
                     effect.setOpacityUniform(1);
             }
             this.core.signals.scheduleBorders();
-            const ws = win.get_workspace();
-            const list = ws
-                ? ws.list_windows().map(w =>
-                    `${w.get_id()}:${w.get_wm_class_instance() || '?'}:min=${w.minimized}:` +
-                    `${Math.round(w.get_frame_rect().width)}x${Math.round(w.get_frame_rect().height)}`).join(' | ')
-                : 'no ws';
-            this.core.debugLog(`anim: landing failed after retries for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized} — floated (tiled set: ${list})`);
-            if (ws) this.core.layouts.retileWorkspace(ws);
+            const f = win.get_frame_rect();
+            this.core.debugLog(`anim: landing accepted after retries for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
+                `frame=${Math.round(f.width)}x${Math.round(f.height)} slot=${Math.round(s.targetW)}x${Math.round(s.targetH)}`);
             return;
         }
-        this.core._landingRetries.set(win, n);
+        this.core._landingRetries.set(win, { key, n, total });
         this.core.signals.addTimeout(200, () => {
             if (!this.core._settings) return GLib.SOURCE_REMOVE;
-            if (this.core._landingGivenUp && this.core._landingGivenUp.has(win)) return GLib.SOURCE_REMOVE;
-            // Window-liveness: _removeWindow prunes the given-up set on
+            if (this.core._landingAccepted && this.core._landingAccepted.has(win)) return GLib.SOURCE_REMOVE;
+            // Window-liveness: _removeWindow prunes the landing state on
             // close, so that guard no longer covers a window closed within
             // this 200ms window — touching a finalized Meta.Window here
             // throws inside the source callback.

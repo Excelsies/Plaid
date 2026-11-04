@@ -94,9 +94,6 @@ export class Windows extends PlaidSubsystem {
     // Floating by toggle, rule or type: what the window is when not fullscreen.
     floatsWhenWindowed(win) {
         if (this.core._toggleFloatWindows && this.core._toggleFloatWindows.has(win)) return true;
-        // Auto-floated because no slot could meet its real size minimum —
-        // excluded from tiling until released (see _releaseMinLimitedWindows).
-        if (this.core._minLimitedWindows && this.core._minLimitedWindows.has(win)) return true;
         if (this.core.floatClassMatches(win)) return true;
         if (this.core.bgApp.isExtensionsAppWindow(win)) return true;
         const title = win.get_title();
@@ -167,7 +164,7 @@ export class Windows extends PlaidSubsystem {
     isFixedSizeWindow(win) {
         // Non-resizable windows: Mutter refuses atomic move_resize_frame
         // placements, so tiling them only buys a ~2s retry dance before the
-        // give-up float. A min===max hint is the cheap, reliable signal —
+        // landing is given up. A min===max hint is the cheap, reliable signal —
         // float such windows up front instead. Raw client hints compare
         // equal (the frame delta cancels).
         const [minOk, mw, mh] = this.core.bsp.unpackSizeHint(win.get_min_size());
@@ -378,13 +375,10 @@ export class Windows extends PlaidSubsystem {
         this.core._windowWSIndices.delete(win);
         this.core._toggleFloatWindows.delete(win);
         this.core._observedMinSizes.delete(win);
-        this.core._minLimitedWindows.delete(win);
         win._plaidFloatAnim = false;
         // Prune the landing/choreography maps so dead windows (and the
         // actors they hold) don't linger until disable.
-        if (this.core._landingRetries) this.core._landingRetries.delete(win);
-        if (this.core._landingGivenUp) this.core._landingGivenUp.delete(win);
-        if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
+        this.core.placement.releaseLanding(win);
         if (this.core._slotReassertTimes) this.core._slotReassertTimes.delete(win);
         if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
         if (this.core._newWindowSet) this.core._newWindowSet.delete(win);

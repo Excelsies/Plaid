@@ -160,9 +160,8 @@ export class PlaidCore {
         this._animStartedAt = 0;
         this._landingRetries = new Map();
         this._mismatchFrames = new Map();
-        this._landingGivenUp = new Set();
+        this._landingAccepted = new Map();
         this._observedMinSizes = new Map();
-        this._minLimitedWindows = new Set();
         this._pendingWarp = new Set();
         this._retileAfterGrab = new Set();
         this._lastMonitorsGeom = null;
@@ -543,9 +542,8 @@ export class PlaidCore {
         this._animStartedAt = 0;
         this._landingRetries = null;
         this._mismatchFrames = null;
-        this._landingGivenUp = null;
+        this._landingAccepted = null;
         this._observedMinSizes = null;
-        this._minLimitedWindows = null;
         this._pendingWarp = null;
         this._retileAfterGrab = null;
         this._lastMonitorsGeom = null;

@@ -146,9 +146,8 @@ export class Scratchpad {
         if (!saved) return;
         this.core._scratchpadWindows.delete(win);
         this.core._toggleFloatWindows.delete(win);
-        // A scratch window may also have been auto-floated for its size minimum;
-        // clear that too so it rejoins tiling on return.
-        this.core.placement.releaseMinLimitedWindow(win);
+        // It rejoins tiling with a fresh landing budget.
+        this.core.placement.releaseLanding(win);
         // Destroy the scratch RING here, where membership ends. The sig-gate
         // in _ensureWindowBorder destroys the BORDER widget on the
         // scratch→normal signature flip but never the ring (it lives only in
