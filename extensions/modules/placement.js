@@ -499,7 +499,7 @@ export class Placement {
                 // Wait out the settle window; stable clients still bend
                 // through the normal retry path afterwards.
                 const settling = !!(win._plaidSettleUntil && win._plaidSettleUntil > Date.now());
-                if (!settling && prev && refusesShrink &&
+                if (!settling && !this.mutterSized(win) && prev && refusesShrink &&
                     Math.abs(f.x - prev.x) <= 1 && Math.abs(f.y - prev.y) <= 1 &&
                     Math.abs(f.width - prev.w) <= 1 && Math.abs(f.height - prev.h) <= 1) {
                     this.recordObservedMin(win, f, { w: s.targetW, h: s.targetH });
@@ -534,12 +534,19 @@ export class Placement {
         }
     }
 
+    // A maximized or side-tiled frame is mutter's size, not the client's:
+    // learning or bending to it would keep the window from fitting a slot again.
+    mutterSized(win) {
+        return !!(win.get_maximize_flags && win.get_maximize_flags() !== 0);
+    }
+
     recordObservedMin(win, frame, target) {
         // The window is stable at a size larger than its slot: it refused to
         // shrink. Remember that floor so the next partition allocates a slot it
         // will actually take (apps such as ghostty report no min width, so
         // get_min_size() can't tell us).
         if (!this.core._observedMinSizes || !win) return;
+        if (this.mutterSized(win)) return;
         const cur = this.core._observedMinSizes.get(win) || { w: 0, h: 0 };
         let w = cur.w;
         let h = cur.h;

@@ -185,3 +185,34 @@ test('settle end: a window off its slot retiles its workspace once, one in it do
   self.placement.settleEnded(win, false);
   assert.deepEqual(retiled, [ws]);
 });
+
+test('learned minimum: a frame mutter maximized or side-tiled is not learned', () => {
+  const { self } = landingSelf();
+  for (const flags of [1, 2, 3]) {
+    const win = landingWin();
+    win.get_maximize_flags = () => flags;
+    self.placement.recordObservedMin(win, { width: 1280, height: 1408 }, { w: 1280, h: 862 });
+    assert.equal(self._observedMinSizes.has(win), false, `flags ${flags}`);
+  }
+  const plain = landingWin();
+  plain.get_maximize_flags = () => 0;
+  plain.get_workspace = () => null;
+  self.placement.recordObservedMin(plain, { width: 1280, height: 1408 }, { w: 1280, h: 862 });
+  assert.deepEqual(self._observedMinSizes.get(plain), { w: 0, h: 1408 });
+});
+
+test('landing: a side-tiled frame stuck over its slot bends no split', () => {
+  for (const [flags, bends] of [[2, 0], [0, 1]]) {
+    const { self } = landingSelf();
+    const win = landingWin({ frame: { x: 1280, y: 32, width: 1280, height: 1408 } });
+    win.get_maximize_flags = () => flags;
+    win.get_workspace = () => null;
+    let bent = 0;
+    self.placement.adjustPinnedTree = () => bent++;
+    self.placement.retryLanding = () => {};
+    const s = { win, targetX: 1276, targetY: 36, targetW: 1280, targetH: 862 };
+    self.placement.verifyAnimationLanding(s, 'tiled');
+    self.placement.verifyAnimationLanding(s, 'tiled');
+    assert.equal(bent, bends, `flags ${flags}`);
+  }
+});
