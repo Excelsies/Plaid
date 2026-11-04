@@ -153,9 +153,10 @@ export class Bsp {
         return out;
     }
 
-    // Every leaf's slot as a retile lays it out (min-size clamp included), so
-    // drag previews match the result. Clamps ratios in place: pass a clone.
-    bspSlotRects(tree, workArea) {
+    // Every leaf's slot as a retile of group (ws, mon) lays it out (min-size
+    // clamp included), so drag previews match the result. Clamps ratios in
+    // place: pass a clone.
+    bspSlotRects(tree, workArea, ws, mon) {
         const rects = new Map();
         if (!tree || tree.type === 'empty') return rects;
         if (tree.type === 'leaf') {
@@ -166,7 +167,7 @@ export class Bsp {
         const area = this.core.geometry.outsideArea(workArea);
         if (!area) return rects;
         const gap = this.core._settings.get_int('inside-gap');
-        this.treeMinSizes(tree, gap);
+        this.treeMinSizes(tree, gap, ws, mon);
         this.clampTreeToMinSizes(tree, area.w, area.h, gap);
         this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
         for (const l of this.bspLeaves(tree)) {
@@ -444,7 +445,7 @@ export class Bsp {
         // Spiral tags the new leaf now (same min clamp as the retile), so the
         // pre-map placement has its slot before the next layout pass.
         if (spiral) {
-            this.treeMinSizes(tree, gap);
+            this.treeMinSizes(tree, gap, ws, mon);
             this.clampTreeToMinSizes(tree, areaW, areaH, gap);
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
         }
@@ -538,16 +539,29 @@ export class Bsp {
         return { w, h };
     }
 
-    treeMinSizes(node, gap = 0) {
+    // Spiral ignores every minimum, the client's, a min-window-sizes rule and
+    // a learned one: a tile is exactly its slot (Hyprland). Nothing is learned
+    // from or bent for a window there either.
+    minimumsIgnored(ws, mon) {
+        return !!ws && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
+    }
+
+    // The minimum a BSP partition of group (ws, mon) gives `win`.
+    layoutMinSize(win, ws, mon) {
+        return this.minimumsIgnored(ws, mon) ? { w: 0, h: 0 } : this.getWindowMinSize(win);
+    }
+
+    // Tags every node of group (ws, mon)'s tree with its minimum.
+    treeMinSizes(node, gap = 0, ws = null, mon = null) {
         if (!node || node.type === 'empty') return { w: 0, h: 0 };
         if (node.type === 'leaf') {
-            const min = node.window ? this.getWindowMinSize(node.window) : { w: 0, h: 0 };
+            const min = node.window ? this.layoutMinSize(node.window, ws, mon) : { w: 0, h: 0 };
             node._minW = min.w;
             node._minH = min.h;
             return min;
         }
-        const a = this.treeMinSizes(node.first, gap);
-        const b = this.treeMinSizes(node.second, gap);
+        const a = this.treeMinSizes(node.first, gap, ws, mon);
+        const b = this.treeMinSizes(node.second, gap, ws, mon);
         // 'h' = children side by side (widths add), 'v' = stacked (heights add).
         // Each split also consumes ONE gap along its axis, so reserve `gap` here —
         // without it every nested split under-reserves by a gap and the deep slots

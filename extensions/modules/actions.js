@@ -197,7 +197,9 @@ export class Actions extends PlaidSubsystem {
                 // them.
                 const inFirst = this.core.bsp.bspFindPath(split.first, focused, []);
                 const signedDelta = inFirst ? delta : -delta;
-                split.ratio = Math.max(0.15, Math.min(0.85, split.ratio + signedDelta / axisSize));
+                // Spiral: Hyprland's 0.1..1.9 of 2 for every resize.
+                const [lo, hi] = this.core.bsp.minimumsIgnored(workspace, mon) ? [0.05, 0.95] : [0.15, 0.85];
+                split.ratio = Math.max(lo, Math.min(hi, split.ratio + signedDelta / axisSize));
                 this.core.layouts.refreshSavedShape(workspace, tree, mon);
                 return;
             }

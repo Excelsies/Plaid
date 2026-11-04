@@ -409,21 +409,17 @@ export class Grab extends PlaidSubsystem {
         c._grabInitialRatioH = c._grabResizeNodeH?.ratio ?? 0;
     }
 
-    // The picked dividers follow the pointer's travel within both subtrees'
-    // minimums; `inner` is re-solved so the anchored edge stays where mutter
-    // keeps it. Leaves the tree tagged.
+    // Spiral: the picked dividers follow the pointer's travel (no minimums,
+    // bsp.minimumsIgnored); `inner` is re-solved so the anchored edge stays
+    // where mutter keeps it. Leaves the tree tagged.
     updateGrabSplits(tree, dx, dy, gap, area) {
         const c = this.core;
-        c.bsp.treeMinSizes(tree, gap);
         const nodeW = c._grabResizeNodeW;
         const nodeH = c._grabResizeNodeH;
         if (nodeW)
             this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap);
         if (nodeH)
             this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap);
-        // Re-clamp the splits below, or a narrowing subtree draws its
-        // min-size window squashed for the whole grab.
-        c.bsp.clampTreeToMinSizes(tree, area.w, area.h, gap);
         c.bsp.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
         for (const inner of [c._grabInnerW, c._grabInnerH]) {
             if (!inner) continue;
@@ -437,19 +433,12 @@ export class Grab extends PlaidSubsystem {
         }
     }
 
-    // A tagged split's ratio, kept within its children's minimums.
+    // A tagged Spiral split's ratio, within [0.05, 0.95] (Hyprland's 0.1..1.9
+    // of 2): no minimum bounds it.
     setGrabRatio(node, raw, gap) {
-        const isH = node.direction === 'h';
-        const axisSize = (isH ? node._w : node._h) - gap;
+        const axisSize = (node.direction === 'h' ? node._w : node._h) - gap;
         if (!(axisSize > 0) || !Number.isFinite(raw)) return;
-        const min1 = (isH ? node.first?._minW : node.first?._minH) || 0;
-        const min2 = (isH ? node.second?._minW : node.second?._minH) || 0;
-        const minRatio = min1 / axisSize;
-        const maxRatio = 1 - min2 / axisSize;
-        const lo = maxRatio <= minRatio
-            ? (min1 + min2 > 0 ? min1 / (min1 + min2) : 0.15) : minRatio;
-        const hi = maxRatio <= minRatio ? lo : maxRatio;
-        node.ratio = Math.max(lo, Math.min(hi, raw));
+        node.ratio = Math.max(0.05, Math.min(0.95, raw));
     }
 
     startGrabLoop(metaWindow, mode) {
@@ -492,7 +481,7 @@ export class Grab extends PlaidSubsystem {
                         const areaW = area.w;
                         const areaH = area.h;
 
-                        this.core.bsp.treeMinSizes(tree, gap);
+                        this.core.bsp.treeMinSizes(tree, gap, ws, mon);
                         if (this.core._grabResizeNodeW) {
                             const axis = this.core._grabResizeNodeW._w;
                             if (axis - gap > 0) {
@@ -762,7 +751,7 @@ export class Grab extends PlaidSubsystem {
             if (!(r.w > 0) || !(r.h > 0) || !Number.isFinite(r.x + r.y + r.w + r.h)) return null;
             // Insurance: never report a slot narrower than the window's
             // minimum — the layout clamps, so verdicts must agree.
-            const min = this.core.bsp.getWindowMinSize(win);
+            const min = this.core.bsp.layoutMinSize(win, ws, mon);
             if (min.w > 0 && r.w < min.w) r.w = Math.min(min.w, areaW);
             if (min.h > 0 && r.h < min.h) r.h = Math.min(min.h, areaH);
             return r;

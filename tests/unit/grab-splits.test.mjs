@@ -68,21 +68,27 @@ test('pickSplits: a split met first on the axis holds the anchored edge', () => 
   assert.equal(inner._x + Math.floor(inner._w * inner.ratio), 750);
 });
 
-test('updateGrabSplits: the divider stops at both subtrees\' minimums', () => {
+test('updateGrabSplits: the divider passes a minimum and stops at 0.05 / 0.95', () => {
   const a = fakeWin({ instance: 'a', minSize: [300, 0] }), b = W('b');
   const tree = split('h', 0.5, leaf(a), leaf(b));
   const self = pick(tree, b, [-1, 0]);
   self.grab.updateGrabSplits(tree, -400, 0, 0, AREA);
-  assert.equal(tree.ratio, 0.3);
+  assert.equal(tree.ratio.toFixed(4), '0.1000');
+  self.grab.updateGrabSplits(tree, -480, 0, 0, AREA);
+  assert.equal(tree.ratio, 0.05);
+  self.grab.updateGrabSplits(tree, 480, 0, 0, AREA);
+  assert.equal(tree.ratio, 0.95);
 });
 
-test('setGrabRatio: clamps a raw ratio to the children\'s minimums', () => {
+test('setGrabRatio: keeps a raw ratio within [0.05, 0.95], whatever the children\'s minimums', () => {
   const self = makeSelf({});
   const node = { direction: 'h', _w: 1000, ratio: 0.5, first: { _minW: 300 }, second: { _minW: 200 } };
   self.grab.setGrabRatio(node, 0.1, 0);
-  assert.equal(node.ratio, 0.3);
-  self.grab.setGrabRatio(node, 0.95, 0);
-  assert.equal(node.ratio, 0.8);
+  assert.equal(node.ratio, 0.1);
+  self.grab.setGrabRatio(node, 0.01, 0);
+  assert.equal(node.ratio, 0.05);
+  self.grab.setGrabRatio(node, 0.99, 0);
+  assert.equal(node.ratio, 0.95);
 });
 
 test('grab end: the picked splits\' inner anchors and follow signs go', () => {

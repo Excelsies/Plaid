@@ -633,7 +633,7 @@ export class Layouts {
             }
         }
 
-        this.core.bsp.treeMinSizes(tree, gap);
+        this.core.bsp.treeMinSizes(tree, gap, workspace, mon);
         this.core.bsp.clampTreeToMinSizes(tree, areaW, areaH, gap);
         this.core.bsp.bspLayout(tree, areaX, areaY, areaW, areaH, gap);
         if (tree) this.core._bspLaidOutAs?.set(key, layout);

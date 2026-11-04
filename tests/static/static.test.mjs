@@ -321,3 +321,46 @@ test('try/catch budget and no wrappers around standard calls', () => {
   }
   assert.ok(total <= 38, `shell code has ${total} try blocks (max 38)`);
 });
+// Calls of `name(` in module code, keyed `file:enclosing method`, comments
+// stripped and the definitions skipped.
+function callSites(name) {
+  const sites = {};
+  for (const file of moduleFiles) {
+    const lines = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n');
+    let method = '?';
+    for (const raw of lines) {
+      const line = raw.replace(/\/\/.*$/, '');
+      const head = /^ {4}(\w+)\s*\([^)]*\)\s*\{\s*$/.exec(line);
+      if (head) {
+        method = head[1];
+        if (method === name) continue;
+      }
+      for (const m of line.matchAll(new RegExp(`\\b${name}\\(([^()]*)\\)`, 'g'))) {
+        const key = `${file.split('/').pop()}:${method}`;
+        (sites[key] ??= []).push(m[1]);
+      }
+    }
+  }
+  return sites;
+}
+
+// Spiral ignores minimums (bsp.minimumsIgnored): a BSP partition reads one
+// only through bsp.layoutMinSize, and every tree or slot clamp names its
+// group. A new getWindowMinSize call is refused until it is placed here.
+test('BSP min sites read minimums through bsp.layoutMinSize, naming their group', () => {
+  const counts = Object.fromEntries(Object.entries(callSites('getWindowMinSize')).map(([k, v]) => [k, v.length]));
+  assert.deepEqual(counts, {
+    'bsp.js:layoutMinSize': 1,
+    'geometry.js:minClampSlot': 1,
+    'grab.js:startGrabLoop': 5,
+    'layouts.js:clampMasterStackRatios': 3,
+    'layouts.js:retileMasterStack': 2,
+    'layouts.js:retileCenteredMasterStack': 2,
+  });
+  for (const name of ['treeMinSizes', 'bspSlotRects']) {
+    for (const [site, args] of Object.entries(callSites(name))) {
+      for (const a of args)
+        assert.equal(a.split(',').length, 4, `${site}: ${name}(${a}) does not name its group (ws, mon)`);
+    }
+  }
+});

@@ -450,7 +450,7 @@ export class Placement {
             const areaW = area.w;
             const areaH = area.h;
             const f = win.get_frame_rect();
-            const min = this.core.bsp.getWindowMinSize(win);
+            const min = this.core.bsp.layoutMinSize(win, ws, mon);
             const minSrc = min.w > 0 || min.h > 0 ? `min=${min.w}x${min.h}` : 'min=none';
             let changed = false;
             if (isBspLayout(layout)) {
@@ -532,14 +532,13 @@ export class Placement {
             if (!pure) {
                 this.core.debugLog(`anim: landing mismatch (${kind}) ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized} ` +
                     `frame=(${f.x},${f.y},${f.width},${f.height}) target=(${s.targetX},${s.targetY},${s.targetW},${s.targetH})`);
-                {
-                    const mws = win.get_workspace();
-                    if (mws) {
-                        const tree = this.core.bsp.bspGetTree(mws, this.core.monitors.windowMon(win));
-                        const min = this.core.bsp.getWindowMinSize(win);
-                        if (tree)
-                            this.core.debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
-                    }
+                const ws = win.get_workspace();
+                const mon = this.core.monitors.windowMon(win);
+                if (ws) {
+                    const tree = this.core.bsp.bspGetTree(ws, mon);
+                    const min = this.core.bsp.layoutMinSize(win, ws, mon);
+                    if (tree)
+                        this.core.debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
                 }
                 const prev = this.landingFrame(win, f);
                 const refusesShrink = f.width > s.targetW + 16 || f.height > s.targetH + 16;
@@ -550,11 +549,13 @@ export class Placement {
                 // Wait out the settle window; stable clients still bend
                 // through the normal retry path afterwards.
                 const settling = !!(win._plaidSettleUntil && win._plaidSettleUntil > Date.now());
-                if (!settling && !this.mutterSized(win) && prev && refusesShrink &&
+                // Spiral learns no minimum and bends nothing: the window
+                // overlaps its neighbour until the slot is accepted.
+                if (!settling && !this.core.bsp.minimumsIgnored(ws, mon) && !this.mutterSized(win) && prev && refusesShrink &&
                     Math.abs(f.x - prev.x) <= 1 && Math.abs(f.y - prev.y) <= 1 &&
                     Math.abs(f.width - prev.w) <= 1 && Math.abs(f.height - prev.h) <= 1) {
                     this.recordObservedMin(win, f, { w: s.targetW, h: s.targetH });
-                    this.adjustPinnedTree(win, win.get_workspace());
+                    this.adjustPinnedTree(win, ws);
                 }
                 this.retryLanding(win, s, settling);
             }

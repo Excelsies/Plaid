@@ -33,11 +33,11 @@ export class Spiral extends PlaidSubsystem {
         const tree = bsp.bspGetTree(ws, mon);
         const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!tree || !this.core.geometry.isValidWorkArea(workArea)) return null;
-        const live = bsp.bspSlotRects(bsp.bspClone(tree), workArea);
+        const live = bsp.bspSlotRects(bsp.bspClone(tree), workArea, ws, mon);
         const home = live.get(win) ?? null;
         const ghost = home ? bsp.bspRemove(bsp.bspClone(tree), win) : bsp.bspClone(tree);
         if (!ghost || ghost.type === 'empty') return null;
-        return { ws, mon, win, workArea, tree: ghost, rects: bsp.bspSlotRects(ghost, workArea),
+        return { ws, mon, win, workArea, tree: ghost, rects: bsp.bspSlotRects(ghost, workArea, ws, mon),
             live, home, atHome: null, leftHome: false, zones: new Map() };
     }
 
@@ -148,7 +148,7 @@ export class Spiral extends PlaidSubsystem {
         const key = `${target.get_id()}:${side}`;
         if (!g.zones.has(key)) {
             const drop = this.dropTree(this.core.bsp.bspClone(g.tree), target, g.win, side);
-            g.zones.set(key, this.core.bsp.bspSlotRects(drop, g.workArea).get(g.win) ?? null);
+            g.zones.set(key, this.core.bsp.bspSlotRects(drop, g.workArea, g.ws, g.mon).get(g.win) ?? null);
         }
         const rect = g.zones.get(key);
         return rect ? { target, side, rect } : null;
