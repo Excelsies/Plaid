@@ -804,6 +804,8 @@ export class Grab extends PlaidSubsystem {
         // animation's landing verify settles the final frame, and the settle
         // poll retries 400ms later if the client still disagrees.
         if (this.core._animWindows && this.core._animWindows.has(win)) return;
+        // Nor the transform driver, which holds it until its commit.
+        if (this.core._transformStates && this.core._transformStates.has(win)) return;
         if (this.core.windows.isFloating(win)) return;
         if (!this.core._windowWorkspaces.has(win)) return;
         // Timestamp gate: size-changed fires per move/resize step and the

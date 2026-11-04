@@ -180,6 +180,7 @@ export class PlaidCore {
         this._animGen = 0;
         this._animWorkspace = null;
         this._animTransformRun = false;
+        this._animTickLeft = 0;
         this._transformStates = new Map();
         this._transformTimeline = null;
         this._liveSent = null;

@@ -127,6 +127,7 @@ function resetCoreState(core, settings) {
   core._animGen = 0;
   core._animWorkspace = null;
   core._animTransformRun = false;
+  core._animTickLeft = 0;
   core._transformStates = new Map();
   core._transformTimeline = null;
   core._liveSent = null;

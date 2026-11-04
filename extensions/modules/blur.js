@@ -610,8 +610,10 @@ export class Blur extends PlaidSubsystem {
                     if (!blur || !blur._sibling || blur._fatalFail) return;
                     if (this.core._windowBlurs && this.core._windowBlurs.get(win) !== blur) return;
 
+                    // Either direction (Spiral eases from scale > 1):
+                    // the sibling would stick out.
                     const moving = !win._plaidFloatAnim &&
-                        (actor.scale_x < 0.99 || actor.scale_y < 0.99 ||
+                        (Math.abs(actor.scale_x - 1) > 0.01 || Math.abs(actor.scale_y - 1) > 0.01 ||
                          actor.opacity < 255);
                     const shouldEnable = !moving;
                     if (blur.enabled && shouldEnable) {

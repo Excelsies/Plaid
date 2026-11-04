@@ -46,8 +46,9 @@ export class Windows extends PlaidSubsystem {
         return true;
     }
 
-    moveCursorToWindow(win) {
-        const frame = win.get_frame_rect();
+    // rect: where it is about to be (a frame not committed yet).
+    moveCursorToWindow(win, rect = null) {
+        const frame = rect ?? win.get_frame_rect();
         if (frame.width === 0 || frame.height === 0) return false;
         const centerX = frame.x + frame.width / 2;
         const centerY = frame.y + frame.height / 2;

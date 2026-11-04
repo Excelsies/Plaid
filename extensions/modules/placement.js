@@ -63,6 +63,7 @@ export class Placement {
         // the next one.
         this.core._animGen = (this.core._animGen || 0) + 1;
         this.core.transforms.stop();
+        this.core._animTickLeft = 0;
         if (this.core._newWindowSet) {
             for (const win of this.core._newWindowSet) {
                 // A window can be disposed mid-animation; cleanup must continue.
@@ -141,6 +142,72 @@ export class Placement {
         this.core.debugLog(`place: held reveal at slot for ${win.get_wm_class_instance() || '?'}`);
     }
 
+    // A placed new window: no backstop reveal, out of the pending-warp
+    // state, mask uniform 1 (see fadeIn). show: the actor too (a held X11
+    // window stays hidden).
+    revealPlacedWindow(win, show = true) {
+        if (show) {
+            const actor = win.get_compositor_private();
+            if (actor) actor.visible = true;
+        }
+        if (win._plaidInvisibleTimer) {
+            GLib.source_remove(win._plaidInvisibleTimer);
+            win._plaidInvisibleTimer = 0;
+        }
+        if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
+        const effect = this.core._windowMasks && this.core._windowMasks.get(win);
+        if (effect && effect.setOpacityUniform)
+            effect.setOpacityUniform(1);
+        if (show) this.core.signals.scheduleBorders();
+    }
+
+    // The frame matches its slot within 4 px (a group that does not place
+    // counts as matching).
+    settledInSlot(win) {
+        const ws = win.get_workspace();
+        if (!ws) return false;
+        const mon = this.core.monitors.windowMon(win);
+        if (mon < 0) return false;
+        if (!this.core.monitors.groupPlaces(ws, mon)) return true;
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+        const gap = this.core._settings.get_int('inside-gap');
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+        if (!workArea || !workArea.width) return false;
+        const slot = this.core.grab.windowSlotRect(win, ws, layout, workArea, gap);
+        if (!slot) return false;
+        const f = win.get_frame_rect();
+        return Math.abs(f.x - slot.x) <= 4 && Math.abs(f.y - slot.y) <= 4 &&
+            Math.abs(f.width - slot.w) <= 4 && Math.abs(f.height - slot.h) <= 4;
+    }
+
+    // The 6 s settle poll (see fadeIn): re-assert the slot every 400 ms,
+    // reveal a held X11 window once it is in its slot, retile at the end if
+    // it is not.
+    armSettlePoll(win, fadeDuration = 80) {
+        win._plaidSettleUntil = Date.now() + 6000;
+        if (win._plaidSettlePollId) {
+            GLib.source_remove(win._plaidSettlePollId);
+            win._plaidSettlePollId = 0;
+        }
+        win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+            const w = win;
+            if (!this.core._settings || !w || !w.get_compositor_private() ||
+                !this.core._windowWorkspaces || !this.core._windowWorkspaces.has(w)) {
+                if (w) w._plaidSettlePollId = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            if (!w._plaidSettleUntil || Date.now() > w._plaidSettleUntil) {
+                w._plaidSettlePollId = 0;
+                this.settleEnded(w, this.settledInSlot(w));
+                return GLib.SOURCE_REMOVE;
+            }
+            { this.core.grab.maybeReassertSlot(w, 4, 'direct'); }
+            if (w._plaidHoldReveal && this.settledInSlot(w))
+                this.revealHeldNewWindow(w, fadeDuration);
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
     // animGen: the run placing it; a newer run places it instead.
     deferNewWindowPlacement(s, duration, done, animGen = this.core._animGen) {
         const fadeDuration = Math.min(duration, 80);
@@ -164,10 +231,6 @@ export class Placement {
             // The window has landed — cancel the 2.5s backstop reveal so it
             // can't force-reveal a window that later moves to an inactive
             // workspace.
-            if (s.win._plaidInvisibleTimer) {
-                GLib.source_remove(s.win._plaidInvisibleTimer);
-                s.win._plaidInvisibleTimer = 0;
-            }
             // Revealing = leaving the pending-warp state NOW: the offscreen
             // mask multiplies the whole output (content AND border) by its
             // opacity uniform, so a window still in _pendingWarp paints
@@ -175,12 +238,7 @@ export class Placement {
             // / give-up paths reach fadeIn WITHOUT the verified-landing
             // success branch (the only other place _pendingWarp is cleared),
             // so clear it here — the same block the backstop reveal uses.
-            if (this.core._pendingWarp) this.core._pendingWarp.delete(s.win);
-            {
-                const effect = this.core._windowMasks && this.core._windowMasks.get(s.win);
-                if (effect && effect.setOpacityUniform)
-                    effect.setOpacityUniform(1);
-            }
+            this.revealPlacedWindow(s.win, false);
             // Settle window: some clients (Firefox's session restore) re-apply
             // their remembered geometry AFTER the placement. The size-changed
             // hook catches it when the event reaches us, but the event path
@@ -193,47 +251,7 @@ export class Placement {
             // per newly opened window, settle-window-only. The poll is NOT
             // stopped on the first in-slot tick — a restore landing between
             // ticks would be missed.
-            const heldSlotOk = () => {
-                const ws = s.win.get_workspace();
-                if (!ws) return false;
-                const mon = this.core.monitors.windowMon(s.win);
-                if (mon < 0) return false;
-                if (!this.core.monitors.groupPlaces(ws, mon)) return true;
-                const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-                const gap = this.core._settings.get_int('inside-gap');
-                const workArea = this.core.monitors.monitorWorkArea(ws, mon);
-                if (!workArea || !workArea.width) return false;
-                const slot = this.core.grab.windowSlotRect(s.win, ws, layout, workArea, gap);
-                if (!slot) return false;
-                const f = s.win.get_frame_rect();
-                return Math.abs(f.x - slot.x) <= 4 && Math.abs(f.y - slot.y) <= 4 &&
-                    Math.abs(f.width - slot.w) <= 4 && Math.abs(f.height - slot.h) <= 4;
-            };
-            const revealHeld = () => {
-                if (!this.core._settings || !s.win || !s.win._plaidHoldReveal) return;
-                this.revealHeldNewWindow(s.win, fadeDuration);
-            };
-            s.win._plaidSettleUntil = Date.now() + 6000;
-            if (s.win._plaidSettlePollId) {
-                GLib.source_remove(s.win._plaidSettlePollId);
-                s.win._plaidSettlePollId = 0;
-            }
-            s.win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
-                const w = s.win;
-                if (!this.core._settings || !w || !w.get_compositor_private() ||
-                    !this.core._windowWorkspaces || !this.core._windowWorkspaces.has(w)) {
-                    if (w) w._plaidSettlePollId = 0;
-                    return GLib.SOURCE_REMOVE;
-                }
-                if (!w._plaidSettleUntil || Date.now() > w._plaidSettleUntil) {
-                    w._plaidSettlePollId = 0;
-                    this.settleEnded(w, heldSlotOk());
-                    return GLib.SOURCE_REMOVE;
-                }
-                { this.core.grab.maybeReassertSlot(w, 4, 'direct'); }
-                if (w._plaidHoldReveal && heldSlotOk()) revealHeld();
-                return GLib.SOURCE_CONTINUE;
-            });
+            this.armSettlePoll(s.win, fadeDuration);
             this.core.signals.scheduleBorders();
             let faded = false;
             const finishFade = () => {
@@ -744,6 +762,16 @@ export class Placement {
             this.core._animating = false;
             return;
         }
+        const spiralWins = new Set(groups.filter(g => g.places && g.layout === 'spiral').flatMap(g => g.tiled));
+        if (this.core._animating && !this.core._animTickId && this.core._animWorkspace === workspace &&
+            spiralWins.size > 0 && !this.core._animTickLeft && this.core.transforms.running(workspace)) {
+            // Spiral retargets the run in flight from each window's drawn
+            // rect instead of queueing behind it. Not while another group's
+            // windows are still placed by the run (a new window's deferred
+            // placement): that retile queues, as it did.
+            this.core.debugLog(`anim: retarget ws=${this.core.geometry.wsIndex(workspace)} gen=${this.core._animGen + 1}`);
+            this.core._animating = false;
+        }
         if (this.core._animating) {
             // Stall watchdog: the in-flight animation's completion signal
             // can be missed (interrupted transitions, destroyed windows).
@@ -763,6 +791,10 @@ export class Placement {
                     GLib.source_remove(this.core._animTickId);
                     this.core._animTickId = 0;
                 }
+                this.core.debugLog(`anim: watchdog budget=${this.core._animTransformRun ? Math.round(this.animStallBudget()) : 800}ms ` +
+                    `age=${Date.now() - this.core._animStartedAt}ms`);
+                // A null workspace would stop every run.
+                if (this.core._animWorkspace) this.core.transforms.stop(false, this.core._animWorkspace);
                 // The run below retires the stalled one; its workspace is
                 // retiled again for the new windows it has not placed.
                 this.core._animStates = null;
@@ -785,9 +817,13 @@ export class Placement {
         this.core._animWorkspace = workspace;
         this.core._animStartedAt = Date.now();
         this.core._animProgressAt = this.core._animStartedAt;
-        this.core._animTransformRun = false;
+        this.core._animTransformRun = spiralWins.size > 0;
 
         this.core._animTargets = new Map();
+
+        // Only Spiral retiles through transforms; other layouts drop them.
+        if (spiralWins.size < tiledWindows.length)
+            this.core.transforms.stop(false, workspace, w => !spiralWins.has(w));
 
         for (const { mon, tiled, layout, places } of groups) {
             if (!places) {
@@ -858,11 +894,20 @@ export class Placement {
             }
         };
 
-        const newStates = states.filter(s => s.isNew);
-        const existingStates = states.filter(s => !s.isNew);
+        const spiralStates = states.filter(s => spiralWins.has(s.win));
+        const tickStates = states.filter(s => !spiralWins.has(s.win));
+        const newStates = tickStates.filter(s => s.isNew);
+        const existingStates = tickStates.filter(s => !s.isNew);
+        // The run's windows not drawn by the transform driver, until each
+        // is placed.
+        this.core._animTickLeft = tickStates.length;
+        const decTick = () => {
+            if (animGen === this.core._animGen && this.core._animTickLeft > 0) this.core._animTickLeft--;
+            dec();
+        };
 
         // New windows: init opacity and animate later
-        for (const s of newStates) {
+        for (const s of states.filter(st => st.isNew)) {
             if (s.actor) {
                 s.actor.remove_all_transitions();
                 s.actor.set_opacity(0);
@@ -872,6 +917,27 @@ export class Placement {
             }
         }
 
+        if (spiralStates.length > 0) {
+            // Spiral: resize each window once and draw all of them, new ones
+            // popping in, along one eased path (transforms.run).
+            for (const s of spiralStates) {
+                if (!s.isNew || !s.actor) continue;
+                s.popin = true;
+                const warp = this.core._pendingWarp?.has(s.win);
+                this.core._newWindowSet.delete(s.win);
+                this.revealPlacedWindow(s.win);
+                // The cursor goes to the slot before the commit moves the frame.
+                if (warp)
+                    this.core.windows.moveCursorToWindow(s.win, { x: s.targetX, y: s.targetY, width: s.targetW, height: s.targetH });
+            }
+            this.core.transforms.run(spiralStates, s => {
+                // A retired run must not verify or arm its replacement's windows.
+                if (animGen !== this.core._animGen) return;
+                this.verifyAnimationLanding(s, s.popin ? 'new' : 'tiled');
+                if (s.popin) this.armSettlePoll(s.win);
+                dec();
+            }, this.core.transforms.stop(true, workspace));
+        }
         if (existingStates.length > 0) {
             this.core._animStates = existingStates;
             this.core._animStartTime = Date.now();
@@ -894,17 +960,17 @@ export class Placement {
                     this.core._animTickId = 0;
                     this.core._animStates = null;
                     for (const s of existingStates) {
-                        if (s.regrouped || !s.win.get_compositor_private()) { dec(); continue; }
+                        if (s.regrouped || !s.win.get_compositor_private()) { decTick(); continue; }
                         this.tickConfigure(s.win, s.targetX, s.targetY, s.targetW, s.targetH, s);
                         this.verifyAnimationLanding(s, 'tiled');
-                        dec();
+                        decTick();
                     }
                     // Now fade in new windows (placement + fade handled deferred)
                     for (const s of newStates) {
                         if (s.actor) {
-                            this.deferNewWindowPlacement(s, duration, dec, animGen);
+                            this.deferNewWindowPlacement(s, duration, decTick, animGen);
                         } else {
-                            dec();
+                            decTick();
                         }
                     }
                     return GLib.SOURCE_REMOVE;
@@ -915,9 +981,9 @@ export class Placement {
             // Only new windows — fade them in after the deferred placement
             for (const s of newStates) {
                 if (s.actor) {
-                    this.deferNewWindowPlacement(s, duration, dec, animGen);
+                    this.deferNewWindowPlacement(s, duration, decTick, animGen);
                 } else {
-                    dec();
+                    decTick();
                 }
             }
         }
