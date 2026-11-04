@@ -34,6 +34,8 @@ export class Layouts {
         if (this.core._grabOp) {
             // Deferred, not dropped: a window set changed mid-grab would keep
             // its hole. handleGrabEnd drains the set.
+            // Another monitor's drop ghost is rebuilt from the new window set.
+            this.core._dropGhost = null;
             if (this.core._retileAfterGrab) {
                 this.core._retileAfterGrab.add(workspace);
                 this.core.debugLog(`retile: deferred ws=${this.core.geometry.wsIndex(workspace)} (grab active)`);

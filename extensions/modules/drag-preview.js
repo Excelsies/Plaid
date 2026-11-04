@@ -56,9 +56,15 @@ export class DragPreview {
         const src = monitors.windowMon(metaWindow);
         const ptrMon = monitors.monitorAt(px, py);
         if (ptrMon !== src && monitors.monitorTiled(ptrMon)) {
+            // A Spiral source re-flows without the window.
+            if (dragging && monitors.groupPlaces(ws, src) &&
+                this.core.windows.getWorkspaceLayout(ws, src) === 'spiral')
+                this.core.spiral.leaveSource(metaWindow, ws, src);
             const rect = dragging ? this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect : null;
+            const glide = monitors.groupPlaces(ws, ptrMon) &&
+                this.core.windows.getWorkspaceLayout(ws, ptrMon) === 'spiral';
             if (rect)
-                this.showDropPreview(rect.x, rect.y, rect.w, rect.h);
+                this.showDropPreview(rect.x, rect.y, rect.w, rect.h, glide);
             else
                 this.hideDropPreview();
             return;
@@ -114,6 +120,16 @@ export class DragPreview {
         const tiled = this.core.monitors.getWindowsForGroup(ws, mon)
             .filter(w => !this.core.windows.isFloating(w) && w !== win);
         if (tiled.length === 0) return { rect: this.core.geometry.singleWindowRect(workArea) };
+        if (layout === 'spiral') {
+            // The target monitor's own ghost: zones and the drop's tree.
+            let g = this.core._dropGhost;
+            if (!g || g.ws !== ws || g.mon !== mon || g.win !== win) {
+                this.core.spiral.syncDragTree(ws, win, mon);
+                g = this.core._dropGhost = this.core.spiral.buildDragGhost(win, ws, mon);
+            }
+            const zone = g ? this.core.spiral.dropZone(g, px, py) : null;
+            return zone ? { rect: zone.rect, tree: () => this.core.spiral.dropTree(this.core.bsp.bspClone(g.tree), zone.target, win, zone.side) } : null;
+        }
         if (isBspLayout(layout)) {
             const leaf = this.computeDwindleDropTarget(ws, px, py, mon);
             if (!leaf || leaf.type !== 'leaf') return null;

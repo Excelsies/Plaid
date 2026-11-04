@@ -348,3 +348,13 @@ test('updateDragPreview: a ghost of another monitor\'s group is rebuilt for the 
   assert.equal(self._dragGhost.mon, 0);
   assert.ok(self._dragGhost.rects.has(b));
 });
+
+test('leaveSource: a ghost of another monitor\'s group is rebuilt for the source group', () => {
+  const a = W('a', { x: 0, y: 0, width: 500, height: 500 });
+  const b = W('b', { x: 500, y: 0, width: 500, height: 500 });
+  const self = dragSelf(split('h', 0.5, leaf(a), leaf(b)), [a, b]);
+  self._dragGhost = { ws: WS, mon: 1, win: a, atHome: null };
+  withGlobal([0, 0], () => self.spiral.leaveSource(a, WS, 0));
+  assert.equal(self._dragGhost.mon, 0);
+  assert.equal(self._dragGhost.atHome, false);
+});

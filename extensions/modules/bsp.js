@@ -393,7 +393,8 @@ export class Bsp {
         }
     }
 
-    // atPointer false: appended as dwindle's next leaf, wherever the pointer is.
+    // atPointer false: appended as dwindle's next leaf, wherever the pointer
+    // is. Spiral always inserts by its own rule (spiralInsertNew).
     bspInsertForWorkspace(ws, win, mon, atPointer = true) {
         const gap = this.core._settings.get_int('inside-gap');
         const workArea = this.core.monitors.monitorWorkArea(ws, mon);
@@ -414,7 +415,7 @@ export class Bsp {
 
         const spiral = this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
         const ratio = this.bspSplitRatio(ws, mon);
-        if (tree && spiral && atPointer) {
+        if (tree && spiral) {
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
             tree = this.spiralInsertNew(ws, tree, win, area, mon);
         } else if (tree) {

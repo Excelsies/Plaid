@@ -194,6 +194,20 @@ export class Spiral extends PlaidSubsystem {
             this.core.dragPreview.hideDropPreview();
     }
 
+    // The drag is over another monitor: the Spiral source group re-flows
+    // without the window (dragPreview's cross branch).
+    leaveSource(win, ws, src) {
+        let g = this.core._dragGhost;
+        if (!g || g.ws !== ws || g.mon !== src || g.win !== win) {
+            this.syncDragTree(ws, win, src);
+            g = this.core._dragGhost = this.buildDragGhost(win, ws, src);
+        }
+        if (!g) return;
+        this.shrinkDraggedWindow(win);
+        g.leftHome = true;
+        this.showDragLayout(g, false);
+    }
+
     // The drop of a Spiral drag within its group: inserted on the drag's
     // layout (the ghost) where the zone was picked; home or no zone leaves
     // the live tree alone. Returns whether the tree changed.

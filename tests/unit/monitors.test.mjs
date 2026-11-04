@@ -2166,3 +2166,51 @@ test('static: every method that places windows asks groupPlaces (or its caller d
   assert.deepEqual(found.filter(k => !PLACES_CALLER_ASKS[k]), [], 'a new placing method must ask groupPlaces');
   assert.deepEqual(Object.keys(PLACES_CALLER_ASKS).filter(k => !found.includes(k)), [], 'stale allow entry');
 });
+
+test('Spiral across monitors: the source re-flows without the window, the target\'s own ghost plans the drop', () => {
+  const [, ws] = stubGlobal({ pointer: [1450, 250] });
+  const a = W('a', ws, 0, { x: 0, y: 0, width: 500, height: 500 });
+  const b = W('b', ws, 0, { x: 500, y: 0, width: 500, height: 500 });
+  const c = W('c', ws, 1, { x: 1000, y: 0, width: 400, height: 500 });
+  const d = W('d', ws, 1, { x: 1400, y: 0, width: 400, height: 500 });
+  const { self, shown } = dragSelf(ws, [a, b, c, d]);
+  self._workspaceLayouts.set(1, 'spiral');
+  self._workspaceLayouts.set('1@DP-2', 'spiral');
+  self.bsp.bspSetTree(ws, 0, split('h', 0.5, leaf(a), leaf(b)));
+  self.bsp.bspSetTree(ws, 1, split('h', 0.5, leaf(c), leaf(d)));
+  self.spiral.shrinkDraggedWindow = () => {};
+  self.placement.getAnimationTime = () => 0.1;
+  self.dragPreview.updateMoveDragPreview(a);
+  // Source: the ghost of monitor 0 without a, away from home.
+  assert.equal(self._dragGhost.mon, 0);
+  assert.equal(self._dragGhost.atHome, false);
+  assert.deepEqual(self._dragGhost.rects.get(b), { x: 0, y: 0, w: 1000, h: 500 });
+  // Target: d's left triangle on monitor 1's ghost.
+  assert.equal(self._dropGhost.mon, 1);
+  assert.deepEqual(shown.at(-1), { x: 1400, y: 0, w: 200, h: 500 });
+  self.windows.repositionWindow(a, ws);
+  assert.equal(self.monitors.windowConn(a), 'DP-2');
+  const t = self.bsp.bspGetTree(ws, 1);
+  assert.deepEqual(self.bsp.bspCollectWindows(t), [c, a, d]);
+  assert.equal(t.second.direction, 'h');
+  assert.equal(t.second.ratio, 0.5);
+});
+
+test('Spiral: a window moved to another monitor enters by the Spiral rule; a deferred retile drops the target ghost', () => {
+  const [, ws] = stubGlobal({ pointer: [1700, 100] });
+  const a = W('a', ws, 0);
+  const c = W('c', ws, 1, { x: 1000, y: 0, width: 400, height: 500 });
+  const d = W('d', ws, 1, { x: 1400, y: 0, width: 400, height: 500 });
+  const { self } = groupSelf(ws, [a, c, d]);
+  self._workspaceLayouts.set('1@DP-2', 'spiral');
+  self.bsp.bspSetTree(ws, 1, split('h', 0.5, leaf(c), leaf(d)));
+  self.monitors.moveWindowToGroup(a, 'DP-2', 'monitor');
+  const t = self.bsp.bspGetTree(ws, 1);
+  // d (400x500) splits stacked; a takes the pointer's (top) half.
+  assert.equal(t.second.direction, 'v');
+  assert.deepEqual([t.second.first.window, t.second.second.window], [a, d]);
+  self._grabOp = 1;
+  self._dropGhost = { ws };
+  self.layouts.doRetileWorkspace(ws);
+  assert.equal(self._dropGhost, null);
+});
