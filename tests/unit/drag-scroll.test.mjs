@@ -4,7 +4,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { makeSelf, leaf, split } from '../helpers.mjs';
+import { makeSelf, leaf, split, oneMonitor } from '../helpers.mjs';
 import { sessionState } from '../../extensions/modules/session-state.js';
 
 const MOVE = 1;
@@ -13,7 +13,11 @@ const SUPER = Clutter.ModifierType.MOD4_MASK;
 const { UP, DOWN, SMOOTH } = Clutter.ScrollDirection;
 
 // Five workspaces; index 0 is the background-app parking workspace.
-const wss = [0, 1, 2, 3, 4].map((i) => ({ id: i, index: () => i }));
+const wss = [0, 1, 2, 3, 4].map((i) => ({
+  id: i,
+  index: () => i,
+  get_work_area_for_monitor: () => ({ x: 0, y: 0, width: 2560, height: 1440 }),
+}));
 
 let now = 0;
 GLib.get_monotonic_time = () => now;
@@ -33,7 +37,7 @@ function setup({ settings = {}, parking = wss[0], floating = false, workspaces =
   };
   globalThis.global = {
     stage: {},
-    display: { compositor_modifiers: SUPER },
+    display: oneMonitor({ compositor_modifiers: SUPER }),
     workspace_manager: {
       get_n_workspaces: () => workspaces.length,
       get_workspace_by_index: (i) => workspaces[i] ?? null,
@@ -351,6 +355,7 @@ test('drag-scroll: the switch focus restore skips the workspace the dragged wind
   Gio.Settings = class {};
   const core = self;
   core.grab.connectGrabSignals = () => {};
+  core.monitors.connectSignals = () => {};
   try {
     self.signals.connectSignals();
   } finally {

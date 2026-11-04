@@ -2,6 +2,8 @@
 //
 // Instance methods live on this subsystem class.
 // `this` (settings, _bspTrees, _dwindleLeafSigs, …) and call sites are unchanged.
+// `mon` is the group's display monitor (see monitors.js); null names the
+// primary's group.
 
 import Meta from 'gi://Meta';
 
@@ -59,10 +61,26 @@ export class Bsp {
         this.core = core;
     }
 
-    bspGetTree(workspace) {
-        if (!this.core._bspTrees.has(workspace))
-            this.core._bspTrees.set(workspace, null);
-        return this.core._bspTrees.get(workspace);
+    bspGetTree(workspace, mon) {
+        const key = this.core.monitors.groupObj(workspace, mon);
+        if (!this.core._bspTrees.has(key))
+            this.core._bspTrees.set(key, null);
+        return this.core._bspTrees.get(key);
+    }
+
+    bspSetTree(workspace, mon, tree) {
+        this.core._bspTrees.set(this.core.monitors.groupObj(workspace, mon), tree);
+    }
+
+    // Structure, ratios, windows and geometry tags; no shared nodes.
+    bspClone(node) {
+        if (!node) return node;
+        const copy = { ...node };
+        if (node.type === 'split') {
+            copy.first = this.bspClone(node.first);
+            copy.second = this.bspClone(node.second);
+        }
+        return copy;
     }
 
     bspMakeLeaf(win) {
@@ -245,12 +263,12 @@ export class Bsp {
         }
     }
 
-    bspInsertForWorkspace(ws, win) {
+    // atPointer false: appended as dwindle's next leaf, wherever the pointer is.
+    bspInsertForWorkspace(ws, win, mon, atPointer = true) {
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!workArea) return;
-        let tree = this.bspGetTree(ws);
+        let tree = this.bspGetTree(ws, mon);
 
         if (tree) {
             const existing = this.bspCollectWindows(tree);
@@ -268,12 +286,12 @@ export class Bsp {
             const [px, py] = global.get_pointer();
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
             // Leaf-pick only when the pointer is INSIDE the tiling area —
-            // a pointer on a secondary monitor (or over a panel) used to be
-            // resolved against the primary gapped area to an ARBITRARY leaf
+            // a pointer on another monitor (or over a panel) used to be
+            // resolved against this gapped area to an ARBITRARY leaf
             // (the top-left-most), landing the new window in a slot
             // unrelated to where the user works; the append-at-end fallback
             // matches the plain new-window behavior instead.
-            const inside = px >= areaX && px < areaX + areaW &&
+            const inside = atPointer && px >= areaX && px < areaX + areaW &&
                 py >= areaY && py < areaY + areaH;
             const target = inside
                 ? this.bspFindLeafAtPoint(tree, areaX, areaY, areaW, areaH, px, py, gap)
@@ -286,7 +304,7 @@ export class Bsp {
         } else {
             tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap);
         }
-        this.core._bspTrees.set(ws, tree);
+        this.bspSetTree(ws, mon, tree);
     }
 
     parseMinSizeOverrides(entries) {

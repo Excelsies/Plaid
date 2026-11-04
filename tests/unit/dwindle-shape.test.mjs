@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin, leaf, empty, split } from '../helpers.mjs';
+import { makeSelf, fakeWin, leaf, empty, split, oneMonitor } from '../helpers.mjs';
 
 const shapeToString = (self, node) => self._dwindleShapeToString(node);
 const shapeFromString = (self, str) => self._dwindleShapeFromString(str);
@@ -126,7 +126,7 @@ function withDwindleWorkspace(fn, width = 2000) {
   const workspaces = [{}, ws];
   const old = globalThis.global;
   globalThis.global = {
-    display: { get_primary_monitor: () => 0 },
+    display: oneMonitor(),
     workspace_manager: {
       get_n_workspaces: () => workspaces.length,
       get_workspace_by_index: (i) => workspaces[i] ?? null,

@@ -138,13 +138,16 @@ export class Signals extends PlaidSubsystem {
                 if (win) this.core.windows.moveCursorToWindow(win);
             }
         });
+        this.core.monitors.connectSignals();
         this.connectObject(Main.layoutManager, 'monitors-changed', () => {
             bumpMonitorDims();
+            this.core.monitors.invalidate();
             this.core.dragPreview.updateDropOverlaySize();
             this.core.bgApp.refillBackgroundApp();
+            // An unplugged monitor's windows join the monitor they are on now.
+            this.core.monitors.syncKeyedPrimary();
+            this.core.monitors.regroupWindows('hotplug');
             this.core.layouts.retileAll();
-            const mon = global.display.get_monitor_geometry(global.display.get_primary_monitor());
-            if (mon) this.core._lastMonitorsGeom = mon;
             this.core.debugLog('monitors-changed handled');
         });
         if (this.core._mutterSettings) {
@@ -278,9 +281,11 @@ export class Signals extends PlaidSubsystem {
             this.core._minSizeOverrides = this.core.bsp.parseMinSizeOverrides(this.core._settings.get_strv('min-window-sizes'));
             this.core.layouts.retileAll();
         });
-        this.connectObject(this.core._settings, 'changed::workspace-dwindle-trees', () => {
-            this.core._persistedDwindleByIndex = this.core.persistence.parsePersistedDwindleShapes();
-        });
+        for (const key of ['workspace-dwindle-trees', 'monitor-workspace-dwindle-trees']) {
+            this.connectObject(this.core._settings, `changed::${key}`, () => {
+                this.core._persistedDwindleByIndex = this.core.persistence.parsePersistedDwindleShapes();
+            });
+        }
         this.connectObject(this.core._settings, 'changed::inside-gap', () => this.core.layouts.retileAll());
         this.connectObject(this.core._settings, 'changed::outside-gap-top', () => this.core.layouts.retileAll());
         this.connectObject(this.core._settings, 'changed::outside-gap-bottom', () => this.core.layouts.retileAll());
@@ -376,7 +381,8 @@ export class Signals extends PlaidSubsystem {
             }
             if (!valid) {
                 this.core._workspaceOrders.delete(workspace);
-                this.core._bspTrees.delete(workspace);
+                // Every monitor's tree and leaf signature of it.
+                this.core.monitors.forgetWorkspaceGroups(workspace);
                 this.core._lastFocusedPerWorkspace.delete(workspace);
                 // Workspace-keyed, workspace-object key — a retained
                 // GJS wrapper per removed workspace otherwise.
@@ -384,7 +390,6 @@ export class Signals extends PlaidSubsystem {
                 // The workspace-object-keyed maps missed here: a
                 // retained wrapper + a pending retile timeout that
                 // later fires against a dead workspace.
-                this.core._dwindleLeafSigs.delete(workspace);
                 this.core._queuedAnimWorkspaces.delete(workspace);
                 this.core._retileAfterGrab.delete(workspace);
                 if (this.core._pendingRetileIds.has(workspace)) {

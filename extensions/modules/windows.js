@@ -112,13 +112,13 @@ export class Windows extends PlaidSubsystem {
     }
 
     // Its leaf stays as a placeholder: pruned, nothing gives the window its
-    // slot back when it leaves fullscreen. Only on the tiled (primary)
-    // monitor: elsewhere the leaf would hold a hole for good.
-    isFullscreenTile(win, ws) {
+    // slot back when it leaves fullscreen. Only in its own group's tree (mon's):
+    // elsewhere the leaf would hold a hole for good.
+    isFullscreenTile(win, ws, mon) {
         return win.is_fullscreen() && !win.minimized && win.get_workspace() === ws &&
-            win.get_monitor() === global.display.get_primary_monitor() &&
             !!this.core._windowWorkspaces && this.core._windowWorkspaces.has(win) &&
-            !this.floatsWhenWindowed(win);
+            !this.floatsWhenWindowed(win) &&
+            this.core.monitors.windowConn(win) === this.core.monitors.groupConn(mon);
     }
 
     isFloatProcessWindow(win) {
@@ -178,14 +178,19 @@ export class Windows extends PlaidSubsystem {
         return this.core._workspaceOrders.get(workspace);
     }
 
-    getWorkspaceLayout(workspace) {
+    getWorkspaceLayout(workspace, mon) {
         // Live overrides, remembered slot rules, and the default all live in
         // the SAME index space — the lookup is deterministic per workspace
         // index, so a recreated workspace (dynamic-workspace churn) resolves
         // identically every time. Object-keyed live entries caused layout
         // flip-flops when workspaces were removed and recreated. Inserts and
-        // removals shift these keys (shiftWorkspaceIndexKeys).
-        const idx = this.core.geometry.wsIndex(workspace);
+        // removals shift these keys (shiftWorkspaceIndexKeys). Each monitor
+        // has its own: a monitor without a rule uses the default.
+        return this.layoutForKey(this.core.monitors.groupKey(workspace, mon));
+    }
+
+    // A group key's layout (monitors.groupKey), also for a monitor that is gone.
+    layoutForKey(idx) {
         const live = this.core._workspaceLayouts.get(idx);
         if (live) return live;
         if (this.core._persistedLayoutByIndex && this.core._persistedLayoutByIndex.size > 0) {
@@ -267,6 +272,15 @@ export class Windows extends PlaidSubsystem {
         }
     }
 
+    // Not placed yet (-1): the primary; window-entered-monitor follows
+    // mutter's placement.
+    recordWindowMonitor(win) {
+        const winMon = win.get_monitor();
+        const mon = winMon >= 0 ? winMon : this.core.monitors.primaryMon();
+        this.core._windowMonitors.set(win, this.core.monitors.monConn(mon));
+        return mon;
+    }
+
     addWindow(win, resume = false) {
         if (!this.core._settings) return;
         if (this.core._windowWorkspaces.has(win)) {
@@ -274,6 +288,8 @@ export class Windows extends PlaidSubsystem {
             // window signals did not (stale flag from a previous instance),
             // re-arm them instead of leaving the window deaf.
             if (!win._plaidSignalsConnected) this.connectWindowSignals(win);
+            // A stash without its monitor groups: the monitor it is on.
+            if (!this.core._windowMonitors.has(win)) this.recordWindowMonitor(win);
             return;
         }
         this.core.debugLog(`ADD_WINDOW: ${this.core.winClassCandidates(win)[0] || '?'} title=${win.get_title() || '?'} ` +
@@ -303,6 +319,7 @@ export class Windows extends PlaidSubsystem {
         const ws = win.get_workspace();
         this.core._windowWorkspaces.set(win, ws);
         this.core._windowWSIndices.set(win, this.core.geometry.wsIndex(ws));
+        const mon = this.recordWindowMonitor(win);
         this.capturePosition(win);
         this.connectWindowSignals(win);
         if (ws) {
@@ -310,10 +327,10 @@ export class Windows extends PlaidSubsystem {
             if (!order.includes(win)) {
                 order.push(win);
             }
-            if (!this.isFloating(win)) {
-                const layout = this.getWorkspaceLayout(ws);
+            if (!this.isFloating(win) && this.core.monitors.groupPlaces(ws, mon)) {
+                const layout = this.getWorkspaceLayout(ws, mon);
                 if (layout === 'dwindle')
-                    this.core.bsp.bspInsertForWorkspace(ws, win);
+                    this.core.bsp.bspInsertForWorkspace(ws, win, mon);
             }
         }
         if (!resume && tilingEnabled) {
@@ -355,10 +372,11 @@ export class Windows extends PlaidSubsystem {
                 // open at their own remembered geometry.
                 const idKnown = !!(win.get_wm_class_instance() ||
                     win.get_gtk_application_id());
-                if (wsNow && idKnown && !this.isFloating(win)) {
+                const slotMon = this.core.monitors.windowMon(win);
+                if (wsNow && idKnown && !this.isFloating(win) && slotMon >= 0) {
                     const slot = this.core.grab.windowSlotRect(win, wsNow,
-                        this.getWorkspaceLayout(wsNow),
-                        wsNow.get_work_area_for_monitor(global.display.get_primary_monitor()),
+                        this.getWorkspaceLayout(wsNow, slotMon),
+                        this.core.monitors.monitorWorkArea(wsNow, slotMon),
                         this.core._settings.get_int('inside-gap'));
                     if (slot && win.get_compositor_private())
                         win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
@@ -369,10 +387,14 @@ export class Windows extends PlaidSubsystem {
 
     removeWindow(win) {
         const ws = this.core._windowWorkspaces.get(win) || win.get_workspace();
+        const conn = this.core.monitors.windowConn(win);
         const wmClass = win.get_wm_class_instance() || '?';
         this.core.debugLog(`REMOVE_WINDOW: ${wmClass} ws=${this.core.geometry.wsIndex(ws)}`);
         this.core._windowWorkspaces.delete(win);
         this.core._windowWSIndices.delete(win);
+        this.core._windowMonitors?.delete(win);
+        if (this.core._grabbedWindow === win) this.core._grabbedWindow = null;
+        win._plaidTickSent = null;
         this.core._toggleFloatWindows.delete(win);
         this.core._observedMinSizes.delete(win);
         win._plaidFloatAnim = false;
@@ -409,11 +431,9 @@ export class Windows extends PlaidSubsystem {
             const order = this.getWorkspaceOrder(ws);
             const idx = order.indexOf(win);
             if (idx !== -1) order.splice(idx, 1);
-            const layout = this.getWorkspaceLayout(ws);
-            if (layout === 'dwindle') {
-                const tree = this.core.bsp.bspGetTree(ws);
-                if (tree) this.core._bspTrees.set(ws, this.core.bsp.bspRemove(tree, win));
-            }
+            const mon = this.core.monitors.connMon(conn);
+            if (mon < 0 || this.getWorkspaceLayout(ws, mon) === 'dwindle')
+                this.core.monitors.removeFromGroupTree(win, ws, conn);
             this.core.layouts.retileWorkspace(ws);
         }
     }
@@ -473,11 +493,10 @@ export class Windows extends PlaidSubsystem {
                 if (idx !== -1) order.splice(idx, 1);
                 // Leave the old tree now: a grab defers this retile to its
                 // end, and until then the old slot stays a drop target
-                // (drag-scroll carries a window off mid-grab).
-                if (oldWs !== newWs) {
-                    const tree = this.core.bsp.bspGetTree(oldWs);
-                    if (tree) this.core._bspTrees.set(oldWs, this.core.bsp.bspRemove(tree, win));
-                }
+                // (drag-scroll carries a window off mid-grab). The monitor
+                // stays: it joins the same monitor's group there.
+                if (oldWs !== newWs)
+                    this.core.monitors.removeFromGroupTree(win, oldWs, this.core.monitors.windowConn(win));
                 this.core.layouts.retileWorkspace(oldWs);
             }
             if (newWs) {
@@ -582,6 +601,7 @@ export class Windows extends PlaidSubsystem {
         }
     }
 
+    // Every monitor's; a layout takes its group's (monitors.getWindowsForGroup).
     getWindowsForWorkspace(workspace) {
         const order = this.getWorkspaceOrder(workspace);
         const targetIndex = this.core.geometry.wsIndex(workspace);
@@ -847,10 +867,12 @@ export class Windows extends PlaidSubsystem {
         if (!this.isFloating(win)) return;
         const ws = win.get_workspace();
         // A fullscreen tile keeps its leaf (video players retitle constantly).
-        if (ws && !this.isFullscreenTile(win, ws)) {
-            const tree = this.core.bsp.bspGetTree(ws);
+        const mon = this.core.monitors.windowMon(win);
+        if (ws && !this.isFullscreenTile(win, ws, mon)) {
+            const key = this.core.monitors.groupObjFor(ws, this.core.monitors.windowConn(win));
+            const tree = this.core._bspTrees.get(key);
             if (tree && this.core.bsp.bspCollectWindows(tree).includes(win)) {
-                this.core._bspTrees.set(ws, this.core.bsp.bspRemove(tree, win));
+                this.core._bspTrees.set(key, this.core.bsp.bspRemove(tree, win));
                 this.core.layouts.retileWorkspace(ws);
             }
         }
@@ -944,31 +966,35 @@ export class Windows extends PlaidSubsystem {
 
     repositionWindow(window, ws) {
         if (!window || !ws || !this.core._settings) return;
-        if (this.getWorkspaceLayout(ws) === 'floating') return;
         const [px, py] = global.get_pointer();
-        const tiled = this.getWindowsForWorkspace(ws).filter(w => !this.isFloating(w));
+        const monitors = this.core.monitors;
+        const mon = monitors.windowMon(window);
+        const ptrMon = monitors.monitorAt(px, py);
+        // The drop's monitor is the pointer's: the grab end keeps it.
+        monitors.grabDropped(window);
+        if (ptrMon >= 0 && ptrMon !== mon) {
+            if (monitors.monitorTiled(ptrMon))
+                this.dropOnGroup(window, ws, ptrMon, px, py);
+            else
+                monitors.moveWindowToGroup(window, monitors.monConn(ptrMon), 'drop');
+            return;
+        }
+        if (!monitors.groupPlaces(ws, mon)) return;
+        const tiled = monitors.getWindowsForGroup(ws, mon).filter(w => !this.isFloating(w));
         if (tiled.length <= 1) return;
 
-        const layout = this.getWorkspaceLayout(ws);
+        const layout = this.getWorkspaceLayout(ws, mon);
         if (layout === 'dwindle') {
-            const targetLeaf = this.core.dragPreview.computeDwindleDropTarget(ws, px, py);
+            const targetLeaf = this.core.dragPreview.computeDwindleDropTarget(ws, px, py, mon);
             if (!targetLeaf || targetLeaf.type !== 'leaf') return;
 
-            const tree = this.core.bsp.bspGetTree(ws);
+            const tree = this.core.bsp.bspGetTree(ws, mon);
             if (!tree) return;
 
             // Preserve the split ratio at the drop target so the re-insert
             // mirrors the previous proportions instead of resetting to the
             // default dwindle-ratio.
-            let targetRatio = null;
-            const path = [];
-            this.core.bsp.bspFindPath(tree, targetLeaf.window, path);
-            for (let i = path.length - 1; i >= 0; i--) {
-                if (path[i].type === 'split' && path[i].ratio > 0 && path[i].ratio < 1) {
-                    targetRatio = path[i].ratio;
-                    break;
-                }
-            }
+            const targetRatio = this.dwindleDropRatio(tree, targetLeaf.window);
 
             // Dropping the dragged window on its OWN leaf (or on a leaf the
             // removal merges away) must leave the tree untouched: the old
@@ -976,21 +1002,21 @@ export class Windows extends PlaidSubsystem {
             // follow-up retile re-added it as the "newest" leaf — a silent
             // arrangement reshuffle (and the reshuffled shape got persisted).
             if (targetLeaf.window === window) {
-                this.core._bspTrees.set(ws, tree);
+                this.core.bsp.bspSetTree(ws, mon, tree);
                 return;
             }
             let newTree = this.core.bsp.bspRemove(tree, window);
             if (newTree.type === 'empty') newTree = null;
             if (newTree && !this.core.bsp.bspFindLeaf(newTree, targetLeaf.window)) {
-                this.core._bspTrees.set(ws, tree);
+                this.core.bsp.bspSetTree(ws, mon, tree);
                 return;
             }
             if (newTree) {
                 newTree = this.core.bsp.bspReplaceLeaf(newTree, targetLeaf, window, targetRatio);
             }
-            this.core._bspTrees.set(ws, newTree);
+            this.core.bsp.bspSetTree(ws, mon, newTree);
         } else {
-            const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py);
+            const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, mon);
             if (targetIdx < 0) return;
 
             const order = this.getWorkspaceOrder(ws);
@@ -999,7 +1025,8 @@ export class Windows extends PlaidSubsystem {
             // toggle-floated windows — comparing/splicing across the two
             // spaces placed the window at the wrong relative position
             // whenever a float was interleaved. Map
-            // both sides to the tiled space, then back to the order.
+            // both sides to the tiled space, then back to the order. The
+            // order holds every monitor's windows: count this group's only.
             const tiledIdx = tiled.indexOf(window);
             if (tiledIdx === -1) return;
             const currentIdx = order.indexOf(window);
@@ -1007,12 +1034,14 @@ export class Windows extends PlaidSubsystem {
 
             order.splice(currentIdx, 1);
             const adjustedTarget = targetIdx > tiledIdx ? targetIdx - 1 : targetIdx;
+            const conn = monitors.windowConn(window);
+            const inGroup = w => !this.isFloating(w) && !w.minimized && !w.is_skip_taskbar() &&
+                w.get_window_type() === Meta.WindowType.NORMAL && monitors.windowConn(w) === conn;
             let insertIdx = order.length;
             let tiledSeen = 0;
             for (let i = 0; i < order.length; i++) {
                 const w = order[i];
-                if (this.isFloating(w) || w.minimized || w.is_skip_taskbar() ||
-                    w.get_window_type() !== Meta.WindowType.NORMAL) continue;
+                if (!inGroup(w)) continue;
                 if (tiledSeen === adjustedTarget) {
                     insertIdx = i;
                     break;
@@ -1020,20 +1049,46 @@ export class Windows extends PlaidSubsystem {
                 tiledSeen++;
             }
             order.splice(insertIdx, 0, window);
-            const tiledOnly = order.filter(w =>
-                !this.isFloating(w) &&
-                w.get_window_type() === Meta.WindowType.NORMAL &&
-                !w.is_skip_taskbar() &&
-                !w.minimized
-            );
+            const tiledOnly = order.filter(inGroup);
             if (layout === 'centered-master-stack')
-                this.core.layouts.retileCenteredMasterStack(ws, tiledOnly);
+                this.core.layouts.retileCenteredMasterStack(ws, tiledOnly, null, mon);
             else
-                this.core.layouts.retileMasterStack(ws, tiledOnly);
+                this.core.layouts.retileMasterStack(ws, tiledOnly, null, mon);
         }
         // A drop-swap restructured the tree/order directly (not every path
         // here goes through _doRetileWorkspace) — persist the new
         // arrangement (debounced) so it survives a login.
+        this.core.persistence.scheduleSaveLayouts();
+    }
+
+    // The ratio of the split nearest the drop target, for the split the
+    // drop makes there.
+    dwindleDropRatio(tree, targetWin) {
+        const path = [];
+        this.core.bsp.bspFindPath(tree, targetWin, path);
+        for (let i = path.length - 1; i >= 0; i--) {
+            if (path[i].type === 'split' && path[i].ratio > 0 && path[i].ratio < 1)
+                return path[i].ratio;
+        }
+        return null;
+    }
+
+    // A drop on another monitor: the window leaves its group for the one
+    // under the pointer, at the slot the preview showed
+    // (dragPreview.crossDropPlan).
+    dropOnGroup(win, ws, mon, px, py) {
+        // No slot under the pointer: it still joins that monitor's layout.
+        const plan = this.core.dragPreview.crossDropPlan(win, ws, mon, px, py) ?? {};
+        const tree = plan.tree ? plan.tree() : null;
+        if (!this.core.monitors.moveWindowToGroup(win, this.core.monitors.monConn(mon), 'drop')) return;
+        if (tree) this.core.bsp.bspSetTree(ws, mon, tree);
+        if (plan.before) {
+            const order = this.getWorkspaceOrder(ws);
+            const at = order.indexOf(win);
+            if (at !== -1) order.splice(at, 1);
+            const before = order.indexOf(plan.before);
+            order.splice(before === -1 ? order.length : before, 0, win);
+        }
         this.core.persistence.scheduleSaveLayouts();
     }
 
@@ -1045,6 +1100,7 @@ export class Windows extends PlaidSubsystem {
         if (this.core._windowWorkspaces) {
             for (const win of [...this.core._windowWorkspaces.keys()]) {
                 this.disconnectWindowSignals(win);
+                win._plaidTickSent = null;
                 if (win._plaidInvisibleTimer) {
                     GLib.source_remove(win._plaidInvisibleTimer);
                     win._plaidInvisibleTimer = 0;

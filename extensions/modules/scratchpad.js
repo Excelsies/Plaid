@@ -81,8 +81,8 @@ export class Scratchpad {
         } else {
             const activeWs = global.workspace_manager.get_active_workspace();
             if (!activeWs) return;
-            const monitor = global.display.get_primary_monitor();
-            const workArea = activeWs.get_work_area_for_monitor(monitor);
+            // Centring fallback: the focused or pointer monitor.
+            const workArea = this.core.monitors.monitorWorkArea(activeWs, this.core.monitors.activeMonitor(activeWs));
             let firstWin = null;
             for (const win of this.core._scratchpadWindows.keys()) {
                 {

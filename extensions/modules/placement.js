@@ -168,10 +168,12 @@ export class Placement {
             const heldSlotOk = () => {
                 const ws = s.win.get_workspace();
                 if (!ws) return false;
-                const layout = this.core.windows.getWorkspaceLayout(ws);
-                if (layout === 'floating') return true;
+                const mon = this.core.monitors.windowMon(s.win);
+                if (mon < 0) return false;
+                if (!this.core.monitors.groupPlaces(ws, mon)) return true;
+                const layout = this.core.windows.getWorkspaceLayout(ws, mon);
                 const gap = this.core._settings.get_int('inside-gap');
-                const workArea = ws.get_work_area_for_monitor(global.display.get_primary_monitor());
+                const workArea = this.core.monitors.monitorWorkArea(ws, mon);
                 if (!workArea || !workArea.width) return false;
                 const slot = this.core.grab.windowSlotRect(s.win, ws, layout, workArea, gap);
                 if (!slot) return false;
@@ -341,28 +343,30 @@ export class Placement {
     checkWorkspaceLandings(ws) {
         if (!this.core._settings || this.core._shuttingDown || !this.core._settings.get_boolean('enabled')) return;
         if (this.core._grabOp) return;
-        const layout = this.core.windows.getWorkspaceLayout(ws);
-        if (layout === 'floating') return;
-        const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
-        if (tiled.length === 0) return;
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        let workArea = null;
-        { workArea = ws.get_work_area_for_monitor(monitor); }
-        if (!workArea || workArea.width === 0) return;
         let off = 0;
-        for (const win of tiled) {
-            if (win.minimized || win.is_fullscreen()) continue;
-            if (this.core._landingAccepted && this.core._landingAccepted.has(win)) continue;
-            const slot = this.core.grab.windowSlotRect(win, ws, layout, workArea, gap);
-            if (!slot) continue;
-            const f = win.get_frame_rect();
-            if (Math.abs(f.x - slot.x) > 16 || Math.abs(f.y - slot.y) > 16 ||
-                Math.abs(f.width - slot.w) > 16 || Math.abs(f.height - slot.h) > 16)
-                off++;
+        let count = 0;
+        for (const mon of this.core.monitors.tiledMonitors()) {
+            if (!this.core.monitors.groupPlaces(ws, mon)) continue;
+            const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+            const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
+            if (tiled.length === 0) continue;
+            const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+            if (!workArea || workArea.width === 0) continue;
+            count += tiled.length;
+            for (const win of tiled) {
+                if (win.minimized || win.is_fullscreen()) continue;
+                if (this.core._landingAccepted && this.core._landingAccepted.has(win)) continue;
+                const slot = this.core.grab.windowSlotRect(win, ws, layout, workArea, gap);
+                if (!slot) continue;
+                const f = win.get_frame_rect();
+                if (Math.abs(f.x - slot.x) > 16 || Math.abs(f.y - slot.y) > 16 ||
+                    Math.abs(f.width - slot.w) > 16 || Math.abs(f.height - slot.h) > 16)
+                    off++;
+            }
         }
         if (off > 0) {
-            this.core.debugLog(`landing check: ws re-tiled (${off}/${tiled.length} windows off-slot)`);
+            this.core.debugLog(`landing check: ws re-tiled (${off}/${count} windows off-slot)`);
             this.core.signals.scheduleRetile(ws);
         }
     }
@@ -371,9 +375,11 @@ export class Placement {
         // Convergence guard: when min-size constraints can't fit the
         // partition, re-splitting just flips the layout back and forth
         // (steam 1364x810 + friends 306x540 + several windows). Bound the
-        // adjustments per workspace so the layout settles on a stable
+        // adjustments per group so the layout settles on a stable
         // partition instead of oscillating forever.
-        const idx = this.core.geometry.wsIndex(ws);
+        const mon = win ? this.core.monitors.windowMon(win) : -1;
+        if (mon < 0) return;
+        const idx = this.core.monitors.groupKey(ws, mon);
         const now = Date.now();
         let rec = this.core._pinnedAdjustCounts.get(idx);
         if (!rec || now - rec.since > 2000) {
@@ -387,11 +393,10 @@ export class Placement {
         }
         try {
             if (!win || !ws) return;
-            const layout = this.core.windows.getWorkspaceLayout(ws);
-            if (layout === 'floating') return;
+            if (!this.core.monitors.groupPlaces(ws, mon)) return;
+            const layout = this.core.windows.getWorkspaceLayout(ws, mon);
             const gap = this.core._settings.get_int('inside-gap');
-            const monitor = global.display.get_primary_monitor();
-            const workArea = ws.get_work_area_for_monitor(monitor);
+            const workArea = this.core.monitors.monitorWorkArea(ws, mon);
             if (!workArea || workArea.width === 0) return;
             const area = this.core.geometry.outsideArea(workArea);
             if (!area) return;
@@ -402,25 +407,25 @@ export class Placement {
             const minSrc = min.w > 0 || min.h > 0 ? `min=${min.w}x${min.h}` : 'min=none';
             let changed = false;
             if (layout === 'dwindle') {
-                const tree = this.core.bsp.bspGetTree(ws);
+                const tree = this.core.bsp.bspGetTree(ws, mon);
                 if (!tree) return;
                 changed = this.core.bsp.adjustForConstraints(tree, null, true, area.x, area.y, areaW, areaH, gap, 0);
             } else if (layout === 'master-stack' || layout === 'centered-master-stack') {
-                const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+                const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
                 if (tiled.length < 2) return;
                 if (win === tiled[0]) {
                     const basis = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
                     if (basis > 0) {
-                        const ratio = this.core.layouts.getMasterRatio(ws);
+                        const ratio = this.core.layouts.getMasterRatio(ws, mon);
                         const nr = Math.min(0.95, Math.max(ratio, f.width / basis));
                         if (nr !== ratio) {
-                            this.core._masterRatios.set(this.core.geometry.wsIndex(ws), nr);
+                            this.core._masterRatios.set(this.core.monitors.groupKey(ws, mon), nr);
                             changed = true;
                         }
                     }
                 } else {
                     const idx = tiled.indexOf(win) - 1;
-                    const stackRatios = this.core.layouts.getStackRatios(ws);
+                    const stackRatios = this.core.layouts.getStackRatios(ws, mon);
                     const numStack = tiled.length - 1;
                     const totalStackH = areaH - gap * (numStack - 1);
                     if (totalStackH > 0 && idx >= 0) {
@@ -483,7 +488,7 @@ export class Placement {
                 {
                     const mws = win.get_workspace();
                     if (mws) {
-                        const tree = this.core.bsp.bspGetTree(mws);
+                        const tree = this.core.bsp.bspGetTree(mws, this.core.monitors.windowMon(win));
                         const min = this.core.bsp.getWindowMinSize(win);
                         if (tree)
                             this.core.debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
@@ -555,9 +560,11 @@ export class Placement {
         // Cap at half the work area: a single window can never need more than
         // that as a minimum, and it stops one bogus sample (a resize mutter
         // ignored) from starving the window for the rest of the session.
+        // Its group's monitor (the primary while that monitor is gone).
         {
             const ws = win.get_workspace();
-            const wa = ws && ws.get_work_area_for_monitor(global.display.get_primary_monitor());
+            const mon = this.core.monitors.windowMon(win);
+            const wa = ws && this.core.monitors.monitorWorkArea(ws, mon >= 0 ? mon : this.core.monitors.primaryMon());
             if (wa) {
                 w = Math.min(w, Math.ceil(wa.width / 2));
                 h = Math.min(h, Math.ceil(wa.height / 2));
@@ -654,7 +661,10 @@ export class Placement {
         });
     }
 
-    animRetile(workspace, tiledWindows) {
+    // groups: [{mon, tiled, layout, places}] (layouts.doRetileWorkspace),
+    // every group in one run; places is monitors.groupPlaces' answer.
+    animRetile(workspace, groups) {
+        const tiledWindows = groups.flatMap(g => g.tiled);
         if (!this.core._settings || this.core._shuttingDown) {
             this.core._animating = false;
             return;
@@ -696,24 +706,24 @@ export class Placement {
 
         this.core._animTargets = new Map();
 
-        const layout = this.core.windows.getWorkspaceLayout(workspace);
-        if (layout === 'floating') {
-            // GNOME owns floating placement; the fade-in choreography just
-            // anchors at the window's current (GNOME-placed) position.
-            {
-                for (const win of tiledWindows) {
+        for (const { mon, tiled, layout, places } of groups) {
+            if (!places) {
+                // GNOME owns placement there (a floating layout, or a monitor
+                // that does not tile); the fade-in choreography just anchors
+                // at the window's current (GNOME-placed) position.
+                for (const win of tiled) {
                     if (!this.core._newWindowSet.has(win)) continue;
                     const f = win.get_frame_rect();
                     if (f.width > 0 && f.height > 0)
                         this.core._animTargets.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
                 }
-            }
-        } else if (layout === 'dwindle')
-            this.core.layouts.retileDwindle(workspace, tiledWindows);
-        else if (layout === 'centered-master-stack')
-            this.core.layouts.retileCenteredMasterStack(workspace, tiledWindows);
-        else
-            this.core.layouts.retileMasterStack(workspace, tiledWindows);
+            } else if (layout === 'dwindle')
+                this.core.layouts.retileDwindle(workspace, tiled, mon);
+            else if (layout === 'centered-master-stack')
+                this.core.layouts.retileCenteredMasterStack(workspace, tiled, null, mon);
+            else
+                this.core.layouts.retileMasterStack(workspace, tiled, null, mon);
+        }
 
         if (this.core._animTargets.size === 0) {
             this.core.debugLog('anim: no targets (bail)');
@@ -787,19 +797,20 @@ export class Placement {
                 const t = Math.min(elapsed / duration, 1);
                 const e = 1 - Math.pow(1 - t, 3);
                 for (const s of this.core._animStates) {
-                    if (!s.win.get_compositor_private()) continue;
+                    // Regrouped mid-run: mutter put it on another monitor.
+                    if (s.regrouped || !s.win.get_compositor_private()) continue;
                     const x = s.startX + (s.targetX - s.startX) * e;
                     const y = s.startY + (s.targetY - s.startY) * e;
                     const w = s.startW + (s.targetW - s.startW) * e;
                     const h = s.startH + (s.targetH - s.startH) * e;
-                    { s.win.move_resize_frame(true, Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+                    this.tickConfigure(s.win, Math.round(x), Math.round(y), Math.round(w), Math.round(h), s);
                 }
                 if (t >= 1) {
                     this.core._animTickId = 0;
                     this.core._animStates = null;
                     for (const s of existingStates) {
-                        if (!s.win.get_compositor_private()) { dec(); continue; }
-                        { s.win.move_resize_frame(true, s.targetX, s.targetY, s.targetW, s.targetH); }
+                        if (s.regrouped || !s.win.get_compositor_private()) { dec(); continue; }
+                        this.tickConfigure(s.win, s.targetX, s.targetY, s.targetW, s.targetH, s);
                         this.verifyAnimationLanding(s, 'tiled');
                         dec();
                     }
@@ -825,6 +836,14 @@ export class Placement {
                 }
             }
         }
+    }
+
+    // run: the state it animates (its target is where the run ends). Recorded
+    // first: crossing a monitor, the move emits window-entered-monitor before
+    // it returns (monitors.ownMoveInFlight).
+    tickConfigure(win, x, y, w, h, run) {
+        this.core.monitors.recordTick(win, x, y, run);
+        win.move_resize_frame(true, x, y, w, h);
     }
 
     animFloat(win, x, y, w, h) {

@@ -7,6 +7,37 @@ import { LEGACY_METHODS } from './legacy-methods.mjs';
 
 export { normalizeAccel, maskSdfRect } from '../extensions/modules/helpers.js';
 
+// One monitor, index 0, no connector lookup: what the single-monitor tests
+// assume. Tests that replace `global` take `display: oneMonitor()`.
+export function oneMonitor(extra = {}) {
+  return {
+    get_primary_monitor: () => 0,
+    get_n_monitors: () => 1,
+    get_current_monitor: () => 0,
+    get_monitor_geometry: () => ({ x: 0, y: 0, width: 2560, height: 1440 }),
+    get_monitor_index_for_rect: () => 0,
+    focus_window: null,
+    ...extra,
+  };
+}
+
+// Node's own `global` is globalThis: give it the display tests leave unstubbed.
+if (!globalThis.global.display) globalThis.global.display = oneMonitor();
+
+// The shell always has a monitor manager. A test that replaces `global`
+// without one gets an empty manager: every monitor keyed by its index.
+const emptyBackend = () => ({ get_monitor_manager: () => ({ get_logical_monitors: () => [] }) });
+let shellGlobal = globalThis.global;
+if (!shellGlobal.backend) shellGlobal.backend = emptyBackend();
+Object.defineProperty(globalThis, 'global', {
+  configurable: true,
+  get: () => shellGlobal,
+  set: (g) => {
+    shellGlobal = g;
+    if (g && typeof g === 'object' && !('backend' in g)) g.backend = emptyBackend();
+  },
+});
+
 export function fakeSettings(values = {}) {
   return {
     get_int: (k) => (k in values ? values[k] : 0),
@@ -36,6 +67,15 @@ function resetCoreState(core, settings) {
   core._workspaceOrders = new Map();
   core._windowWorkspaces = new Map();
   core._windowWSIndices = new Map();
+  core._windowMonitors = new Map();
+  core._groupObjs = new Map();
+  core._monitorConnCache = null;
+  core._monitorConnPartial = false;
+  core._tiledMonitorsCache = null;
+  core._keyedPrimary = null;
+  core._regroupId = 0;
+  core._grabbedWindow = null;
+  core._grabDropped = false;
   core._slotReassertTimes = new Map();
   core._workspaceLayouts = new Map();
   core._lastRetileTimes = new Map();
@@ -65,7 +105,6 @@ function resetCoreState(core, settings) {
   core._observedMinSizes = new Map();
   core._pendingWarp = new Set();
   core._retileAfterGrab = new Set();
-  core._lastMonitorsGeom = null;
   core._pinnedAdjustCounts = new Map();
   core._stackDiagnostics = new Set();
   core._toggleFloatWindows = new Set();

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf } from '../helpers.mjs';
+import { makeSelf, oneMonitor } from '../helpers.mjs';
 
 const MOVE = 1;
 const RESIZE_E = 1 | (2 << 12);
@@ -11,6 +11,7 @@ const workspaces = (n) => Array.from({ length: n }, (_, id) => ({ id }));
 function withWorkspaces(workspaces, active, fn) {
   const old = globalThis.global;
   globalThis.global = {
+    display: oneMonitor(),
     workspace_manager: {
       get_n_workspaces: () => workspaces.length,
       get_workspace_by_index: (i) => workspaces[i] ?? null,

@@ -42,49 +42,96 @@ export class DragPreview {
             return;
         }
         const [px, py] = global.get_pointer();
-        if (this.core.windows.getWorkspaceLayout(ws) === 'floating') {
+        // Over another tiled monitor the drop goes to its group.
+        const monitors = this.core.monitors;
+        const src = monitors.windowMon(metaWindow);
+        const ptrMon = monitors.monitorAt(px, py);
+        if (ptrMon !== src && monitors.monitorTiled(ptrMon)) {
+            const rect = this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect;
+            if (rect)
+                this.showDropPreview(rect.x, rect.y, rect.w, rect.h);
+            else
+                this.hideDropPreview();
+            return;
+        }
+        if (!monitors.groupPlaces(ws, src)) {
             this.hideDropPreview();
             return;
         }
 
-        const tiledWindows = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+        const tiledWindows = monitors.getWindowsForGroup(ws, src).filter(w => !this.core.windows.isFloating(w));
         if (tiledWindows.length <= 1) {
             this.hideDropPreview();
             return;
         }
 
-        const layout = this.core.windows.getWorkspaceLayout(ws);
+        const layout = this.core.windows.getWorkspaceLayout(ws, src);
         if (layout === 'dwindle') {
-            const leaf = this.computeDwindleDropTarget(ws, px, py);
+            const leaf = this.computeDwindleDropTarget(ws, px, py, src);
             if (leaf && leaf.type === 'leaf') {
                 this.showDropPreview(leaf._x, leaf._y, leaf._w, leaf._h);
             } else {
                 this.hideDropPreview();
             }
         } else {
-            const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py);
+            const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, src);
             if (targetIdx >= 0) {
-                this.showMasterStackPreview(ws, targetIdx);
+                this.showMasterStackPreview(ws, targetIdx, src);
             } else {
                 this.hideDropPreview();
             }
         }
     }
 
-    showMasterStackPreview(ws, targetIdx) {
+    // A drop of `win` (not in that group yet) on monitor `mon`, as the same
+    // drop within a monitor would show and make it: { rect, tree?, before? }.
+    // An empty monitor takes it whole; a floating one leaves it where it is
+    // (no rect); null: the pointer is not over a slot there.
+    crossDropPlan(win, ws, mon, px, py) {
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+        if (!this.core.geometry.isValidWorkArea(workArea)) return null;
+        const g = global.display.get_monitor_geometry(mon);
+        if (!g || px < g.x || px >= g.x + g.width || py < g.y || py >= g.y + g.height) return null;
+        if (!this.core.monitors.groupPlaces(ws, mon)) return {};
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+        const tiled = this.core.monitors.getWindowsForGroup(ws, mon)
+            .filter(w => !this.core.windows.isFloating(w) && w !== win);
+        if (tiled.length === 0) return { rect: this.core.geometry.singleWindowRect(workArea) };
+        if (layout === 'dwindle') {
+            const leaf = this.computeDwindleDropTarget(ws, px, py, mon);
+            if (!leaf || leaf.type !== 'leaf') return null;
+            const target = leaf.window;
+            const rect = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+            return { rect, tree: () => {
+                const tree = this.core.bsp.bspClone(this.core.bsp.bspGetTree(ws, mon));
+                const at = this.core.bsp.bspFindLeaf(tree, target);
+                if (!at) return null;
+                return this.core.bsp.bspReplaceLeaf(tree, at, win, this.core.windows.dwindleDropRatio(tree, target));
+            } };
+        }
+        const idx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, mon);
+        if (idx < 0) return null;
+        return { rect: this.masterStackPreviewRect(ws, idx, mon), before: tiled[idx] ?? null };
+    }
+
+    showMasterStackPreview(ws, targetIdx, mon) {
+        const r = this.masterStackPreviewRect(ws, targetIdx, mon);
+        if (r) this.showDropPreview(r.x, r.y, r.w, r.h);
+    }
+
+    masterStackPreviewRect(ws, targetIdx, mon) {
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
-        if (!workArea) return;
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+        if (!workArea) return null;
 
         const area = this.core.geometry.outsideArea(workArea);
-        if (!area) return;
+        if (!area) return null;
         const areaX = area.x;
         const areaY = area.y;
         const areaW = area.w;
         const areaH = area.h;
-        const masterRatio = this.core.layouts.getMasterRatio(ws);
-        const layout = this.core.windows.getWorkspaceLayout(ws);
+        const masterRatio = this.core.layouts.getMasterRatio(ws, mon);
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
 
         let rx, ry;
         let rw, rh;
@@ -102,7 +149,8 @@ export class DragPreview {
             rh = areaH;
         } else {
             if (layout === 'centered-master-stack') {
-                const leftCount = Math.ceil((this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w)).length - 1) / 2);
+                const leftCount = Math.ceil((this.core.monitors.getWindowsForGroup(ws, mon)
+                    .filter(w => !this.core.windows.isFloating(w)).length - 1) / 2);
                 const masterW = Math.floor((areaW - gap * 2) * masterRatio);
                 const masterX = areaX + Math.floor((areaW - masterW) / 2);
                 if (targetIdx <= leftCount) {
@@ -121,16 +169,15 @@ export class DragPreview {
             rh = areaH;
         }
 
-        this.showDropPreview(rx, ry, rw, rh);
+        return { x: rx, y: ry, w: rw, h: rh };
     }
 
-    computeDwindleDropTarget(ws, px, py) {
-        const tree = this.core.bsp.bspGetTree(ws);
+    computeDwindleDropTarget(ws, px, py, mon) {
+        const tree = this.core.bsp.bspGetTree(ws, mon);
         if (!tree) return null;
 
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!workArea) return null;
 
         const area = this.core.geometry.outsideArea(workArea);

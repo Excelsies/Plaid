@@ -28,6 +28,7 @@ export class Actions extends PlaidSubsystem {
         const ws = focused.get_workspace();
         if (!ws) return;
 
+        // Every monitor's: at a screen edge focus crosses over.
         const windows = this.core.windows.getWindowsForWorkspace(ws)
             .filter(w => !this.core.windows.isFloating(w));
         if (windows.length <= 1) return;
@@ -53,21 +54,30 @@ export class Actions extends PlaidSubsystem {
         }
         const ws = focused.get_workspace();
         if (!ws) return;
-        if (this.core.windows.getWorkspaceLayout(ws) === 'floating') {
+        const monitors = this.core.monitors;
+        const mon = monitors.windowMon(focused);
+        if (mon < 0) return;
+        // A group that places nothing (floating, or a monitor that does not
+        // tile): the window moves as a float.
+        if (!monitors.groupPlaces(ws, mon)) {
             this.moveFloating(focused, direction);
             return;
         }
 
-        const windows = this.core.windows.getWindowsForWorkspace(ws)
-            .filter(w => !this.core.windows.isFloating(w));
+        // Every tiled monitor's tiles: at a screen edge the swap crosses over
+        // (not into a floating layout, which would not place the window).
+        const windows = this.core.windows.getWindowsForWorkspace(ws).filter(w =>
+            !this.core.windows.isFloating(w) && monitors.groupPlaces(ws, monitors.windowMon(w)));
         if (windows.length <= 1) return;
 
         const bestWindow = this.core.bsp.findDirectionalTarget(focused, direction, windows);
         if (!bestWindow) return;
 
-        const layout = this.core.windows.getWorkspaceLayout(ws);
-        if (layout === 'dwindle') {
-            const tree = this.core.bsp.bspGetTree(ws);
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+        if (monitors.windowConn(bestWindow) !== monitors.windowConn(focused)) {
+            monitors.swapAcrossGroups(ws, focused, bestWindow);
+        } else if (layout === 'dwindle') {
+            const tree = this.core.bsp.bspGetTree(ws, mon);
             if (tree) {
                 this.core.bsp.bspSwapWindows(tree, focused, bestWindow);
             }
@@ -99,21 +109,24 @@ export class Actions extends PlaidSubsystem {
 
         const ws = focused.get_workspace();
         if (!ws) return;
-        if (this.core.windows.getWorkspaceLayout(ws) === 'floating') {
+        // The focused window's monitor only.
+        const mon = this.core.monitors.windowMon(focused);
+        if (mon < 0) return;
+        if (!this.core.monitors.groupPlaces(ws, mon)) {
             this.resizeFloating(focused, axis, delta);
             return;
         }
 
-        const tiledWindows = this.core.windows.getWindowsForWorkspace(ws)
+        const tiledWindows = this.core.monitors.getWindowsForGroup(ws, mon)
             .filter(w => !this.core.windows.isFloating(w));
         const idx = tiledWindows.indexOf(focused);
         if (idx === -1 || tiledWindows.length <= 1) return;
 
-        const layout = this.core.windows.getWorkspaceLayout(ws);
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
         if (layout === 'dwindle')
-            this.resizeDwindle(focused, ws, axis, delta);
+            this.resizeDwindle(focused, ws, axis, delta, mon);
         else
-            this.core.layouts.resizeMasterStack(focused, ws, axis, delta);
+            this.core.layouts.resizeMasterStack(focused, ws, axis, delta, mon);
 
         this.core.layouts.retileWorkspace(ws);
         if (this.core._settings.get_boolean('follow-focus'))
@@ -153,8 +166,8 @@ export class Actions extends PlaidSubsystem {
         this.core.windows.moveCursorToWindow(win);
     }
 
-    resizeDwindle(focused, workspace, axis, delta) {
-        const tree = this.core.bsp.bspGetTree(workspace);
+    resizeDwindle(focused, workspace, axis, delta, mon) {
+        const tree = this.core.bsp.bspGetTree(workspace, mon);
         if (!tree) return;
 
         const targetIsHorizontal = axis === 'width';
@@ -164,8 +177,7 @@ export class Actions extends PlaidSubsystem {
         for (let i = path.length - 1; i >= 0; i--) {
             const split = path[i];
             if ((split.direction === 'h') === targetIsHorizontal) {
-                const monitor = global.display.get_primary_monitor();
-                const workArea = workspace.get_work_area_for_monitor(monitor);
+                const workArea = this.core.monitors.monitorWorkArea(workspace, mon);
                 if (!workArea) return;
                 // Scale the delta by the split's OWN span (tagged by
                 // _bspTagGeometry during layout) so a deep-nested split
@@ -186,7 +198,7 @@ export class Actions extends PlaidSubsystem {
                 const inFirst = this.core.bsp.bspFindPath(split.first, focused, []);
                 const signedDelta = inFirst ? delta : -delta;
                 split.ratio = Math.max(0.15, Math.min(0.85, split.ratio + signedDelta / axisSize));
-                this.core.layouts.refreshSavedShape(workspace, tree);
+                this.core.layouts.refreshSavedShape(workspace, tree, mon);
                 return;
             }
         }
@@ -205,17 +217,12 @@ export class Actions extends PlaidSubsystem {
         const ws = focused.get_workspace();
         if (!ws) return;
 
-        if (wasFloating) {
-            const layout = this.core.windows.getWorkspaceLayout(ws);
-            if (layout === 'dwindle')
-                this.core.bsp.bspInsertForWorkspace(ws, focused);
-        } else {
-            const layout = this.core.windows.getWorkspaceLayout(ws);
-            if (layout === 'dwindle') {
-                const tree = this.core.bsp.bspGetTree(ws);
-                if (tree)
-                    this.core._bspTrees.set(ws, this.core.bsp.bspRemove(tree, focused));
-            }
+        const mon = this.core.monitors.windowMon(focused);
+        if (this.core.monitors.groupPlaces(ws, mon) && this.core.windows.getWorkspaceLayout(ws, mon) === 'dwindle') {
+            if (wasFloating)
+                this.core.bsp.bspInsertForWorkspace(ws, focused, mon);
+            else
+                this.core.monitors.removeFromGroupTree(focused, ws, this.core.monitors.windowConn(focused));
         }
 
         this.core._keyboardFocusChange = true;
@@ -284,8 +291,9 @@ export class Actions extends PlaidSubsystem {
         if (!ws) return;
 
         const frame = win.get_frame_rect();
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
+        // On its own monitor.
+        const monitor = win.get_monitor();
+        const workArea = this.core.monitors.monitorWorkArea(ws, monitor >= 0 ? monitor : this.core.monitors.primaryMon());
         if (!workArea) return;
 
         const x = workArea.x + Math.floor((workArea.width - frame.width) / 2);
@@ -308,17 +316,19 @@ export class Actions extends PlaidSubsystem {
         });
     }
 
+    // The focused monitor's layout only.
     cycleLayout() {
         const layouts = ['dwindle', 'master-stack', 'centered-master-stack', 'floating'];
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
-        const current = this.core.windows.getWorkspaceLayout(ws);
+        const mon = this.core.monitors.activeMonitor(ws);
+        const current = this.core.windows.getWorkspaceLayout(ws, mon);
         const idx = layouts.indexOf(current);
         const next = layouts[(idx + 1) % layouts.length];
         if (next !== current) {
-            this.core._workspaceLayouts.set(this.core.geometry.wsIndex(ws), next);
+            this.core._workspaceLayouts.set(this.core.monitors.groupKey(ws, mon), next);
             this.core.layouts.retileWorkspace(ws);
-            this.core.workspaces.showPopup(`Layout: ${LAYOUT_NAMES[next] || next}`);
+            this.core.workspaces.showPopup(`Layout: ${LAYOUT_NAMES[next] || next}`, null, 3000, null, mon);
             this.core.persistence.scheduleSaveLayouts();
         }
     }

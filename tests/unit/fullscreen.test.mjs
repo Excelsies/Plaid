@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
+import { makeSelf, fakeWin, leaf, split, oneMonitor } from '../helpers.mjs';
 
 function withWorkspace(fn) {
   const ws = { get_work_area_for_monitor: () => ({ x: 0, y: 0, width: 2000, height: 1000 }) };
   const old = globalThis.global;
   globalThis.global = {
-    display: { get_primary_monitor: () => 0 },
+    display: oneMonitor(),
     workspace_manager: {
       get_n_workspaces: () => 2,
       get_workspace_by_index: (i) => (i === 1 ? ws : null),
@@ -120,27 +120,32 @@ test('notify::minimized: a fullscreen tile retiles, a float does not', () => {
   assert.deepEqual(retiled, [ws]);
 });
 
-test('isFullscreenTile: only on its workspace and on the tiled monitor', () => {
+test('isFullscreenTile: only on its workspace and in its own group', () => {
   withWorkspace((ws) => {
     const self = makeSelf();
     const a = tile({ fullscreen: true }, ws);
     const other = tile({ fullscreen: true, monitor: 1 }, ws);
     self._windowWorkspaces.set(a, ws);
     self._windowWorkspaces.set(other, ws);
-    assert.equal(self.windows.isFullscreenTile(a, ws), true);
-    assert.equal(self.windows.isFullscreenTile(a, {}), false);
-    assert.equal(self.windows.isFullscreenTile(other, ws), false);
+    // other's group is monitor 1's (no connector there: keyed by index).
+    self._windowMonitors.set(other, '#1');
+    assert.equal(self.windows.isFullscreenTile(a, ws, 0), true);
+    assert.equal(self.windows.isFullscreenTile(a, ws, null), true, 'no monitor: the primary group');
+    assert.equal(self.windows.isFullscreenTile(a, {}, 0), false);
+    assert.equal(self.windows.isFullscreenTile(other, ws, 0), false);
+    assert.equal(self.windows.isFullscreenTile(other, ws, 1), true);
   });
 });
 
-test('retileDwindle: a fullscreen tile on another monitor loses its leaf', () => {
+test('retileDwindle: a fullscreen tile of another monitor\'s group loses its leaf here', () => {
   withWorkspace((ws) => {
     const self = makeSelf();
     const a = tile({ fullscreen: true, monitor: 1 }, ws);
     const [b, c] = [tile(), tile()];
     self._windowWorkspaces.set(a, ws);
+    self._windowMonitors.set(a, '#1');
     self._bspTrees.set(ws, split('h', 0.5, leaf(a), leaf(b)));
-    self._retileDwindle(ws, [b, c]);
+    self._retileDwindle(ws, [b, c], 0);
     assert.deepEqual(self._bspCollectWindows(self._bspTrees.get(ws)), [b, c]);
   });
 });

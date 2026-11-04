@@ -219,6 +219,39 @@
       <description>Entries in the form "index:shape" where shape encodes the tree's split directions and ratios (e.g. 3:h0.8480(l,l)). Restored when a workspace's window set changes so resized arrangements survive logins</description>
     </key>
 
+    <!-- Per-monitor tiling: the workspace-* keys above hold the monitor named
+         by monitor-primary-connector; these hold every other monitor, each
+         entry prefixed with the monitor's connector. -->
+    <key name="monitor-primary-connector" type="s">
+      <default>''</default>
+      <summary>Monitor the per-workspace keys describe</summary>
+      <description>Connector name (e.g. "DP-2") of the monitor whose layouts, ratios and arrangements workspace-layouts, workspace-master-ratios, workspace-stack-ratios and workspace-dwindle-trees hold: the primary monitor at the last save. Empty: the current primary.</description>
+    </key>
+
+    <key name="monitor-workspace-layouts" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Remembered layouts per workspace on the other monitors</summary>
+      <description>Entries of the form "CONNECTOR:INDEX:LAYOUT" (e.g. "DP-3:1:master-stack"), as workspace-layouts for each monitor other than monitor-primary-connector. Kept while a monitor is unplugged.</description>
+    </key>
+
+    <key name="monitor-workspace-master-ratios" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Remembered master ratios per workspace on the other monitors</summary>
+      <description>Entries of the form "CONNECTOR:INDEX:RATIO" (e.g. "DP-3:1:0.65"), as workspace-master-ratios.</description>
+    </key>
+
+    <key name="monitor-workspace-stack-ratios" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Remembered stack ratios per workspace on the other monitors</summary>
+      <description>Entries of the form "CONNECTOR:INDEX:SLOT:WEIGHT,SLOT:WEIGHT" (e.g. "DP-3:1:0:1.0,1:0.8"), as workspace-stack-ratios.</description>
+    </key>
+
+    <key name="monitor-workspace-dwindle-trees" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Persisted dwindle split arrangements per workspace on the other monitors</summary>
+      <description>Entries of the form "CONNECTOR:INDEX:SHAPE" (e.g. "DP-3:3:h0.5000(l,l)"), as workspace-dwindle-trees.</description>
+    </key>
+
     <!-- Keybindings: Window Movement -->
     <key name="move-focus-left" type="as">
       <default><![CDATA[['<Super><Alt>h']]]></default>

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin } from '../helpers.mjs';
+import { makeSelf, fakeWin, oneMonitor } from '../helpers.mjs';
 
 const slot = (x, w) => ({ targetX: x, targetY: 0, targetW: w, targetH: 600 });
 
@@ -85,7 +85,7 @@ test('landing: the workspace landing check leaves an accepted window alone', () 
   for (let i = 0; i < 4; i++) self.placement.retryLanding(win, slot(0, 800));
   const ws = { get_work_area_for_monitor: () => ({ x: 0, y: 0, width: 2560, height: 1440 }) };
   const old = globalThis.global;
-  globalThis.global = { display: { get_primary_monitor: () => 0 } };
+  globalThis.global = { display: oneMonitor() };
   let retiles = 0;
   self.signals.scheduleRetile = () => retiles++;
   self.windows.getWorkspaceLayout = () => 'dwindle';

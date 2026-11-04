@@ -46,12 +46,15 @@ export class Workspaces extends PlaidSubsystem {
         // The hidden parking slot must never be announced as a workspace — it
         // renders as a duplicate "Workspace 1".
         if (ws === this.core._backgroundAppParkingWs) return;
-        const layout = this.core.windows.getWorkspaceLayout(ws);
+        const mon = this.core.monitors.activeMonitor(ws);
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
         this.showPopup(`Workspace ${this.core.geometry.bgAppRealToDisplay(this.core.geometry.wsIndex(ws)) + 1}`,
-            `Layout: ${LAYOUT_NAMES[layout] || layout}`);
+            `Layout: ${LAYOUT_NAMES[layout] || layout}`, 3000, null, mon);
     }
 
-    showPopup(title, subtitle = null, duration = 3000, onActivate = null) {
+    // mon: centred on that monitor (several monitors, several layouts), else
+    // on the union of all of them.
+    showPopup(title, subtitle = null, duration = 3000, onActivate = null, mon = null) {
         if (this.core._layoutPopupHideId) {
             GLib.source_remove(this.core._layoutPopupHideId);
             this.core._layoutPopupHideId = 0;
@@ -63,13 +66,18 @@ export class Workspaces extends PlaidSubsystem {
         }
 
         const monitors = global.display.get_n_monitors();
-        let maxX = 0, maxY = 0;
-        for (let i = 0; i < monitors; i++) {
-            const geom = global.display.get_monitor_geometry(i);
-            maxX = Math.max(maxX, geom.x + geom.width);
-            maxY = Math.max(maxY, geom.y + geom.height);
+        let minX = 0, minY = 0, maxX = 0, maxY = 0;
+        if (mon !== null && monitors > 1 && mon >= 0 && mon < monitors) {
+            const geom = global.display.get_monitor_geometry(mon);
+            [minX, minY, maxX, maxY] = [geom.x, geom.y, geom.x + geom.width, geom.y + geom.height];
+        } else {
+            for (let i = 0; i < monitors; i++) {
+                const geom = global.display.get_monitor_geometry(i);
+                maxX = Math.max(maxX, geom.x + geom.width);
+                maxY = Math.max(maxY, geom.y + geom.height);
+            }
         }
-        const bottomMargin = Math.floor(maxY * 0.70);
+        const bottomMargin = Math.floor((maxY - minY) * 0.70);
 
         const box = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -93,8 +101,8 @@ export class Workspaces extends PlaidSubsystem {
             reactive: onActivate !== null,
         });
         this.core._layoutPopup = popup;
-        popup.set_position(0, 0);
-        popup.set_size(maxX, maxY);
+        popup.set_position(minX, minY);
+        popup.set_size(maxX - minX, maxY - minY);
         Main.layoutManager.uiGroup.add_child(popup);
         this.core.debugLog(`popup shown: ${title}`);
 

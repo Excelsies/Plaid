@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin } from '../helpers.mjs';
+import { makeSelf, fakeWin, oneMonitor } from '../helpers.mjs';
 import { sessionState } from '../../extensions/modules/session-state.js';
 
 function fakeWorkspace(windows = []) {
@@ -14,7 +14,7 @@ function fakeWorkspace(windows = []) {
 
 function withGlobalWorkspaceManager(wm, fn) {
   const old = globalThis.global;
-  globalThis.global = { workspace_manager: wm };
+  globalThis.global = { display: oneMonitor(), workspace_manager: wm };
   try {
     return fn();
   } finally {

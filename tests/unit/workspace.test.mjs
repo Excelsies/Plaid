@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin } from '../helpers.mjs';
+import { makeSelf, fakeWin, oneMonitor } from '../helpers.mjs';
 
 // Distinct workspaces (deepEqual tells them apart by id).
 const workspaces = (n) => Array.from({ length: n }, (_, id) => ({ id }));
@@ -21,6 +21,7 @@ function wsSelf(order) {
 function withOrder(order, fn) {
   const old = globalThis.global;
   globalThis.global = {
+    display: oneMonitor(),
     workspace_manager: {
       get_n_workspaces: () => order.length,
       get_workspace_by_index: (i) => order[i] ?? null,

@@ -148,9 +148,11 @@ bottom; fill the status table; paste the journal excerpts back.
 
 ## Known limitations
 
-- **Multi-monitor**: tiling targets the primary monitor's work area — windows
-  on secondary monitors get pulled to the primary. Per-monitor tiling is a
-  future project (needs a second monitor to test).
+- **Multi-monitor**: every monitor tiles its own windows, per workspace, with
+  its own layout (see the checklist below). With mutter's
+  `workspaces-only-on-primary` on, only the primary tiles. Unplugging and
+  replugging a monitor is covered by unit tests only (the headless shell
+  cannot hotplug).
 - **X11**: Plaid is Wayland-only; on an X11 session it loads inert and shows
   a pinned critical notification ("Plaid requires Wayland").
 - **Known upstream issue (not Plaid)**: logging out with Steam running can
@@ -221,6 +223,20 @@ Where it applies:
 Verification status: all four layouts verified with steam's 1364/306 floors
 (v50.53 → v50.57) — drags hard-stop at both, zero give-up floats, zero
 mismatch churn.
+
+## Per-monitor tiling
+
+- [ ] Super+Shift+Arrow moves a window to the next monitor: it joins that
+      monitor's layout and stays there
+- [ ] Drag a window onto a window on another monitor (and onto an empty
+      monitor): the preview and the drop are on the pointer's monitor
+- [ ] Super + scroll while dragging: the window lands on the new workspace in
+      the layout of the monitor it is dropped on
+- [ ] Focus/swap keys at a screen edge cross to the neighbouring monitor
+- [ ] Cycle layout and resize change only the focused window's monitor
+- [ ] Unplug a monitor: its windows join the remaining layout; plug it back:
+      windows moved there get its old layout and arrangement
+- [ ] Log out and in: each monitor keeps its layout per workspace
 
 ## Focus on Hover (v50.65)
 

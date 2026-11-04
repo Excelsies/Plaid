@@ -1007,6 +1007,7 @@ export class BackgroundApp extends PlaidSubsystem {
         if (!win) return;
         const ws = win.get_workspace() || global.workspace_manager.get_active_workspace();
         if (!ws) return;
+        // The background app lives on the primary monitor only.
         const monitor = global.display.get_primary_monitor();
         const mon = global.display.get_monitor_geometry(monitor);
         if (!mon || mon.width === 0) return;

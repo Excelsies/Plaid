@@ -30,6 +30,7 @@ import { Actions } from './actions.js';
 import { DragPreview } from './drag-preview.js';
 import { Updater } from './updater.js';
 import { DragScroll } from './drag-scroll.js';
+import { Monitors } from './monitors.js';
 
 export class PlaidCore {
     constructor(ext) {
@@ -59,6 +60,7 @@ export class PlaidCore {
         this.dragPreview = new DragPreview(this);
         this.updater = new Updater(this);
         this.dragScroll = new DragScroll(this);
+        this.monitors = new Monitors(this);
     }
 
     compileTitlePatterns(titles) {
@@ -135,6 +137,19 @@ export class PlaidCore {
         this._workspaceOrders = new Map();
         this._windowWorkspaces = new Map();
         this._windowWSIndices = new Map();
+        // Each window's group monitor (connector); changes only through
+        // monitors.moveWindowToGroup / swapAcrossGroups (and the rename of an
+        // index stand-in in syncKeyedPrimary).
+        this._windowMonitors = new Map();
+        this._groupObjs = new Map();
+        this._monitorConnCache = null;
+        this._monitorConnPartial = false;
+        this._tiledMonitorsCache = null;
+        this._keyedPrimary = this.resumeKeyedPrimary(wasEnabled);
+        this._resumeMonitorsMoved = false;
+        this._regroupId = 0;
+        this._grabbedWindow = null;
+        this._grabDropped = false;
         this._slotReassertTimes = new Map();
         this._workspaceLayouts = new Map();
         this._lastRetileTimes = new Map();
@@ -164,7 +179,6 @@ export class PlaidCore {
         this._observedMinSizes = new Map();
         this._pendingWarp = new Set();
         this._retileAfterGrab = new Set();
-        this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = new Map();
         this._stackDiagnostics = new Set();
         this._toggleFloatWindows = new Set();
@@ -317,7 +331,7 @@ export class PlaidCore {
                     }
                 }
             }
-            if (!resumeLockCycle)
+            if (this.resumeRetilesAll(resumeLockCycle))
                 this.layouts.retileAll();
             this.bgApp.checkDynamicWorkspaces();
             // retileAll() is intentionally skipped on a lock-cycle resume, and
@@ -334,6 +348,49 @@ export class PlaidCore {
             sessionState.lockCycle = false;
             return false;
         });
+    }
+
+    // A resume restores maps keyed for the stashed primary: the saved rules
+    // load against it too, and restoreTilingState moves them all to the
+    // current one. Until then nothing re-keys or regroups (monitors.restorePending).
+    resumeKeyedPrimary(wasEnabled) {
+        const stash = sessionState.stashedTiling;
+        if (!stash || !(sessionState.lockCycle || wasEnabled)) return null;
+        return stash.keyedPrimary ?? null;
+    }
+
+    // A lock resume keeps the layout as it is drawn, unless the monitors or
+    // their work areas (the top bar follows the primary) changed meanwhile.
+    resumeRetilesAll(resumeLockCycle) {
+        const moved = this._resumeMonitorsMoved;
+        this._resumeMonitorsMoved = false;
+        return !resumeLockCycle || moved;
+    }
+
+    // Kept for the next core: a lock cycle or a manual toggle resumes it.
+    stashTilingState() {
+        if (!sessionState.stashedTiling) {
+            sessionState.stashedTiling = {
+                bspTrees: this._bspTrees,
+                workspaceLayouts: this._workspaceLayouts,
+                masterRatios: this._masterRatios,
+                stackRatios: this._stackRatios,
+                workspaceOrders: this._workspaceOrders,
+                windowWorkspaces: this._windowWorkspaces,
+                windowWSIndices: this._windowWSIndices,
+                lastFocusedPerWorkspace: this._lastFocusedPerWorkspace,
+                lastRealFocusedWindow: this._lastRealFocusedWindow,
+                scratchpadWindows: this._scratchpadWindows,
+                toggleFloatWindows: this._toggleFloatWindows,
+                scratchpadVisible: this._scratchpadVisible,
+                observedMinSizes: this._observedMinSizes,
+                windowMonitors: this._windowMonitors,
+                groupObjs: this._groupObjs,
+                keyedPrimary: this._keyedPrimary,
+                monitorSig: this.monitors.signature(),
+            };
+            this.debugLog(`disable: tiling state stashed (trees=${this._bspTrees ? this._bspTrees.size : 0})`);
+        }
     }
 
     restoreTilingState() {
@@ -396,6 +453,21 @@ export class PlaidCore {
             const order = s.workspaceOrders.get(ws);
             if (order) s.workspaceOrders.set(ws, order.filter(alive));
         }
+        // The other monitors' groups: each window's monitor, and the objects
+        // that key those groups' trees.
+        if (s.windowMonitors) {
+            for (const win of [...s.windowMonitors.keys()]) {
+                if (!s.windowWorkspaces.has(win))
+                    s.windowMonitors.delete(win);
+            }
+        }
+        if (s.groupObjs) {
+            for (const [ws, byConn] of [...s.groupObjs]) {
+                if (liveWorkspaces.has(ws)) continue;
+                for (const g of byConn.values()) s.bspTrees.delete(g);
+                s.groupObjs.delete(ws);
+            }
+        }
         for (const [ws, tree] of s.bspTrees) {
             if (!tree) continue;
             let t = tree;
@@ -413,6 +485,8 @@ export class PlaidCore {
         this._windowWorkspaces = s.windowWorkspaces;
         this._windowWSIndices = s.windowWSIndices;
         this._lastFocusedPerWorkspace = s.lastFocusedPerWorkspace;
+        if (s.windowMonitors) this._windowMonitors = s.windowMonitors;
+        if (s.groupObjs) this._groupObjs = s.groupObjs;
         if (s.lastRealFocusedWindow && alive(s.lastRealFocusedWindow))
             this._lastRealFocusedWindow = s.lastRealFocusedWindow;
         if (s.scratchpadWindows) {
@@ -438,6 +512,16 @@ export class PlaidCore {
             }
             this._observedMinSizes = s.observedMinSizes;
         }
+        // The restored maps are keyed for the stashed primary (enable() loads
+        // the saved rules against it too): move them all to the current one.
+        if (s.keyedPrimary) {
+            this._keyedPrimary = s.keyedPrimary;
+            this.monitors.syncKeyedPrimary();
+        }
+        // Monitors removed, renamed or changed while disabled, and windows
+        // moved between them: every window joins the monitor it is on.
+        this.monitors.regroupWindows('resume');
+        this._resumeMonitorsMoved = !!s.monitorSig && s.monitorSig !== this.monitors.signature();
         this.debugLog(`tiling state restored (windows=${this._windowWorkspaces.size} trees=${this._bspTrees.size})`);
     }
 
@@ -463,24 +547,7 @@ export class PlaidCore {
         this.persistence.destroy();
         this._saveDirtySince = 0;
 
-        if (!sessionState.stashedTiling) {
-            sessionState.stashedTiling = {
-                bspTrees: this._bspTrees,
-                workspaceLayouts: this._workspaceLayouts,
-                masterRatios: this._masterRatios,
-                stackRatios: this._stackRatios,
-                workspaceOrders: this._workspaceOrders,
-                windowWorkspaces: this._windowWorkspaces,
-                windowWSIndices: this._windowWSIndices,
-                lastFocusedPerWorkspace: this._lastFocusedPerWorkspace,
-                lastRealFocusedWindow: this._lastRealFocusedWindow,
-                scratchpadWindows: this._scratchpadWindows,
-                toggleFloatWindows: this._toggleFloatWindows,
-                scratchpadVisible: this._scratchpadVisible,
-                observedMinSizes: this._observedMinSizes,
-            };
-            this.debugLog(`disable: tiling state stashed (trees=${this._bspTrees ? this._bspTrees.size : 0})`);
-        }
+        this.stashTilingState();
 
         Main.sessionMode.disconnectObject(this);
 
@@ -501,6 +568,7 @@ export class PlaidCore {
         this.masks.destroy();
         this.blur.destroy();
         this.windows.destroy();
+        this.monitors.destroy();
         this.signals.destroy();
         this.procInfo.destroy();
 
@@ -523,6 +591,9 @@ export class PlaidCore {
         this._workspaceOrders = null;
         this._windowWorkspaces = null;
         this._windowWSIndices = null;
+        this._windowMonitors = null;
+        this._groupObjs = null;
+        this._keyedPrimary = null;
         this._workspaceLayouts = null;
         this._masterRatios = null;
         this._stackRatios = null;
@@ -546,7 +617,6 @@ export class PlaidCore {
         this._observedMinSizes = null;
         this._pendingWarp = null;
         this._retileAfterGrab = null;
-        this._lastMonitorsGeom = null;
         this._pinnedAdjustCounts = null;
         this._stackDiagnostics = null;
         this._maximizeToggleRects = null;

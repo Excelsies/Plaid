@@ -16,24 +16,33 @@ export class Grab extends PlaidSubsystem {
     }
 
     connectGrabSignals() {
-        this.connectObject(global.display, 'grab-op-begin', (_d, metaWindow, grabOp) => {
-            if (metaWindow && this.core._gappedMaxSet && this.core._gappedMaxSet.has(metaWindow)) {
-                this.core.debugLog('float maximize: drag exits gapped mode');
-                this.core._gappedMaxSet.delete(metaWindow);
-                this.core._floatMaxRects.delete(metaWindow);
-            }
-            if (!this.core._settings || !this.core._settings.get_boolean('mouse-resize')) return;
-            if (!this.core._settings.get_boolean('enabled')) return;
-            this.handleGrabBegin(metaWindow, grabOp);
-            this.core.dragScroll.begin(metaWindow, grabOp);
-        });
-        this.connectObject(global.display, 'grab-op-end', (_d, metaWindow, grabOp) => {
-            this.handleGrabEnd(metaWindow, grabOp);
-        });
+        this.connectObject(global.display, 'grab-op-begin',
+            (_d, metaWindow, grabOp) => this.onGrabOpBegin(metaWindow, grabOp));
+        this.connectObject(global.display, 'grab-op-end',
+            (_d, metaWindow, grabOp) => this.onGrabOpEnd(metaWindow, grabOp));
         this.connectObject(global.display, 'restacked', () => {
             this.core.blur.syncBlurStacking();
             { this.core.windows.reassertFloatingTransients(); }
         });
+    }
+
+    onGrabOpBegin(metaWindow, grabOp) {
+        if (metaWindow && this.core._gappedMaxSet && this.core._gappedMaxSet.has(metaWindow)) {
+            this.core.debugLog('float maximize: drag exits gapped mode');
+            this.core._gappedMaxSet.delete(metaWindow);
+            this.core._floatMaxRects.delete(metaWindow);
+        }
+        if (!this.core._settings || this.core._shuttingDown) return;
+        this.core.monitors.grabBegan(metaWindow);
+        if (!this.core._settings.get_boolean('mouse-resize')) return;
+        if (!this.core._settings.get_boolean('enabled')) return;
+        this.handleGrabBegin(metaWindow, grabOp);
+        this.core.dragScroll.begin(metaWindow, grabOp);
+    }
+
+    onGrabOpEnd(metaWindow, grabOp) {
+        this.handleGrabEnd(metaWindow, grabOp);
+        this.core.monitors.regroupAfterGrab(metaWindow);
     }
 
     computeGrabGraceThreshold() {
@@ -94,7 +103,9 @@ export class Grab extends PlaidSubsystem {
             const direction = (grabOp >> 12) & 0xF;
             this.core._grabWidthSign = (direction & 1) ? -1 : (direction & 2) ? 1 : 0;
             this.core._grabHeightSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
-            const tree = this.core.bsp.bspGetTree(ws);
+            const mon = this.core.monitors.windowMon(metaWindow);
+            const places = this.core.monitors.groupPlaces(ws, mon);
+            const tree = places ? this.core.bsp.bspGetTree(ws, mon) : null;
             this.core._grabResizeNodeW = null;
             this.core._grabResizeNodeH = null;
             this.core._grabInitialRatioW = 0;
@@ -119,9 +130,8 @@ export class Grab extends PlaidSubsystem {
                 }
             }
 
-            this.core._grabInitialMasterRatio = this.core.layouts.getMasterRatio(ws);
-            const sr = this.core.layouts.getStackRatios(ws);
-            this.core._grabInitialStackRatios = new Map(sr);
+            this.core._grabInitialMasterRatio = places ? this.core.layouts.getMasterRatio(ws, mon) : 0.5;
+            this.core._grabInitialStackRatios = new Map(places ? this.core.layouts.getStackRatios(ws, mon) : []);
 
             this.startGrabLoop(metaWindow, 'resize');
             this.disconnectGrabBoundaryHooks();
@@ -158,9 +168,11 @@ export class Grab extends PlaidSubsystem {
                     }
                 }
                 // Keep the grab's edit, or a deferred window-set retile
-                // restores the pre-grab shape.
-                if (edited && this.core.windows.getWorkspaceLayout(ws) === 'dwindle')
-                    this.core.layouts.refreshSavedShape(ws, this.core.bsp.bspGetTree(ws));
+                // restores the pre-grab shape. After a drop on another
+                // monitor, that monitor's.
+                const mon = this.core.monitors.windowMon(metaWindow);
+                if (edited && this.core.windows.getWorkspaceLayout(ws, mon) === 'dwindle')
+                    this.core.layouts.refreshSavedShape(ws, this.core.bsp.bspGetTree(ws, mon), mon);
                 this.core.layouts.retileWorkspace(ws);
                 dropWs = ws;
                 { metaWindow.raise(); }
@@ -174,9 +186,10 @@ export class Grab extends PlaidSubsystem {
             const wmClass = metaWindow.get_wm_class_instance() || '?';
             const ws = metaWindow.get_workspace();
             if (ws) {
-                const tree = this.core.bsp.bspGetTree(ws);
+                const mon = this.core.monitors.windowMon(metaWindow);
+                const tree = this.core.bsp.bspGetTree(ws, mon);
                 const treeWins = tree ? this.core.bsp.bspCollectWindows(tree) : [];
-                const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+                const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
                 this.core.debugLog(`GRAB_END win=${wmClass} treeWins=[${treeWins.map(w => w.get_wm_class_instance() || '?').join(',')}] ` +
                     `tiled=[${tiled.map(w => w.get_wm_class_instance() || '?').join(',')}]`);
             }
@@ -276,13 +289,15 @@ export class Grab extends PlaidSubsystem {
                 const dy = curY - this.core._grabStartY;
 
                 const gap = this.core._settings.get_int('inside-gap');
-                const monitor = global.display.get_primary_monitor();
-                const workArea = ws.get_work_area_for_monitor(monitor);
+                const mon = this.core.monitors.windowMon(metaWindow);
+                const workArea = this.core.monitors.monitorWorkArea(ws, mon);
                 if (!workArea) return GLib.SOURCE_CONTINUE;
 
-                const layout = this.core.windows.getWorkspaceLayout(ws);
-                if (layout === 'dwindle') {
-                    const tree = this.core.bsp.bspGetTree(ws);
+                // A group that places nothing has no split to move.
+                const places = this.core.monitors.groupPlaces(ws, mon);
+                const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+                if (places && layout === 'dwindle') {
+                    const tree = this.core.bsp.bspGetTree(ws, mon);
                     if (tree) {
                         const area = this.core.geometry.outsideArea(workArea);
                         if (!area) return GLib.SOURCE_CONTINUE;
@@ -326,14 +341,14 @@ export class Grab extends PlaidSubsystem {
                         }
                         this.core.bsp.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
                     }
-                } else if (layout === 'master-stack' || layout === 'centered-master-stack') {
+                } else if (places && (layout === 'master-stack' || layout === 'centered-master-stack')) {
                     const area = this.core.geometry.outsideArea(workArea);
                     if (!area) return GLib.SOURCE_CONTINUE;
                     const areaW = area.w;
                     const areaH = area.h;
 
                     if (this.core._grabWidthSign !== 0) {
-                        const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+                        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
                         const idx = tiled.indexOf(metaWindow);
                         this.core.debugLog(`MS_RESIZE dx=${dx} dy=${dy} wSign=${this.core._grabWidthSign} hSign=${this.core._grabHeightSign} ` +
                             `idx=${idx} numTiled=${tiled.length} initMasterRatio=${this.core._grabInitialMasterRatio.toFixed(3)}`);
@@ -365,11 +380,11 @@ export class Grab extends PlaidSubsystem {
                             }
                             if (hi <= lo) { lo = 0.5; hi = 0.5; }
                             if (Number.isFinite(newRatio))
-                                this.core._masterRatios.set(this.core.geometry.wsIndex(ws), Math.max(lo, Math.min(hi, newRatio)));
+                                this.core._masterRatios.set(this.core.monitors.groupKey(ws, mon), Math.max(lo, Math.min(hi, newRatio)));
                         }
                     }
                     if (this.core._grabHeightSign !== 0) {
-                        const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+                        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
                         const idx = tiled.indexOf(metaWindow);
                         if (idx > 0 && this.core._grabInitialStackRatios) {
                             this.core.debugLog(`MS_HEIGHT idx=${idx} dy=${dy} hSign=${this.core._grabHeightSign} ` +
@@ -378,7 +393,7 @@ export class Grab extends PlaidSubsystem {
                             const gapTotal = gap * (numStack - 1);
                             const totalStackH = areaH - gapTotal;
                             if (totalStackH > 0 && numStack > 1) {
-                                const stackRatios = this.core.layouts.getStackRatios(ws);
+                                const stackRatios = this.core.layouts.getStackRatios(ws, mon);
                                 const draggedStackIdx = idx - 1;
                                 const pixelDelta = dy * this.core._grabHeightSign;
                                 const otherDelta = -pixelDelta / (numStack - 1);
@@ -411,7 +426,7 @@ export class Grab extends PlaidSubsystem {
                                 const minWeight = totalStackH > 0 ? minH / totalStackH * numStack : 0.1;
                                 const newWeight = Math.max(Math.max(0.1, minWeight),
                                     initialWeight + (dy * this.core._grabHeightSign) / totalStackH * numStack);
-                                const stackRatios = this.core.layouts.getStackRatios(ws);
+                                const stackRatios = this.core.layouts.getStackRatios(ws, mon);
                                 stackRatios.set(idx - 1, newWeight);
                                 this.core.persistence.scheduleSaveLayouts();
                             }
@@ -441,14 +456,14 @@ export class Grab extends PlaidSubsystem {
         const ws = skipWindow.get_workspace();
         if (!ws) return;
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        const workArea = ws.get_work_area_for_monitor(monitor);
+        const mon = this.core.monitors.windowMon(skipWindow);
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!workArea) return;
 
-        const layout = this.core.windows.getWorkspaceLayout(ws);
-        if (layout === 'floating') return;
+        if (!this.core.monitors.groupPlaces(ws, mon)) return;
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
         if (layout === 'dwindle') {
-            const tree = this.core.bsp.bspGetTree(ws);
+            const tree = this.core.bsp.bspGetTree(ws, mon);
             if (!tree) return;
             const treeWins = this.core.bsp.bspCollectWindows(tree);
             if (!treeWins.includes(skipWindow)) return;
@@ -456,12 +471,12 @@ export class Grab extends PlaidSubsystem {
             if (!area) return;
             this.core.bsp.bspLayout(tree, area.x, area.y, area.w, area.h, gap, skipWindow);
         } else {
-            const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
+            const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
             if (tiled.length <= 1) return;
             if (layout === 'centered-master-stack')
-                this.core.layouts.retileCenteredMasterStack(ws, tiled, skipWindow);
+                this.core.layouts.retileCenteredMasterStack(ws, tiled, skipWindow, mon);
             else
-                this.core.layouts.retileMasterStack(ws, tiled, skipWindow);
+                this.core.layouts.retileMasterStack(ws, tiled, skipWindow, mon);
         }
     }
 
@@ -475,7 +490,11 @@ export class Grab extends PlaidSubsystem {
         // (or, for dwindle, no slot at all — the BSP tree is never built
         // for a single window, so the tree branch returned null and every
         // settle re-assert silently no-oped while the window sat off-slot).
-        if (this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w)).length === 1)
+        // The slot is in the window's group; workArea must be its monitor's.
+        const mon = this.core.monitors.windowMon(win);
+        if (!this.core.monitors.groupPlaces(ws, mon)) return null;
+        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
+        if (tiled.length === 1)
             return this.core.geometry.singleWindowRect(workArea);
         const area = this.core.geometry.outsideArea(workArea);
         if (!area) return null;
@@ -484,7 +503,7 @@ export class Grab extends PlaidSubsystem {
         if (areaW <= 0 || areaH <= 0) return null;
 
         if (layout === 'dwindle') {
-            const tree = this.core.bsp.bspGetTree(ws);
+            const tree = this.core.bsp.bspGetTree(ws, mon);
             if (!tree) return null;
             const leaf = this.core.bsp.bspFindLeaf(tree, win);
             if (!leaf || leaf._w === undefined) return null;
@@ -498,13 +517,12 @@ export class Grab extends PlaidSubsystem {
             return r;
         }
 
-        const tiled = this.core.windows.getWindowsForWorkspace(ws).filter(w => !this.core.windows.isFloating(w));
         const idx = tiled.indexOf(win);
         if (idx === -1) return null;
 
-        const masterRatio = this.core.layouts.getMasterRatio(ws);
+        const masterRatio = this.core.layouts.getMasterRatio(ws, mon);
         const numStack = tiled.length - 1;
-        const stackRatios = this.core.layouts.getStackRatios(ws);
+        const stackRatios = this.core.layouts.getStackRatios(ws, mon);
 
         let masterX, masterW, stackX, stackW, stackIdx, colCount, colWeights;
         if (layout === 'centered-master-stack') {
@@ -572,11 +590,10 @@ export class Grab extends PlaidSubsystem {
             const ws = win.get_workspace();
             if (!ws) return;
             const gap = this.core._settings.get_int('inside-gap');
-            const monitor = global.display.get_primary_monitor();
-            let workArea = null;
-            { workArea = ws.get_work_area_for_monitor(monitor); }
+            const mon = this.core.monitors.windowMon(win);
+            const workArea = this.core.monitors.monitorWorkArea(ws, mon);
             if (!workArea || workArea.width === 0) return;
-            const layout = this.core.windows.getWorkspaceLayout(ws);
+            const layout = this.core.windows.getWorkspaceLayout(ws, mon);
             const boundary = this.windowSlotRect(win, ws, layout, workArea, gap);
             if (!boundary) return;
             const f = win.get_frame_rect();
@@ -660,13 +677,18 @@ export class Grab extends PlaidSubsystem {
         if (this.core._slotReassertTimes) this.core._slotReassertTimes.set(win, now);
         const ws = win.get_workspace();
         if (!ws) return;
+        // Only on its group's monitor. Moved to another one, the frame is
+        // there before window-entered-monitor regroups it: a slot from the
+        // old group would pull it back.
+        const monitor = this.core.monitors.windowMon(win);
+        if (monitor < 0) return;
+        const rectMon = global.display.get_monitor_index_for_rect(win.get_frame_rect());
+        if (rectMon >= 0 && rectMon !== monitor) return;
         const gap = this.core._settings.get_int('inside-gap');
-        const monitor = global.display.get_primary_monitor();
-        let workArea = null;
-        { workArea = ws.get_work_area_for_monitor(monitor); }
+        const workArea = this.core.monitors.monitorWorkArea(ws, monitor);
         if (!workArea || workArea.width === 0) return;
-        const layout = this.core.windows.getWorkspaceLayout(ws);
-        if (layout === 'floating') return;
+        if (!this.core.monitors.groupPlaces(ws, monitor)) return;
+        const layout = this.core.windows.getWorkspaceLayout(ws, monitor);
         const slot = this.windowSlotRect(win, ws, layout, workArea, gap);
         if (!slot) return;
         const f = win.get_frame_rect();
