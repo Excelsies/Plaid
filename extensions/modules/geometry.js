@@ -52,6 +52,43 @@ export class Geometry {
         return r;
     }
 
+    // Squared distance from (px, py) to the rect (0 inside it).
+    pointRectDistSq(x, y, w, h, px, py) {
+        const dx = Math.max(x - px, 0, px - (x + w));
+        const dy = Math.max(y - py, 0, py - (y + h));
+        return dx * dx + dy * dy;
+    }
+
+    // Clamped into the work area: mutter stops a dragged titlebar below the
+    // top bar while the pointer goes on. null off monitor `monIdx` (default
+    // the primary): no drop there.
+    dropPoint(workArea, px, py, monIdx) {
+        const mon = global.display.get_monitor_geometry(monIdx ?? global.display.get_primary_monitor());
+        if (!mon || px < mon.x || px >= mon.x + mon.width || py < mon.y || py >= mon.y + mon.height)
+            return null;
+        return [Math.max(workArea.x, Math.min(workArea.x + workArea.width - 1, px)),
+            Math.max(workArea.y, Math.min(workArea.y + workArea.height - 1, py))];
+    }
+
+    // The window whose slot (rects: win -> {x, y, w, h}) is under the
+    // clamped pointer, else the closest, so a drop in a gap still has a
+    // target.
+    dropTargetAt(rects, workArea, px, py, mon) {
+        const pt = this.dropPoint(workArea, px, py, mon);
+        if (!pt) return null;
+        [px, py] = pt;
+        let best = null;
+        let bestD = Infinity;
+        for (const [win, r] of rects) {
+            const d = this.pointRectDistSq(r.x, r.y, r.w, r.h, px, py);
+            if (d < bestD) {
+                best = win;
+                bestD = d;
+            }
+        }
+        return best;
+    }
+
     bgAppRealToDisplay(realIdx) {
         const parkingIdx = this.core._backgroundAppParkingWs ?
             this.wsIndex(this.core._backgroundAppParkingWs) : -1;

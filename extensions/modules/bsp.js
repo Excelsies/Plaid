@@ -132,6 +132,40 @@ export class Bsp {
         return [...this.bspCollectWindows(node.first), ...this.bspCollectWindows(node.second)];
     }
 
+    bspLeaves(node, out = []) {
+        if (!node || node.type === 'empty') return out;
+        if (node.type === 'leaf') {
+            out.push(node);
+            return out;
+        }
+        this.bspLeaves(node.first, out);
+        this.bspLeaves(node.second, out);
+        return out;
+    }
+
+    // Every leaf's slot as a retile lays it out (min-size clamp included), so
+    // drag previews match the result. Clamps ratios in place: pass a clone.
+    bspSlotRects(tree, workArea) {
+        const rects = new Map();
+        if (!tree || tree.type === 'empty') return rects;
+        if (tree.type === 'leaf') {
+            const r = this.core.geometry.singleWindowRect(workArea);
+            if (r) rects.set(tree.window, { x: r.x, y: r.y, w: r.w, h: r.h });
+            return rects;
+        }
+        const area = this.core.geometry.outsideArea(workArea);
+        if (!area) return rects;
+        const gap = this.core._settings.get_int('inside-gap');
+        this.treeMinSizes(tree, gap);
+        this.clampTreeToMinSizes(tree, area.w, area.h, gap);
+        this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        for (const l of this.bspLeaves(tree)) {
+            rects.set(l.window, { x: l._x, y: l._y,
+                w: Math.max(l._w, l._minW || 0), h: Math.max(l._h, l._minH || 0) });
+        }
+        return rects;
+    }
+
     bspLayout(node, x, y, w, h, gap, skipWindow) {
         if (!node) return;
         if (node.type === 'empty') return;
