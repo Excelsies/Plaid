@@ -8,14 +8,24 @@ import { PlaidSubsystem } from './subsystem.js';
 
 // --- Grab-Based Mouse Resize & Swap ---
 
+// mutter anchors a pointer resize at the button press, but grab-op-begin comes
+// later, the pointer already past it. The pointer is recorded for this long
+// after each cursor-shape change (pressAnchor).
+const PRESS_TRACK_MS = 3000;
+
 // --- Pick Mode ---
 
 export class Grab extends PlaidSubsystem {
     constructor(core) {
         super(core);
+        this._pressTrackToken = null;
+        this._pressTrackUntil = 0;
+        this._pressTrail = null;
     }
 
     connectGrabSignals() {
+        const tracker = global.backend.get_cursor_tracker();
+        this.connectObject(tracker, 'cursor-changed', () => this.trackPressPointer(tracker));
         this.connectObject(global.display, 'grab-op-begin',
             (_d, metaWindow, grabOp) => this.onGrabOpBegin(metaWindow, grabOp));
         this.connectObject(global.display, 'grab-op-end',
@@ -43,6 +53,57 @@ export class Grab extends PlaidSubsystem {
     onGrabOpEnd(metaWindow, grabOp) {
         this.handleGrabEnd(metaWindow, grabOp);
         this.core.monitors.regroupAfterGrab(metaWindow);
+    }
+
+    // The press never reaches an extension: the pointer is recorded briefly
+    // after a cursor-shape change (a resize edge's cursor comes before the
+    // press).
+    trackPressPointer(tracker) {
+        // Only a Spiral resize reads the press: other layouts pay nothing.
+        if (!this.pressTrackWanted()) return;
+        this._pressTrackUntil = GLib.get_monotonic_time() / 1000 + PRESS_TRACK_MS;
+        this.recordPressPointer();
+        if (this._pressTrackToken) return;
+        this._pressTrackToken = this.connectObject(tracker, 'position-invalidated', () => {
+            if (GLib.get_monotonic_time() / 1000 > this._pressTrackUntil)
+                this.stopPressTracking();
+            else
+                this.recordPressPointer();
+        });
+    }
+
+    // A Spiral group on the active workspace.
+    pressTrackWanted() {
+        const ws = global.workspace_manager.get_active_workspace();
+        if (!ws || !this.core._settings) return false;
+        return this.core.monitors.tiledMonitors().some(mon =>
+            this.core.monitors.groupPlaces(ws, mon) && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral');
+    }
+
+    recordPressPointer() {
+        const [x, y] = global.get_pointer();
+        this._pressTrail ??= [];
+        this._pressTrail.push([GLib.get_monotonic_time() / 1000, x, y]);
+        if (this._pressTrail.length > 8) this._pressTrail.shift();
+    }
+
+    stopPressTracking() {
+        if (this._pressTrackToken) this.disconnectToken(this._pressTrackToken);
+        this._pressTrackToken = null;
+        this._pressTrail = null;
+    }
+
+    // The pointer at the press that started `win`'s grab (its user time),
+    // or null without a user time or a trail entry from before it, or for a
+    // press over a second ago. handleGrabBegin asks only for a pointer grab.
+    pressAnchor(win) {
+        const t = win.get_user_time();
+        const trail = this._pressTrail;
+        if (!t || !trail || GLib.get_monotonic_time() / 1000 - t > 1000) return null;
+        for (let i = trail.length - 1; i >= 0; i--) {
+            if (trail[i][0] <= t) return [trail[i][1], trail[i][2]];
+        }
+        return null;
     }
 
     computeGrabGraceThreshold() {
@@ -865,6 +926,7 @@ export class Grab extends PlaidSubsystem {
     }
 
     destroy() {
+        this.stopPressTracking();
         this.stopLiveResizeLoop();
         this.disconnectGrabBoundaryHooks();
         this.core._grabOp = null;

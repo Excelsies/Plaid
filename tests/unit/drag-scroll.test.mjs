@@ -131,6 +131,7 @@ test('drag-scroll: no filter for a resize grab, with the setting off, or with mo
   const gated = setup({ settings: { 'mouse-resize': false } });
   const handlers = {};
   globalThis.global.display.connectObject = (name, cb) => { handlers[name] = cb; };
+  globalThis.global.backend = { get_cursor_tracker: () => ({ connectObject() {} }) };
   gated.self._handleGrabBegin = () => {};
   gated.self._connectGrabSignals();
   handlers['grab-op-begin'](null, dragWin(wss[1]), MOVE);
