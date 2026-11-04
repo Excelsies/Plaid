@@ -581,7 +581,7 @@ export class Layouts {
         if (!workArea) return;
 
         if (tiledWindows.length === 1) {
-            const rect = this.core.geometry.singleWindowRect(workArea);
+            const rect = this.core.bsp.loneTileRect(tiledWindows[0], workArea, workspace, mon);
             if (rect)
                 this.core.windows.moveWindow(tiledWindows[0], rect.x, rect.y, rect.w, rect.h);
             return;

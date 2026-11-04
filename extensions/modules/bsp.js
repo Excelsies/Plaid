@@ -160,8 +160,8 @@ export class Bsp {
         const rects = new Map();
         if (!tree || tree.type === 'empty') return rects;
         if (tree.type === 'leaf') {
-            const r = this.core.geometry.singleWindowRect(workArea);
-            if (r) rects.set(tree.window, { x: r.x, y: r.y, w: r.w, h: r.h });
+            const r = this.loneTileRect(tree.window, workArea, ws, mon);
+            if (r) rects.set(tree.window, r);
             return rects;
         }
         const area = this.core.geometry.outsideArea(workArea);
@@ -171,8 +171,8 @@ export class Bsp {
         this.clampTreeToMinSizes(tree, area.w, area.h, gap);
         this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
         for (const l of this.bspLeaves(tree)) {
-            rects.set(l.window, { x: l._x, y: l._y,
-                w: Math.max(l._w, l._minW || 0), h: Math.max(l._h, l._minH || 0) });
+            rects.set(l.window, this.tileRect(l.window, { x: l._x, y: l._y,
+                w: Math.max(l._w, l._minW || 0), h: Math.max(l._h, l._minH || 0) }, ws, mon));
         }
         return rects;
     }
@@ -549,6 +549,37 @@ export class Bsp {
     // The minimum a BSP partition of group (ws, mon) gives `win`.
     layoutMinSize(win, ws, mon) {
         return this.minimumsIgnored(ws, mon) ? { w: 0, h: 0 } : this.getWindowMinSize(win);
+    }
+
+    // The rect a tile of group (ws, mon) is sent and drawn at, from its slot
+    // `r`. Mutter drops a configure below the client's minimum whole, position
+    // included (Wayland and X11), so a Spiral slot is grown to that minimum on
+    // an axis. Where it goes is Hyprland's formula for a tile larger than its
+    // box: centred on the slot, then clamped into the tiling area (the work
+    // area less the outer gaps). It overlaps its neighbours (no crop) and
+    // never reaches another monitor; its partition stays the slot. No valid
+    // tiling area: the slot.
+    tileRect(win, r, ws, mon) {
+        if (!r || !this.minimumsIgnored(ws, mon)) return r;
+        const min = this.windowMinSizeHint(win);
+        if (!min || (min.w <= r.w && min.h <= r.h)) return r;
+        const area = this.core.geometry.outsideArea(this.core.monitors.monitorWorkArea(ws, mon));
+        if (!area) return r;
+        const w = Math.max(r.w, min.w);
+        const h = Math.max(r.h, min.h);
+        const clamp = (v, lo, span, size) => Math.min(Math.max(v, lo), Math.max(lo, lo + span - size));
+        return {
+            x: clamp(r.x - Math.floor((w - r.w) / 2), area.x, area.w, w),
+            y: clamp(r.y - Math.floor((h - r.h) / 2), area.y, area.h, h),
+            w, h,
+        };
+    }
+
+    // A lone tile of group (ws, mon): the whole tiling area, through tileRect.
+    // Every place that sends or verifies one asks here.
+    loneTileRect(win, workArea, ws, mon) {
+        const r = this.core.geometry.singleWindowRect(workArea);
+        return r ? this.tileRect(win, { x: r.x, y: r.y, w: r.w, h: r.h }, ws, mon) : null;
     }
 
     // Tags every node of group (ws, mon)'s tree with its minimum.

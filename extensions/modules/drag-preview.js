@@ -119,7 +119,7 @@ export class DragPreview {
         const layout = this.core.windows.getWorkspaceLayout(ws, mon);
         const tiled = this.core.monitors.getWindowsForGroup(ws, mon)
             .filter(w => !this.core.windows.isFloating(w) && w !== win);
-        if (tiled.length === 0) return { rect: this.core.geometry.singleWindowRect(workArea) };
+        if (tiled.length === 0) return { rect: this.core.bsp.loneTileRect(win, workArea, ws, mon) };
         if (layout === 'spiral') {
             // The target monitor's own ghost: zones and the drop's tree.
             let g = this.core._dropGhost;

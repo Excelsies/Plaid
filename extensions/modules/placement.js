@@ -763,7 +763,9 @@ export class Placement {
             this.core._animating = false;
             return;
         }
-        const spiralWins = new Set(groups.filter(g => g.places && g.layout === 'spiral').flatMap(g => g.tiled));
+        // Each Spiral tile and its group's monitor.
+        const spiralWins = new Map(groups.filter(g => g.places && g.layout === 'spiral')
+            .flatMap(g => g.tiled.map(w => [w, g.mon])));
         if (this.core._animating && !this.core._animTickId && this.core._animWorkspace === workspace &&
             spiralWins.size > 0 && !this.core._animTickLeft && this.core.transforms.running(workspace)) {
             // Spiral retargets the run in flight from each window's drawn
@@ -859,8 +861,9 @@ export class Placement {
         const duration = animTime * 1000;
 
         const states = [];
-        for (const [win, target] of this.core._animTargets) {
+        for (const [win, slot] of this.core._animTargets) {
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
+            const target = spiralWins.has(win) ? this.core.bsp.tileRect(win, slot, workspace, spiralWins.get(win)) : slot;
             const frame = win.get_frame_rect();
             const actor = win.get_compositor_private();
             const isNew = this.core._newWindowSet.has(win);

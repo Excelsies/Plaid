@@ -364,3 +364,16 @@ test('BSP min sites read minimums through bsp.layoutMinSize, naming their group'
     }
   }
 });
+
+// A lone tile's rect is decided in one place (bsp.loneTileRect) for every BSP
+// site; master-stack and the maximize conversions keep the whole area.
+test('lone BSP tiles take their rect from bsp.loneTileRect only', () => {
+  const counts = Object.fromEntries(Object.entries(callSites('singleWindowRect')).map(([k, v]) => [k, v.length]));
+  assert.deepEqual(counts, {
+    'bsp.js:loneTileRect': 1,
+    'layouts.js:retileMasterStack': 1,
+    'layouts.js:retileCenteredMasterStack': 1,
+    'windows.js:convertMaximizedToGaps': 1,
+    'windows.js:handleFloatMaximize': 1,
+  });
+});

@@ -646,7 +646,8 @@ export class Grab extends PlaidSubsystem {
     spiralLiveResize(grabbed) {
         const ws = grabbed.get_workspace();
         if (!ws) return;
-        const tree = this.core.bsp.bspGetTree(ws, this.core.monitors.windowMon(grabbed));
+        const mon = this.core.monitors.windowMon(grabbed);
+        const tree = this.core.bsp.bspGetTree(ws, mon);
         if (!tree || !this.core.bsp.bspFindLeaf(tree, grabbed)) return;
         if (!this.core._liveSent) this.core._liveSent = new Map();
         if (!this.core._liveStretched) this.core._liveStretched = new Map();
@@ -654,7 +655,7 @@ export class Grab extends PlaidSubsystem {
             const win = leaf.window;
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
             if (!(leaf._w > 0) || !(leaf._h > 0)) continue;
-            const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+            const slot = this.core.bsp.tileRect(win, { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h }, ws, mon);
             // mutter owns the grabbed window's geometry until the grab ends.
             if (win !== grabbed) {
                 const last = this.core._liveSent.get(win);
@@ -735,7 +736,7 @@ export class Grab extends PlaidSubsystem {
         if (!this.core.monitors.groupPlaces(ws, mon)) return null;
         const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
         if (tiled.length === 1)
-            return this.core.geometry.singleWindowRect(workArea);
+            return this.core.bsp.loneTileRect(win, workArea, ws, mon);
         const area = this.core.geometry.outsideArea(workArea);
         if (!area) return null;
         const { x: areaX, y: areaY, w: areaW, h: areaH } = area;
@@ -754,7 +755,7 @@ export class Grab extends PlaidSubsystem {
             const min = this.core.bsp.layoutMinSize(win, ws, mon);
             if (min.w > 0 && r.w < min.w) r.w = Math.min(min.w, areaW);
             if (min.h > 0 && r.h < min.h) r.h = Math.min(min.h, areaH);
-            return r;
+            return this.core.bsp.tileRect(win, r, ws, mon);
         }
 
         const idx = tiled.indexOf(win);
