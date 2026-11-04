@@ -201,7 +201,7 @@ export class Spiral extends PlaidSubsystem {
         g.zoneKey = zoneKey;
         const rect = !dragging ? null : atHome ? g.home : zone?.rect;
         if (rect)
-            this.core.dragPreview.showDropPreview(rect.x, rect.y, rect.w, rect.h, true);
+            this.core.dragPreview.showDropPreview(rect.x, rect.y, rect.w, rect.h);
         else
             this.core.dragPreview.hideDropPreview();
     }
@@ -311,9 +311,11 @@ export class Spiral extends PlaidSubsystem {
     }
 
     // The ghosts belong to the workspace and window set they were built for.
+    // Also the dwindle drop cache (dragPreview): every drag reset clears it.
     clearGhosts() {
         this.core._dragGhost = null;
         this.core._dropGhost = null;
+        this.core._dwindleDropCache = null;
     }
 
     // Disable or shutdown mid-drag: no ghost, the shrunk window at identity.

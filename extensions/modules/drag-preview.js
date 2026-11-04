@@ -1,5 +1,7 @@
 // Drag previews: the full-screen overlay, the blue drop rectangle, and the
 // dwindle/master-stack target calculations used while dragging a window.
+// Owns _dwindleDropCache (the drag's dwindle slots and landings; cleared
+// with the drag ghosts, spiral.clearGhosts).
 //
 // Methods live on this subsystem class.
 
@@ -61,10 +63,8 @@ export class DragPreview {
                 this.core.windows.getWorkspaceLayout(ws, src) === 'spiral')
                 this.core.spiral.leaveSource(metaWindow, ws, src);
             const rect = dragging ? this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect : null;
-            const glide = monitors.groupPlaces(ws, ptrMon) &&
-                this.core.windows.getWorkspaceLayout(ws, ptrMon) === 'spiral';
             if (rect)
-                this.showDropPreview(rect.x, rect.y, rect.w, rect.h, glide);
+                this.showDropPreview(rect.x, rect.y, rect.w, rect.h);
             else
                 this.hideDropPreview();
             return;
@@ -90,12 +90,11 @@ export class DragPreview {
             return;
         }
         if (isBspLayout(layout)) {
-            const leaf = this.computeDwindleDropTarget(ws, px, py, src);
-            if (leaf && leaf.type === 'leaf') {
-                this.showDropPreview(leaf._x, leaf._y, leaf._w, leaf._h);
-            } else {
+            const rect = this.dwindleDropPreview(metaWindow, ws, px, py, src);
+            if (rect)
+                this.showDropPreview(rect.x, rect.y, rect.w, rect.h);
+            else
                 this.hideDropPreview();
-            }
         } else {
             const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, src);
             if (targetIdx >= 0) {
@@ -131,16 +130,13 @@ export class DragPreview {
             return zone ? { rect: zone.rect, tree: () => this.core.spiral.dropTree(this.core.bsp.bspClone(g.tree), zone.target, win, zone.side) } : null;
         }
         if (isBspLayout(layout)) {
-            const leaf = this.computeDwindleDropTarget(ws, px, py, mon);
-            if (!leaf || leaf.type !== 'leaf') return null;
-            const target = leaf.window;
-            const rect = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
-            return { rect, tree: () => {
-                const tree = this.core.bsp.bspClone(this.core.bsp.bspGetTree(ws, mon));
-                const at = this.core.bsp.bspFindLeaf(tree, target);
-                if (!at) return null;
-                return this.core.bsp.bspReplaceLeaf(tree, at, win, this.core.windows.dwindleDropRatio(tree, target));
-            } };
+            if (this.core._dwindleDropCache?.mon !== mon)
+                this.core.spiral.syncDragTree(ws, win, mon);
+            const rect = this.dwindleDropPreview(win, ws, px, py, mon);
+            const tree = this.core.bsp.bspGetTree(ws, mon);
+            const target = rect && tree
+                ? this.core.geometry.dropTargetAt(this.core._dwindleDropCache.live, workArea, px, py, mon) : null;
+            return target ? { rect, tree: () => this.dwindleDropTree(this.core.bsp.bspClone(tree), win, target, workArea, ws, mon) } : null;
         }
         const idx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, mon);
         if (idx < 0) return null;
@@ -205,33 +201,57 @@ export class DragPreview {
         return { x: rx, y: ry, w: rw, h: rh };
     }
 
-    computeDwindleDropTarget(ws, px, py, mon) {
-        const tree = this.core.bsp.bspGetTree(ws, mon);
-        if (!tree) return null;
-
-        const gap = this.core._settings.get_int('inside-gap');
-        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
-        if (!workArea) return null;
-
+    // The target splits along the longer side of its slot once `win` is gone
+    // (not before: a target that then spans the screen would give a strip),
+    // `win` second. null: no change. Group (ws, mon) gives the minimums.
+    dwindleDropTree(tree, win, target, workArea, ws, mon) {
+        const bsp = this.core.bsp;
+        // Preserve the split ratio at the drop target so the re-insert
+        // mirrors the previous proportions instead of resetting to the
+        // default dwindle-ratio.
+        const targetRatio = this.core.windows.dwindleDropRatio(tree, target);
         const area = this.core.geometry.outsideArea(workArea);
         if (!area) return null;
-        const ax = area.x;
-        const ay = area.y;
-        const aw = area.w;
-        const ah = area.h;
-
-        // Drop zones live inside the outside-gapped area — a pointer in the
-        // outside-gap strip selects nothing.
-        if (px < ax || px > ax + aw || py < ay || py > ay + ah)
-            return null;
-
-        this.core.bsp.bspTagGeometry(tree, ax, ay, aw, ah, gap);
-        return this.core.bsp.bspFindLeafAtPoint(tree, ax, ay, aw, ah, px, py, gap);
+        // With a window from elsewhere this only collapses empty children.
+        const newTree = bsp.bspRemove(tree, win);
+        const leaf = bsp.bspFindLeaf(newTree, target);
+        if (!leaf) return null;
+        const gap = this.core._settings.get_int('inside-gap');
+        bsp.treeMinSizes(newTree, gap, ws, mon);
+        bsp.clampTreeToMinSizes(newTree, area.w, area.h, gap);
+        bsp.bspTagGeometry(newTree, area.x, area.y, area.w, area.h, gap);
+        return bsp.bspReplaceLeaf(newTree, leaf, win, targetRatio);
     }
 
-    // glide: fade in on its first appearance, then glide between targets
-    // (Spiral's zones); otherwise it jumps.
-    showDropPreview(x, y, w, h, glide = false) {
+    // The window's slot after a drop on group (ws, mon) (its own slot over its
+    // own leaf): the target is the slot under the clamped pointer, else the
+    // closest (geometry.dropTargetAt), so a gap or the top bar still drops.
+    dwindleDropPreview(win, ws, px, py, mon) {
+        const bsp = this.core.bsp;
+        const tree = bsp.bspGetTree(ws, mon);
+        const workArea = this.core.monitors.monitorWorkArea(ws, mon);
+        if (!tree || !this.core.geometry.isValidWorkArea(workArea)) return null;
+        // Per drag and monitor, until the tree changes (layouts.doRetileWorkspace
+        // and the drag resets clear it).
+        if (!this.core._dwindleDropCache || this.core._dwindleDropCache.mon !== mon) {
+            this.core._dwindleDropCache = { mon, live: bsp.bspSlotRects(bsp.bspClone(tree), workArea, ws, mon),
+                landing: new Map() };
+        }
+        const c = this.core._dwindleDropCache;
+        const target = this.core.geometry.dropTargetAt(c.live, workArea, px, py, mon);
+        if (!target) return null;
+        if (target === win) return c.live.get(win) ?? null;
+        if (!c.landing.has(target)) {
+            const drop = this.dwindleDropTree(bsp.bspClone(tree), win, target, workArea, ws, mon);
+            c.landing.set(target, drop ? bsp.bspSlotRects(drop, workArea, ws, mon).get(win) ?? null : null);
+        }
+        return c.landing.get(target);
+    }
+
+    // Fades in on its first appearance, then glides between targets. The
+    // target is remembered (_dropPreviewTarget) so the same one is not
+    // re-eased every tick.
+    showDropPreview(x, y, w, h) {
         if (w <= 0 || h <= 0) {
             this.hideDropPreview();
             return;
@@ -244,28 +264,6 @@ export class DragPreview {
             });
             this.core._dropOverlay.add_child(this.core._dropPreview);
         }
-        if (glide) {
-            this.glideDropPreview(x, y, w, h);
-            return;
-        }
-        const p = this.core._dropPreview;
-        // After a glide: no ease left running, no partial fade, and no
-        // remembered target (a later glide to it would be skipped).
-        if (this.core._dropPreviewTarget || p.opacity !== 255) {
-            p.remove_all_transitions();
-            p.opacity = 255;
-            this.core._dropPreviewTarget = null;
-        }
-        if (p.style !== PREVIEW_STYLE)
-            p.style = PREVIEW_STYLE;
-        this.core._dropPreview.visible = true;
-        this.core._dropPreview.set_position(x, y);
-        this.core._dropPreview.set_size(w, h);
-    }
-
-    // The preview's target is remembered (_dropPreviewTarget) so the same
-    // one is not re-eased every tick.
-    glideDropPreview(x, y, w, h) {
         const p = this.core._dropPreview;
         const t = this.core._dropPreviewTarget;
         if (p.visible && t && t.x === x && t.y === y && t.w === w && t.h === h)

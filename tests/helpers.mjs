@@ -134,6 +134,7 @@ function resetCoreState(core, settings) {
   core._liveStretched = null;
   core._dragGhost = null;
   core._dropGhost = null;
+  core._dwindleDropCache = null;
   core._dragShrunk = null;
   core._landings = new Map();
   landingViews(core);

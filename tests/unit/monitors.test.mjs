@@ -547,9 +547,9 @@ test('drop on another monitor: onto a window it splits that leaf, onto an empty 
   const { self, retiles } = groupSelf(ws, [a, b, c, d]);
   self.bsp.bspSetTree(ws, 0, split('h', 0.5, leaf(a), leaf(b)));
   self.bsp.bspSetTree(ws, 1, split('h', 0.6, leaf(c), leaf(d)));
-  // The preview is the target's slot, as within a monitor.
+  // The preview is where b lands, as within a monitor.
   const plan = self.dragPreview.crossDropPlan(b, ws, 1, 1200, 250);
-  assert.deepEqual(plan.rect, { x: 1000, y: 0, w: 480, h: 500 });
+  assert.deepEqual(plan.rect, { x: 1000, y: 300, w: 480, h: 200 });
   assert.equal(treeWins(self, ws, 1).length, 2, 'the plan changes nothing');
   self.windows.dropOnGroup(b, ws, 1, 1200, 250);
   assert.equal(self.monitors.windowConn(b), 'DP-2');
@@ -1069,10 +1069,11 @@ test('drag preview over another monitor uses that monitor\'s tree', () => {
   self.bsp.bspSetTree(ws, 0, split('h', 0.5, leaf(a), leaf(b)));
   self.bsp.bspSetTree(ws, 1, split('h', 0.5, leaf(c), leaf(d)));
   self.dragPreview.updateMoveDragPreview(b);
-  assert.deepEqual(shown.at(-1), { x: 0, y: 0, w: 500, h: 500 }, 'b over a');
+  // Where b lands: a alone, split side by side.
+  assert.deepEqual(shown.at(-1), { x: 500, y: 0, w: 500, h: 500 }, 'b over a');
   global.get_pointer = () => [1600, 250, 0];
   self.dragPreview.updateMoveDragPreview(b);
-  assert.deepEqual(shown.at(-1), { x: 1400, y: 0, w: 400, h: 500 }, 'b over d on monitor 1');
+  assert.deepEqual(shown.at(-1), { x: 1400, y: 250, w: 400, h: 250 }, 'b over d on monitor 1');
   // Over a monitor that does not tile: no preview (the drop moves it there untiled).
   self._mutterSettings = { get_boolean: () => true };
   self.monitors.invalidate();
@@ -2021,7 +2022,7 @@ test('a held new window in a group that places nothing is revealed at the first 
 const MIN_ARGS = { bspGetTree: 2, bspSetTree: 3, bspInsertForWorkspace: 3, getWorkspaceLayout: 2,
   getMasterRatio: 2, getStackRatios: 2, clampMasterStackRatios: 6, retileMasterStack: 4,
   retileCenteredMasterStack: 4, retileDwindle: 3, resizeMasterStack: 5, resizeDwindle: 5,
-  computeMasterStackDropTarget: 4, computeDwindleDropTarget: 4, showMasterStackPreview: 3,
+  computeMasterStackDropTarget: 4, dwindleDropPreview: 5, dwindleDropTree: 6, showMasterStackPreview: 3,
   masterStackPreviewRect: 3, refreshSavedShape: 3, getWindowsForGroup: 2, monitorWorkArea: 2,
   groupKey: 2, groupObj: 2, isFullscreenTile: 3, crossDropPlan: 5, dropOnGroup: 5, groupPlaces: 2 };
 
@@ -2082,7 +2083,7 @@ function bareGroupKeys(src, file) {
 
 // Methods that lay windows out, compute a slot or edit a split must ask
 // monitors.groupPlaces, or say here why their caller does.
-const PLACES = /\.(animRetile|swapMasterStackWindows|retileMasterStack|retileCenteredMasterStack|retileDwindle|bspLayout|bspInsertForWorkspace|windowSlotRect|computeDwindleDropTarget|computeMasterStackDropTarget|showMasterStackPreview|masterStackPreviewRect|crossDropPlan|resizeMasterStack|resizeDwindle|moveTiledExcept|adjustForConstraints)\(|_masterRatios\.set\(|stackRatios\.set\(/;
+const PLACES = /\.(animRetile|swapMasterStackWindows|retileMasterStack|retileCenteredMasterStack|retileDwindle|bspLayout|bspInsertForWorkspace|windowSlotRect|dwindleDropPreview|computeMasterStackDropTarget|showMasterStackPreview|masterStackPreviewRect|crossDropPlan|resizeMasterStack|resizeDwindle|moveTiledExcept|adjustForConstraints)\(|_masterRatios\.set\(|stackRatios\.set\(/;
 const PLACES_CALLER_ASKS = {
   'bsp.js bspLayout': 'tree recursion; its callers ask',
   'bsp.js adjustForConstraints': 'tree recursion; adjustPinnedTree asks',

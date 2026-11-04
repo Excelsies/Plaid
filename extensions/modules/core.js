@@ -189,6 +189,7 @@ export class PlaidCore {
         this._liveStretched = null;
         this._dragGhost = null;
         this._dropGhost = null;
+        this._dwindleDropCache = null;
         this._dragShrunk = null;
         this._landings = new Map();
         this._observedMinSizes = new Map();

@@ -1013,36 +1013,21 @@ export class Windows extends PlaidSubsystem {
         if (layout === 'spiral') {
             if (!this.core.spiral.drop(window, ws, mon, px, py)) return;
         } else if (isBspLayout(layout)) {
-            const targetLeaf = this.core.dragPreview.computeDwindleDropTarget(ws, px, py, mon);
-            if (!targetLeaf || targetLeaf.type !== 'leaf') return;
-
             const tree = this.core.bsp.bspGetTree(ws, mon);
-            if (!tree) return;
-
-            // Preserve the split ratio at the drop target so the re-insert
-            // mirrors the previous proportions instead of resetting to the
-            // default dwindle-ratio.
-            const targetRatio = this.dwindleDropRatio(tree, targetLeaf.window);
-
+            const workArea = monitors.monitorWorkArea(ws, mon);
+            if (!tree || !this.core.geometry.isValidWorkArea(workArea)) return;
+            // The slot under the clamped pointer, else the closest: a drop in a
+            // gap or over the top bar is not lost (the preview showed it).
+            const target = this.core.geometry.dropTargetAt(
+                this.core.bsp.bspSlotRects(this.core.bsp.bspClone(tree), workArea, ws, mon), workArea, px, py, mon);
             // Dropping the dragged window on its OWN leaf (or on a leaf the
             // removal merges away) must leave the tree untouched: the old
             // code removed the window and never re-inserted it, so the
             // follow-up retile re-added it as the "newest" leaf — a silent
             // arrangement reshuffle (and the reshuffled shape got persisted).
-            if (targetLeaf.window === window) {
-                this.core.bsp.bspSetTree(ws, mon, tree);
-                return;
-            }
-            let newTree = this.core.bsp.bspRemove(tree, window);
-            if (newTree.type === 'empty') newTree = null;
-            if (newTree && !this.core.bsp.bspFindLeaf(newTree, targetLeaf.window)) {
-                this.core.bsp.bspSetTree(ws, mon, tree);
-                return;
-            }
-            if (newTree) {
-                newTree = this.core.bsp.bspReplaceLeaf(newTree, targetLeaf, window, targetRatio);
-            }
-            this.core.bsp.bspSetTree(ws, mon, newTree);
+            if (!target || target === window) return;
+            const newTree = this.core.dragPreview.dwindleDropTree(this.core.bsp.bspClone(tree), window, target, workArea, ws, mon);
+            if (newTree) this.core.bsp.bspSetTree(ws, mon, newTree);
         } else {
             const targetIdx = this.core.layouts.computeMasterStackDropTarget(ws, px, py, mon);
             if (targetIdx < 0) return;

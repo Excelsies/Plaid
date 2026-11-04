@@ -140,7 +140,7 @@ test('updateMoveDragPreview: hidden until the window, not the pointer, travelled
     _getWorkspaceLayout: () => 'dwindle',
     _getWindowsForWorkspace: () => [{}, {}],
     _isFloating: () => false,
-    _computeDwindleDropTarget: () => { targeted++; return null; },
+    _dwindleDropPreview: () => { targeted++; return null; },
   });
   self._grabStartFrame = { x: 0, y: 0 };
   self._grabGrace = 10;

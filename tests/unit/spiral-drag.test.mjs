@@ -158,14 +158,14 @@ test('updateDragPreview: away from home the others reflow to the ghost and the z
   assert.equal(a._actor.eased[0].scale_x, 0.85);
   assert.deepEqual(self._transformStates.get(b)?.targetY, 0);
   assert.deepEqual([self._transformStates.get(b).targetW, self._transformStates.get(b).targetH], [1000, 250]);
-  assert.deepEqual(shown.at(-1), [0, 0, 1000, 125, true], 'b\'s top zone');
+  assert.deepEqual(shown.at(-1), [0, 0, 1000, 125], 'b\'s top zone');
   // Two frames of the reflow: b is drawn on its way to the ghost slot.
   self.transforms.step();
   clock = 100 * 1000;
   self.transforms.step();
   withGlobal([250, 250], () => self.spiral.updateDragPreview(a, WS, 250, 250, true));
   assert.equal(self._dragGhost.atHome, true);
-  assert.deepEqual(shown.at(-1), [0, 0, 500, 500, true], 'home');
+  assert.deepEqual(shown.at(-1), [0, 0, 500, 500], 'home');
   assert.equal(self._transformStates.get(b).targetX, 500);
 });
 

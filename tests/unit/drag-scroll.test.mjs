@@ -261,7 +261,7 @@ test('drag-scroll: a carried window is dropped at release without travel', () =>
 test('drag-scroll: the drop preview stays hidden during the slide', () => {
   const { self, filters } = setup();
   let targeted = 0;
-  self._computeDwindleDropTarget = () => { targeted++; return null; };
+  self._dwindleDropPreview = () => { targeted++; return null; };
   self._getWorkspaceLayout = () => 'dwindle';
   self._getWindowsForWorkspace = () => [{}, {}];
   const win = dragWin(wss[1]);
