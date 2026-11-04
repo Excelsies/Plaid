@@ -122,6 +122,10 @@ function resetCoreState(core, settings) {
   core._pendingBorderId = 0;
   core._queuedAnimWorkspaces = new Set();
   core._animStartedAt = 0;
+  core._animProgressAt = 0;
+  core._animGen = 0;
+  core._animWorkspace = null;
+  core._animTransformRun = false;
   core._landings = new Map();
   landingViews(core);
   core._observedMinSizes = new Map();

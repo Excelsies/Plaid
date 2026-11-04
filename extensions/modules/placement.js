@@ -31,11 +31,30 @@ export class Placement {
         return 0.1 * Math.max(0.1, stSettings.slow_down_factor);
     }
 
+    // Watchdog budget of a transform run: no progress for this long means a
+    // completion was lost. Scaled with the animation time, so a slowed-down
+    // run is not cut short.
+    animStallBudget() {
+        return 500 + 3 * this.getAnimationTime() * 1000;
+    }
+
+    // A tick run is over by its duration, so 800 ms from its start means a
+    // missed completion; a transform run stalls when nothing advanced it for
+    // the budget.
+    animStalled(now = Date.now()) {
+        if (this.core._animTransformRun)
+            return now - this.core._animProgressAt > this.animStallBudget();
+        return !!this.core._animStartedAt && now - this.core._animStartedAt > 800;
+    }
+
     cancelAnimation() {
         if (this.core._animTickId) {
             GLib.source_remove(this.core._animTickId);
             this.core._animTickId = 0;
         }
+        // Retire the run: its late callbacks must not clear _animating under
+        // the next one.
+        this.core._animGen = (this.core._animGen || 0) + 1;
         if (this.core._newWindowSet) {
             for (const win of this.core._newWindowSet) {
                 // A window can be disposed mid-animation; cleanup must continue.
@@ -114,7 +133,8 @@ export class Placement {
         this.core.debugLog(`place: held reveal at slot for ${win.get_wm_class_instance() || '?'}`);
     }
 
-    deferNewWindowPlacement(s, duration, done) {
+    // animGen: the run placing it; a newer run places it instead.
+    deferNewWindowPlacement(s, duration, done, animGen = this.core._animGen) {
         const fadeDuration = Math.min(duration, 80);
         const fadeIn = (holdForSettle = false) => {
             if (!this.core._settings) return;
@@ -257,7 +277,8 @@ export class Placement {
         let lastFrameKey = null;
         let sameFrameCount = 0;
         const attempt = () => {
-            if (!this.core._settings) return;
+            if (!this.core._settings || animGen !== this.core._animGen) return;
+            this.core._animProgressAt = Date.now();
             {
                 if (!s.win || !s.win.get_compositor_private()) {
                     done();
@@ -720,7 +741,7 @@ export class Placement {
             // can be missed (interrupted transitions, destroyed windows).
             // If it has not completed within a generous budget, force-finish
             // so queued retiles keep running instead of wedging forever.
-            if (this.core._animStartedAt && Date.now() - this.core._animStartedAt > 800) {
+            if (this.animStalled()) {
                 // Teardown the in-flight animation BEFORE starting a new
                 // one: the watchdog previously just cleared _animating and
                 // drained the queue, leaving the 16ms tick alive — the new
@@ -734,10 +755,14 @@ export class Placement {
                     GLib.source_remove(this.core._animTickId);
                     this.core._animTickId = 0;
                 }
+                // The run below retires the stalled one; its workspace is
+                // retiled again for the new windows it has not placed.
                 this.core._animStates = null;
                 this.core._animTargets = null;
                 this.core._animWindows = null;
                 this.core._animating = false;
+                if (this.core._animWorkspace && this.core._animWorkspace !== workspace)
+                    this.core._queuedAnimWorkspaces.add(this.core._animWorkspace);
                 const pending = [...this.core._queuedAnimWorkspaces];
                 this.core._queuedAnimWorkspaces.clear();
                 this.core.debugLog(`anim: watchdog drained stalled queue (${pending.length})`);
@@ -748,7 +773,11 @@ export class Placement {
                 return;
             }
         }
+        const animGen = ++this.core._animGen;
+        this.core._animWorkspace = workspace;
         this.core._animStartedAt = Date.now();
+        this.core._animProgressAt = this.core._animStartedAt;
+        this.core._animTransformRun = false;
 
         this.core._animTargets = new Map();
 
@@ -801,7 +830,9 @@ export class Placement {
         if (remaining === 0) { this.core._animating = false; this.core._animWindows = null; return; }
 
         const dec = () => {
-            if (!this.core._newWindowSet) return;
+            // A retired run must not finish its replacement.
+            if (!this.core._newWindowSet || animGen !== this.core._animGen) return;
+            this.core._animProgressAt = Date.now();
             remaining--;
             if (remaining <= 0) {
                 this.core._animating = false;
@@ -863,7 +894,7 @@ export class Placement {
                     // Now fade in new windows (placement + fade handled deferred)
                     for (const s of newStates) {
                         if (s.actor) {
-                            this.deferNewWindowPlacement(s, duration, dec);
+                            this.deferNewWindowPlacement(s, duration, dec, animGen);
                         } else {
                             dec();
                         }
@@ -876,7 +907,7 @@ export class Placement {
             // Only new windows — fade them in after the deferred placement
             for (const s of newStates) {
                 if (s.actor) {
-                    this.deferNewWindowPlacement(s, duration, dec);
+                    this.deferNewWindowPlacement(s, duration, dec, animGen);
                 } else {
                     dec();
                 }

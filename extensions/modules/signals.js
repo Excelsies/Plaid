@@ -392,6 +392,8 @@ export class Signals extends PlaidSubsystem {
                 // later fires against a dead workspace.
                 this.core._queuedAnimWorkspaces.delete(workspace);
                 this.core._retileAfterGrab.delete(workspace);
+                // The watchdog would re-queue it.
+                if (this.core._animWorkspace === workspace) this.core._animWorkspace = null;
                 if (this.core._pendingRetileIds.has(workspace)) {
                     GLib.source_remove(this.core._pendingRetileIds.get(workspace));
                     this.core._pendingRetileIds.delete(workspace);

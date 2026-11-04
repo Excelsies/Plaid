@@ -173,6 +173,10 @@ export class PlaidCore {
         this._pendingBorderId = 0;
         this._queuedAnimWorkspaces = new Set();
         this._animStartedAt = 0;
+        this._animProgressAt = 0;
+        this._animGen = 0;
+        this._animWorkspace = null;
+        this._animTransformRun = false;
         this._landings = new Map();
         this._observedMinSizes = new Map();
         this._pendingWarp = new Set();
@@ -609,6 +613,8 @@ export class PlaidCore {
         this._newWindowSet = null;
         this._queuedAnimWorkspaces = null;
         this._animStartedAt = 0;
+        this._animProgressAt = 0;
+        this._animWorkspace = null;
         this._landings = null;
         this._observedMinSizes = null;
         this._pendingWarp = null;
