@@ -294,7 +294,8 @@ export class Grab extends PlaidSubsystem {
         // Also the workspace a carried window left (drag-scroll).
         this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
-        this.core.borders.startBorderAnimation();
+        // Sync, not start: no 30fps tick when nothing animates.
+        this.core.borders.syncBorderAnimation();
     }
 
     // Retiles deferred by the grab, active workspace first. Not the drop's
