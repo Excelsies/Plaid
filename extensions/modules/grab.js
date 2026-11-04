@@ -206,6 +206,8 @@ export class Grab extends PlaidSubsystem {
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;
         this.core._grabCarried = null;
+        this.core._grabInnerW = this.core._grabInnerH = null;
+        this.core._grabFollowW = this.core._grabFollowH = 1;
         // Also the workspace a carried window left (drag-scroll).
         this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
@@ -272,6 +274,99 @@ export class Grab extends PlaidSubsystem {
         if (grabOp === Meta.GrabOp.KEYBOARD_RESIZING_UNKNOWN) return false;
         const direction = (grabOp >> 12) & 0xF;
         return (grabOp & 1) !== 0 && direction === 0;
+    }
+
+    // Per axis the outer split is the nearest ancestor whose divider IS the
+    // grabbed edge. On a monitor edge there is none: the opposite edge moves,
+    // mirrored (follow -1), since mutter shrinks the frame from the dragged
+    // edge. A same-direction split met first, `inner`, holds the anchored
+    // edge.
+    pickSplits(win, ws) {
+        const c = this.core;
+        c._grabResizeNodeW = c._grabResizeNodeH = null;
+        c._grabInnerW = c._grabInnerH = null;
+        c._grabFollowW = c._grabFollowH = 1;
+        c._grabInitialRatioW = c._grabInitialRatioH = 0;
+        const mon = c.monitors.windowMon(win);
+        const tree = c.bsp.bspGetTree(ws, mon);
+        const leaf = tree ? c.bsp.bspFindLeaf(tree, win) : null;
+        if (!leaf) return;
+        const workArea = c.monitors.monitorWorkArea(ws, mon);
+        const area = c.geometry.isValidWorkArea(workArea) ? c.geometry.outsideArea(workArea) : null;
+        if (!area) return;
+        const gap = c._settings.get_int('inside-gap');
+        c.bsp.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        const path = [];
+        c.bsp.bspFindPath(tree, win, path);
+        const sticks = (a, b) => Math.abs(a - b) < 2;
+        const pick = (dir, sign, lo, size, areaLo, areaSize) => {
+            const atLo = sticks(lo, areaLo);
+            const atHi = sticks(lo + size, areaLo + areaSize);
+            if (!sign || (atLo && atHi)) return [null, null, 1];
+            const wantSecond = sign < 0 || atHi;
+            const wantFirst = sign > 0 || atLo;
+            let inner = null;
+            for (let i = path.length - 1; i >= 0; i--) {
+                const node = path[i];
+                if (node.direction !== dir) continue;
+                const inFirst = node.first === (path[i + 1] ?? leaf);
+                const other = inFirst ? node.second : node.first;
+                if (!other || other.type === 'empty') continue;
+                // The divider is on the far side of a monitor-edge grab.
+                if (inFirst ? wantFirst : wantSecond) return [node, inner, (sign < 0) === inFirst ? -1 : 1];
+                inner ??= { node, inFirst, anchor: inFirst ? lo + size : lo };
+            }
+            return [null, null, 1];
+        };
+        [c._grabResizeNodeW, c._grabInnerW, c._grabFollowW] =
+            pick('h', c._grabWidthSign, leaf._x, leaf._w, area.x, area.w);
+        [c._grabResizeNodeH, c._grabInnerH, c._grabFollowH] =
+            pick('v', c._grabHeightSign, leaf._y, leaf._h, area.y, area.h);
+        c._grabInitialRatioW = c._grabResizeNodeW?.ratio ?? 0;
+        c._grabInitialRatioH = c._grabResizeNodeH?.ratio ?? 0;
+    }
+
+    // The picked dividers follow the pointer's travel within both subtrees'
+    // minimums; `inner` is re-solved so the anchored edge stays where mutter
+    // keeps it. Leaves the tree tagged.
+    updateGrabSplits(tree, dx, dy, gap, area) {
+        const c = this.core;
+        c.bsp.treeMinSizes(tree, gap);
+        const nodeW = c._grabResizeNodeW;
+        const nodeH = c._grabResizeNodeH;
+        if (nodeW)
+            this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap);
+        if (nodeH)
+            this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap);
+        // Re-clamp the splits below, or a narrowing subtree draws its
+        // min-size window squashed for the whole grab.
+        c.bsp.clampTreeToMinSizes(tree, area.w, area.h, gap);
+        c.bsp.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        for (const inner of [c._grabInnerW, c._grabInnerH]) {
+            if (!inner) continue;
+            const n = inner.node;
+            const isH = n.direction === 'h';
+            const start = isH ? n._x : n._y;
+            const split = inner.inFirst ? inner.anchor - start : inner.anchor - gap - start;
+            // +0.5: the layout floors (axis - gap) * ratio back to `split`.
+            this.setGrabRatio(n, (split + 0.5) / ((isH ? n._w : n._h) - gap), gap);
+            c.bsp.bspTagGeometry(n, n._x, n._y, n._w, n._h, gap);
+        }
+    }
+
+    // A tagged split's ratio, kept within its children's minimums.
+    setGrabRatio(node, raw, gap) {
+        const isH = node.direction === 'h';
+        const axisSize = (isH ? node._w : node._h) - gap;
+        if (!(axisSize > 0) || !Number.isFinite(raw)) return;
+        const min1 = (isH ? node.first?._minW : node.first?._minH) || 0;
+        const min2 = (isH ? node.second?._minW : node.second?._minH) || 0;
+        const minRatio = min1 / axisSize;
+        const maxRatio = 1 - min2 / axisSize;
+        const lo = maxRatio <= minRatio
+            ? (min1 + min2 > 0 ? min1 / (min1 + min2) : 0.15) : minRatio;
+        const hi = maxRatio <= minRatio ? lo : maxRatio;
+        node.ratio = Math.max(lo, Math.min(hi, raw));
     }
 
     startGrabLoop(metaWindow, mode) {

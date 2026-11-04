@@ -149,6 +149,10 @@ function resetCoreState(core, settings) {
   core._grabHeightSign = 0;
   core._grabResizeNodeW = null;
   core._grabResizeNodeH = null;
+  core._grabInnerW = null;
+  core._grabInnerH = null;
+  core._grabFollowW = 1;
+  core._grabFollowH = 1;
   core._grabInitialRatioW = 0;
   core._grabInitialRatioH = 0;
   core._grabInitialMasterRatio = 0;
