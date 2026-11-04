@@ -77,6 +77,9 @@ export class Grab extends PlaidSubsystem {
         if (!frame || frame.width === 0 || frame.height === 0 || !buffer) return;
 
         this.core._grabOp = grabOp;
+        // mutter moves the grabbed window from here on: an eased transform
+        // would hold it off the pointer.
+        this.core.transforms.release(metaWindow);
 
         // Capture the pointer (the resize loop's origin) and the frame (the
         // move path's click-vs-drag origin, see movedPastGrace) for every

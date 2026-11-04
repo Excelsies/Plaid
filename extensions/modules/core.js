@@ -31,6 +31,7 @@ import { DragPreview } from './drag-preview.js';
 import { Updater } from './updater.js';
 import { DragScroll } from './drag-scroll.js';
 import { Monitors } from './monitors.js';
+import { Transforms } from './transforms.js';
 
 export class PlaidCore {
     constructor(ext) {
@@ -61,6 +62,7 @@ export class PlaidCore {
         this.updater = new Updater(this);
         this.dragScroll = new DragScroll(this);
         this.monitors = new Monitors(this);
+        this.transforms = new Transforms(this);
     }
 
     compileTitlePatterns(titles) {
@@ -177,6 +179,8 @@ export class PlaidCore {
         this._animGen = 0;
         this._animWorkspace = null;
         this._animTransformRun = false;
+        this._transformStates = new Map();
+        this._transformTimeline = null;
         this._landings = new Map();
         this._observedMinSizes = new Map();
         this._pendingWarp = new Set();
@@ -559,6 +563,7 @@ export class PlaidCore {
         this.bgApp.destroy();
         this.workspaces.destroy();
         this.placement.destroy();
+        this.transforms.destroy();
         this.dragScroll.destroy();
         this.grab.destroy();
         this.keybindings.destroy();
@@ -615,6 +620,7 @@ export class PlaidCore {
         this._animStartedAt = 0;
         this._animProgressAt = 0;
         this._animWorkspace = null;
+        this._transformStates = null;
         this._landings = null;
         this._observedMinSizes = null;
         this._pendingWarp = null;

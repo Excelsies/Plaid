@@ -31,6 +31,11 @@ export class Placement {
         return 0.1 * Math.max(0.1, stSettings.slow_down_factor);
     }
 
+    // A duration in ms at the user's animation speed (slow_down_factor).
+    scaledAnimMs(ms) {
+        return ms * this.getAnimationTime() * 10;
+    }
+
     // Watchdog budget of a transform run: no progress for this long means a
     // completion was lost. Scaled with the animation time, so a slowed-down
     // run is not cut short.
@@ -55,6 +60,7 @@ export class Placement {
         // Retire the run: its late callbacks must not clear _animating under
         // the next one.
         this.core._animGen = (this.core._animGen || 0) + 1;
+        this.core.transforms.stop();
         if (this.core._newWindowSet) {
             for (const win of this.core._newWindowSet) {
                 // A window can be disposed mid-animation; cleanup must continue.
@@ -934,6 +940,7 @@ export class Placement {
             this.core.windows.moveWindow(win, x, y, w, h);
             return;
         }
+        this.core.transforms.release(win);
         const frame = win.get_frame_rect();
         { win.move_resize_frame(true, x, y, w, h); }
         actor.remove_all_transitions();

@@ -455,6 +455,20 @@ test('drag-scroll: a new grab starts uncarried', () => {
   assert.equal(self._grabCarried, null);
 });
 
+test('grab begin: a transform run on the grabbed window ends (mutter moves it now)', () => {
+  const { self } = setup({ floating: true });
+  const win = dragWin(wss[1]);
+  win.get_buffer_rect = () => ({ x: 0, y: 0, width: 800, height: 600 });
+  globalThis.global.display.get_n_monitors = () => 0;
+  globalThis.global.display.get_primary_monitor = () => 0;
+  globalThis.global.display.get_monitor_geometry = () => ({ x: 0, y: 0, width: 2560, height: 1440 });
+  self.grab.startGrabLoop = () => {};
+  const released = [];
+  self.transforms.release = (w) => released.push(w);
+  self.grab.handleGrabBegin(win, MOVE);
+  assert.deepEqual(released, [win]);
+});
+
 test('drag-scroll: the drop preview does not read the slide state without a watched grab', () => {
   const { self } = setup();
   Main.wm._workspaceAnimation = { _switchData: { monitors: 'x' }, _grab: null };

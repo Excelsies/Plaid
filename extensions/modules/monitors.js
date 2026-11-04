@@ -483,6 +483,7 @@ export class Monitors extends PlaidSubsystem {
             if (s.win === win) s.regrouped = true;
         }
         win._plaidTickSent = null;
+        this.core.transforms.release(win);
     }
 
     // a and b trade places across two monitors: each takes the other's leaf,

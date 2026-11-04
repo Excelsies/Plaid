@@ -126,6 +126,8 @@ function resetCoreState(core, settings) {
   core._animGen = 0;
   core._animWorkspace = null;
   core._animTransformRun = false;
+  core._transformStates = new Map();
+  core._transformTimeline = null;
   core._landings = new Map();
   landingViews(core);
   core._observedMinSizes = new Map();

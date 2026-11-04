@@ -14,6 +14,15 @@ export class PlaidSubsystem {
         return token;
     }
 
+    // One connectObject() group, before destroy().
+    disconnectToken(token) {
+        const i = this._tokens.findIndex(t => t.token === token);
+        if (i < 0) return;
+        const { emitter } = this._tokens[i];
+        this._tokens.splice(i, 1);
+        emitter.disconnectObject(token);
+    }
+
     disconnectAll() {
         for (const { emitter, token } of this._tokens)
             emitter.disconnectObject(token);

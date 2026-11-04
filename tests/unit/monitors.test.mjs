@@ -1670,8 +1670,12 @@ test('removeWindow and disable forget the tick record; the hotplug regroup stand
   const run = { targetX: 0, targetY: 0, targetW: 10, targetH: 10 };
   self.placement.tickConfigure(a, 0, 0, 10, 10, run);
   self.placement.tickConfigure(b, 1000, 0, 10, 10, run);
+  const released = [];
+  const release = self.transforms.release.bind(self.transforms);
+  self.transforms.release = (w) => { released.push(w); release(w); };
   self.windows.removeWindow(a);
   assert.equal(a._plaidTickSent, null);
+  assert.deepEqual(released, [a], 'a transform run on it ends');
   self.windows.destroy();
   assert.equal(b._plaidTickSent, null);
   self._windowMonitors.set(b, 'DP-1');

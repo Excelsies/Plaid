@@ -12,7 +12,16 @@ const GI_SOURCES = {
   Clutter: 'export default { Orientation: { HORIZONTAL: 0, VERTICAL: 1 }, AnimationMode: { EASE_OUT_CUBIC: 0 }, get_default_backend: undefined, ' +
     'EVENT_PROPAGATE: false, EVENT_STOP: true, EventType: { BUTTON_RELEASE: 7, SCROLL: 8 }, ' +
     'ScrollDirection: { UP: 0, DOWN: 1, LEFT: 2, RIGHT: 3, SMOOTH: 4 }, ModifierType: { MOD4_MASK: 1 << 26 }, ' +
-    'Grab: class Grab {}, Event: { add_filter: () => 1, remove_filter: () => {} } };',
+    'Grab: class Grab {}, Event: { add_filter: () => 1, remove_filter: () => {} }, ' +
+    // Clutter.Timeline as GJS shows it: construct properties, start/stop,
+    // and signals through connectObject/disconnectObject; frame() emits
+    // new-frame (a test drives the frames).
+    'Timeline: class Timeline { constructor(p = {}) { this.actor = p.actor ?? null; this.duration = p.duration ?? 0; ' +
+    'this.repeat_count = p.repeat_count ?? 0; this.playing = false; this.handlers = []; } ' +
+    'start() { this.playing = true; } stop() { this.playing = false; } is_playing() { return this.playing; } ' +
+    'connectObject(...a) { const obj = a.pop(); for (let i = 0; i + 1 < a.length; i += 2) this.handlers.push([obj, a[i], a[i + 1]]); } ' +
+    'disconnectObject(obj) { this.handlers = this.handlers.filter(h => h[0] !== obj); } ' +
+    'frame(ms = 16) { for (const [, sig, fn] of [...this.handlers]) if (sig === \'new-frame\') fn(this, ms); } } };',
   Cogl: 'export default { SnippetHook: { FRAGMENT: 1, VERTEX: 2, TEXTURE_LOOKUP: 3 } };',
   GObject: 'export default { registerClass: () => { throw new Error("GObject.registerClass invoked at import time"); } };',
   Gio: 'export default {};',

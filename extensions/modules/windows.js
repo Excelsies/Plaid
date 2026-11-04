@@ -395,6 +395,7 @@ export class Windows extends PlaidSubsystem {
         this.core._windowMonitors?.delete(win);
         if (this.core._grabbedWindow === win) this.core._grabbedWindow = null;
         win._plaidTickSent = null;
+        this.core.transforms.release(win);
         this.core._toggleFloatWindows.delete(win);
         this.core._observedMinSizes.delete(win);
         win._plaidFloatAnim = false;
