@@ -160,3 +160,28 @@ test('landing: closing the window clears its landing state', () => {
   assert.equal(self._landingRetries.has(win), false);
   assert.equal(self._landingAccepted.has(other), false);
 });
+
+test('settle gate: an X11 client\'s hints wait out the settle window, a Wayland client\'s do not', () => {
+  const self = makeSelf();
+  self._minSizeOverrides = new Map();
+  const wayland = fakeWin({ minSize: [400, 300] });
+  const x11 = fakeWin({ minSize: [400, 300], clientType: 1 });
+  for (const w of [wayland, x11]) w._plaidSettleUntil = Date.now() + 6000;
+  assert.deepEqual(self.bsp.getWindowMinSize(wayland), { w: 400, h: 300 });
+  assert.deepEqual(self.bsp.getWindowMinSize(x11), { w: 0, h: 0 });
+  x11._plaidSettleUntil = Date.now() - 1;
+  assert.deepEqual(self.bsp.getWindowMinSize(x11), { w: 400, h: 300 });
+});
+
+test('settle end: a window off its slot retiles its workspace once, one in it does not', () => {
+  const { self } = landingSelf();
+  const ws = {};
+  const win = landingWin();
+  win.get_workspace = () => ws;
+  const retiled = [];
+  self.layouts.retileWorkspace = (w) => retiled.push(w);
+  self.placement.settleEnded(win, true);
+  assert.deepEqual(retiled, []);
+  self.placement.settleEnded(win, false);
+  assert.deepEqual(retiled, [ws]);
+});

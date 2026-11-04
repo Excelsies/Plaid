@@ -240,6 +240,8 @@ export function fakeWin(opts = {}) {
       return {};
     },
     disconnectObject() {},
+    // Meta.WindowClientType: 0 Wayland, 1 X11.
+    get_client_type: () => opts.clientType ?? 0,
     is_skip_taskbar: () => opts.skipTaskbar ?? false,
     is_fullscreen: () => opts.fullscreen ?? false,
     is_maximized: () => opts.maximized ?? false,

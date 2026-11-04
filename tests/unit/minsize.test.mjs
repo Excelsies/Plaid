@@ -216,7 +216,7 @@ test('_getWindowMinSize: ignores transient client hints while a window is settli
     _minSizeOverrides: new Map(),
     _observedMinSizes: new Map(),
   });
-  const w = fakeWin({ instance: 'emacs', minSize: [1936, 1185] });
+  const w = fakeWin({ instance: 'emacs', minSize: [1936, 1185], clientType: 1 });
   w._plaidSettleUntil = Date.now() + 6000;
   assert.deepEqual(self._getWindowMinSize(w), { w: 0, h: 0 });
 
@@ -250,7 +250,7 @@ test('_clampTreeToMinSizes: a settling client cannot walk the split ratio (regre
     _observedMinSizes: new Map(),
   });
   const top = fakeWin({ minSize: [0, 0] });
-  const bottom = fakeWin({ instance: 'emacs', minSize: [1936, 1185] });
+  const bottom = fakeWin({ instance: 'emacs', minSize: [1936, 1185], clientType: 1 });
   bottom._plaidSettleUntil = Date.now() + 6000;
   const tree = split('v', 0.5, leaf(top), leaf(bottom));
   for (let i = 0; i < 5; i++) {

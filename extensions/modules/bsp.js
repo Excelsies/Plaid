@@ -3,6 +3,8 @@
 // Instance methods live on this subsystem class.
 // `this` (settings, _bspTrees, _dwindleLeafSigs, …) and call sites are unchanged.
 
+import Meta from 'gi://Meta';
+
 
 
 
@@ -326,6 +328,10 @@ export class Bsp {
         return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
     }
 
+    isX11Client(win) {
+        return win.get_client_type() !== Meta.WindowClientType.WAYLAND;
+    }
+
     getWindowMinSize(win) {
         let entry = null;
         for (const c of this.core.winClassCandidates(win)) {
@@ -351,7 +357,9 @@ export class Bsp {
             // the bent ratio. Ignore transient floors until the settle window
             // closes; the first retile after settle re-clamps with the stable
             // hints. An explicit min-size override still wins (checked above).
-            if (win._plaidSettleUntil && win._plaidSettleUntil > Date.now())
+            // Only X11 clients are held: a Wayland client's minimum is the one
+            // it maps with.
+            if (win._plaidSettleUntil && win._plaidSettleUntil > Date.now() && this.isX11Client(win))
                 return { w: 0, h: 0 };
             const min = this.windowMinSizeHint(win);
             if (min) {

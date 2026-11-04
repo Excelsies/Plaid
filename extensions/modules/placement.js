@@ -3,7 +3,6 @@
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
 import St from 'gi://St';
 
 // Counted misses: per slot before it is accepted, and per window across
@@ -124,8 +123,7 @@ export class Placement {
                 this.core.debugLog(`place: fading frame=(${Math.round(f.x)},${Math.round(f.y)},${Math.round(f.width)},${Math.round(f.height)}) ` +
                     `target=(${Math.round(s.targetX)},${Math.round(s.targetY)},${Math.round(s.targetW)},${Math.round(s.targetH)})`);
             }
-            let isX11 = false;
-            { isX11 = s.win.get_client_type() === Meta.WindowClientType.X11; }
+            const isX11 = this.core.bsp.isX11Client(s.win);
             const hold = holdForSettle && isX11;
             {
                 const actor = s.win.get_compositor_private();
@@ -199,6 +197,7 @@ export class Placement {
                 }
                 if (!w._plaidSettleUntil || Date.now() > w._plaidSettleUntil) {
                     w._plaidSettlePollId = 0;
+                    this.settleEnded(w, heldSlotOk());
                     return GLib.SOURCE_REMOVE;
                 }
                 { this.core.grab.maybeReassertSlot(w, 4, 'direct'); }
@@ -575,6 +574,14 @@ export class Placement {
     landingAccepted(win, x, y, w, h) {
         const key = this.core._landingAccepted ? this.core._landingAccepted.get(win) : undefined;
         return key !== undefined && key === landingKey(x, y, w, h);
+    }
+
+    // The settle window closed: its hints count from here on, and so does a
+    // miss. A window off its slot retiles its workspace once.
+    settleEnded(win, inSlot) {
+        if (inSlot || !this.core._settings) return;
+        const ws = win.get_workspace();
+        if (ws) this.core.layouts.retileWorkspace(ws);
     }
 
     retryLanding(win, s, settling = false) {
