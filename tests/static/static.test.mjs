@@ -352,7 +352,7 @@ test('BSP min sites read minimums through bsp.layoutMinSize, naming their group'
   assert.deepEqual(counts, {
     'bsp.js:layoutMinSize': 1,
     'geometry.js:minClampSlot': 1,
-    'grab.js:startGrabLoop': 5,
+    'grab.js:resizeTick': 5,
     'layouts.js:clampMasterStackRatios': 3,
     'layouts.js:retileMasterStack': 2,
     'layouts.js:retileCenteredMasterStack': 2,
@@ -376,4 +376,52 @@ test('lone BSP tiles take their rect from bsp.loneTileRect only', () => {
     'windows.js:convertMaximizedToGaps': 1,
     'windows.js:handleFloatMaximize': 1,
   });
+});
+
+// Shutdown removes the sourceFields with GLib.source_remove, which throws on
+// anything but a source id (a connectObject token stopped shutdown mid-way).
+// Every assignment of a listed field is 0/null or a GLib source id.
+test('every onShellShutdown sourceFields entry is only ever assigned a GLib source id', () => {
+  const signals = readFileSync(join(modulesDir, 'signals.js'), 'utf8');
+  const block = signals.match(/const sourceFields = \[([\s\S]*?)\];/);
+  assert.ok(block, 'sourceFields list not found');
+  const fields = [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(fields.length >= 15, `only ${fields.length} fields: the scan lost its population`);
+  // The per-window sources shutdown removes the same way.
+  const perWindow = [...new Set([...signals.matchAll(/GLib\.source_remove\(win\.(_plaid\w+)\)/g)].map((m) => m[1]))];
+  assert.deepEqual(perWindow.sort(), ['_plaidInvisibleTimer', '_plaidSettlePollId']);
+  const SOURCE = /^(?:0|null|GLib\.(?:timeout_add|idle_add|timeout_add_seconds)\()/;
+  const bad = (src, file, names) => {
+    const out = [];
+    const lines = src.split('\n');
+    lines.forEach((line, i) => {
+      for (const f of names) {
+        // =, ??= and ||= (not == / ===)
+        const m = line.match(new RegExp(`\\.${f}\\s*(?:\\?\\?=|\\|\\|=|=(?!=))\\s*(.*)$`));
+        if (!m) continue;
+        const rhs = m[1].trim();
+        if (SOURCE.test(rhs)) continue;
+        // `x = id;` where id was just made by GLib.*_add in the same function.
+        const id = rhs.match(/^([A-Za-z_$][\w$]*);$/);
+        if (id && lines.slice(Math.max(0, i - 25), i).some((l) => new RegExp(`const ${id[1]} = GLib\\.(?:timeout_add|idle_add)\\(`).test(l))) continue;
+        out.push(`${file}:${i + 1} ${f} = ${rhs.slice(0, 40)}`);
+      }
+    });
+    return out;
+  };
+  // Calibration on lines copied verbatim from the tree (each must still be there): a source id
+  // passes; a connectObject token and a ??= Map are refused when their field is listed.
+  const src = Object.fromEntries(moduleFiles.map((f) => [f.split('/').pop(), readFileSync(f, 'utf8')]));
+  const cal = [
+    ['placement.js', '            this.core._animTickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {', '_animTickId', 0],
+    ['placement.js', '        win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {', '_plaidSettlePollId', 0],
+    ['grab.js', "        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', () => {", '_liveResizeId', 1],
+    ['bsp.js', '                    const sent = this.core._liveSent ??= new Map();', '_liveSent', 1],
+  ];
+  for (const [file, line, name, n] of cal) {
+    assert.ok(src[file].split('\n').includes(line), `calibration line gone from ${file}: ${line.trim()}`);
+    assert.equal(bad(line, file, [name]).length, n, `${file}: ${line.trim()}`);
+  }
+  const found = Object.entries(src).flatMap(([f, s]) => bad(s, f, [...fields, ...perWindow]));
+  assert.deepEqual(found, []);
 });

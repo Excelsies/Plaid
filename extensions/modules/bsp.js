@@ -186,10 +186,16 @@ export class Bsp {
             node._w = w;
             node._h = h;
             if (node.window !== skipWindow) {
+                // Live resize (skipWindow = the grabbed window, mutter's until the
+                // grab ends): the loop runs every frame, re-send changed slots only.
+                if (skipWindow) {
+                    const sent = this.core._liveSent ??= new Map();
+                    const last = sent.get(node.window);
+                    if (last && last.x === x && last.y === y && last.w === w && last.h === h)
+                        return;
+                    sent.set(node.window, { x, y, w, h });
+                }
                 this.core.grab.safeMove(node.window, x, y, w, h);
-            } else {
-                const frame = node.window.get_frame_rect();
-                this.core.grab.safeMove(node.window, x, y, frame.width, frame.height);
             }
             return;
         }

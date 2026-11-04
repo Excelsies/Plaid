@@ -177,6 +177,7 @@ export class PlaidCore {
         this._pendingRetileIds = new Map();
         this._pendingBorderId = 0;
         this._queuedAnimWorkspaces = new Set();
+        this._deferredReassertWins = new Set();
         this._animStartedAt = 0;
         this._animProgressAt = 0;
         this._animGen = 0;
@@ -210,6 +211,9 @@ export class PlaidCore {
         this._grabResizeNodeW = null;
         this._grabResizeNodeH = null;
         this._grabInnerW = null;
+        this._grabClampedW = false;
+        this._grabClampedH = false;
+        this._grabLowered = false;
         this._grabInnerH = null;
         this._grabFollowW = 1;
         this._grabFollowH = 1;
@@ -636,6 +640,7 @@ export class PlaidCore {
         this._floatHooks = null;
         this._newWindowSet = null;
         this._queuedAnimWorkspaces = null;
+        this._deferredReassertWins = null;
         this._animStartedAt = 0;
         this._animProgressAt = 0;
         this._animWorkspace = null;

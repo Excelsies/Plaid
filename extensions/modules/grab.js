@@ -142,6 +142,7 @@ export class Grab extends PlaidSubsystem {
         // mutter moves the grabbed window from here on: an eased transform
         // would hold it off the pointer.
         this.core.transforms.release(metaWindow);
+        metaWindow._plaidTickSent = null;
         this.core.spiral.clearGhosts();
 
         // Capture the pointer (the resize loop's origin) and the frame (the
@@ -178,13 +179,15 @@ export class Grab extends PlaidSubsystem {
             const mon = this.core.monitors.windowMon(metaWindow);
             const places = this.core.monitors.groupPlaces(ws, mon);
             const layout = places ? this.core.windows.getWorkspaceLayout(ws, mon) : null;
-            const spiral = layout === 'spiral';
+            const bsp = isBspLayout(layout);
+            this.core._grabClampedW = this.core._grabClampedH = false;
+            this.core._grabLowered = false;
             this.core._grabResizeNodeW = null;
             this.core._grabResizeNodeH = null;
             this.core._grabInitialRatioW = 0;
             this.core._grabInitialRatioH = 0;
             // BSP layouts move the divider under the grabbed edge.
-            if (isBspLayout(layout))
+            if (bsp)
                 this.pickSplits(metaWindow, ws);
 
             this.core._grabInitialMasterRatio = places ? this.core.layouts.getMasterRatio(ws, mon) : 0.5;
@@ -192,8 +195,9 @@ export class Grab extends PlaidSubsystem {
 
             this.startGrabLoop(metaWindow, 'resize');
             this.disconnectGrabBoundaryHooks();
-            // Spiral never configures the grabbed window mid-grab.
-            if (!spiral) {
+            // A BSP layout never configures the grabbed window mid-grab (that slid
+            // it on west and north edges, and fought mutter past a minimum).
+            if (!bsp) {
                 this.core._grabSizeChangedId = this.connectObject(metaWindow, 'size-changed', () =>
                     this.enforceGrabBoundary(metaWindow));
                 this.core._grabPositionChangedId = this.connectObject(metaWindow, 'position-changed', () =>
@@ -219,7 +223,7 @@ export class Grab extends PlaidSubsystem {
                 // The release can come before the tick that applies the last
                 // motion: one more, or a fast flick ends one motion short.
                 if (this.isResizeGrab(grabOp) && this.core._liveResizeId)
-                    this.spiralResizeTick(metaWindow);
+                    this.resizeTick(metaWindow);
                 let edited = this.isResizeGrab(grabOp) && this.resizeMovedRatio();
                 if (this.isMoveGrab(grabOp)) {
                     // Click-vs-drag guard: a titlebar click on a decorated
@@ -259,6 +263,9 @@ export class Grab extends PlaidSubsystem {
             }
         }
 
+        // A window lowered past a minimum (hideOvershoot) comes back up even
+        // when it floated mid-grab (the tiled branch above raised it).
+        if (this.core._grabLowered && metaWindow) metaWindow.raise();
         this.core.dragPreview.hideDropPreview();
         this.stopLiveResizeLoop();
         this.disconnectGrabBoundaryHooks();
@@ -273,6 +280,8 @@ export class Grab extends PlaidSubsystem {
         this.core._grabCarried = null;
         this.core._grabInnerW = this.core._grabInnerH = null;
         this.core._grabFollowW = this.core._grabFollowH = 1;
+        this.core._grabClampedW = this.core._grabClampedH = false;
+        this.core._grabLowered = false;
         // Also the workspace a carried window left (drag-scroll).
         this.drainRetilesAfterGrab(dropWs);
         this.core._grabInitialStackRatios = null;
@@ -403,9 +412,9 @@ export class Grab extends PlaidSubsystem {
         const nodeW = c._grabResizeNodeW;
         const nodeH = c._grabResizeNodeH;
         if (nodeW)
-            this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap, free);
+            c._grabClampedW = this.setGrabRatio(nodeW, c._grabInitialRatioW + c._grabFollowW * dx / (nodeW._w - gap), gap, free);
         if (nodeH)
-            this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap, free);
+            c._grabClampedH = this.setGrabRatio(nodeH, c._grabInitialRatioH + c._grabFollowH * dy / (nodeH._h - gap), gap, free);
         // Re-clamp the splits below, or a narrowing subtree draws its min-size
         // window squashed for the whole grab.
         if (!free) c.bsp.clampTreeToMinSizes(tree, area.w, area.h, gap);
@@ -444,165 +453,188 @@ export class Grab extends PlaidSubsystem {
         return node.ratio !== raw;
     }
 
+    // tick() once per painted frame, in before-update: after the clients
+    // commit, before layout and paint. A 16 ms timer ran out of phase: a commit
+    // was drawn with the previous tick's sizes, and the neighbours trailed the
+    // pointer. The pointer moving schedules a frame.
     startGrabLoop(metaWindow, mode) {
         this.stopLiveResizeLoop();
-
-        const ws = metaWindow.get_workspace();
-
-        this.core._liveResizeId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-            if (!this.core._settings || !metaWindow || !this.core._grabOp) {
-                this.core._liveResizeId = 0;
-                return GLib.SOURCE_REMOVE;
-            }
+        const tick = mode === 'resize' ? () => this.resizeTick(metaWindow) : () => {
             const frame = metaWindow.get_frame_rect();
-            if (frame.width === 0 || frame.height === 0) return GLib.SOURCE_CONTINUE;
-
-            if (mode === 'resize') {
-                const [curX, curY] = global.get_pointer();
-                const dx = curX - this.core._grabStartX;
-                const dy = curY - this.core._grabStartY;
-
-                const gap = this.core._settings.get_int('inside-gap');
-                const mon = this.core.monitors.windowMon(metaWindow);
-                const workArea = this.core.monitors.monitorWorkArea(ws, mon);
-                if (!workArea) return GLib.SOURCE_CONTINUE;
-
-                // A group that places nothing has no split to move.
-                const places = this.core.monitors.groupPlaces(ws, mon);
-                const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-                if (places && layout === 'spiral') {
-                    this.spiralResizeTick(metaWindow);
-                    this.core.borders.updateBordersDuringGrab();
-                    return GLib.SOURCE_CONTINUE;
-                } else if (places && isBspLayout(layout)) {
-                    const tree = this.core.bsp.bspGetTree(ws, mon);
-                    if (tree) {
-                        const area = this.core.geometry.outsideArea(workArea);
-                        if (!area) return GLib.SOURCE_CONTINUE;
-                        this.updateGrabSplits(tree, dx, dy, gap, area, ws, mon);
-                    }
-                } else if (places && (layout === 'master-stack' || layout === 'centered-master-stack')) {
-                    const area = this.core.geometry.outsideArea(workArea);
-                    if (!area) return GLib.SOURCE_CONTINUE;
-                    const areaW = area.w;
-                    const areaH = area.h;
-
-                    if (this.core._grabWidthSign !== 0) {
-                        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
-                        const idx = tiled.indexOf(metaWindow);
-                        this.core.debugLog(`MS_RESIZE dx=${dx} dy=${dy} wSign=${this.core._grabWidthSign} hSign=${this.core._grabHeightSign} ` +
-                            `idx=${idx} numTiled=${tiled.length} initMasterRatio=${this.core._grabInitialMasterRatio.toFixed(3)}`);
-                        let sign = this.core._grabWidthSign;
-                        if (idx > 0) sign = -sign;
-                        const masterDenom = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
-                        if (masterDenom > 0) {
-                            let ratioDelta = (dx * sign) / masterDenom;
-                            if (layout === 'centered-master-stack' && idx > 0)
-                                ratioDelta *= 2;
-                            const newRatio = this.core._grabInitialMasterRatio + ratioDelta;
-                            const masterMin = tiled.length > 0 ? (this.core.bsp.getWindowMinSize(tiled[0]).w || 0) : 0;
-                            let stackMinW = 0;
-                            for (let i = 1; i < tiled.length; i++)
-                                stackMinW = Math.max(stackMinW, this.core.bsp.getWindowMinSize(tiled[i]).w || 0);
-                            let lo = masterMin / masterDenom;
-                            let hi = 1 - stackMinW / masterDenom;
-                            if (layout === 'centered-master-stack') {
-                                const numStack = tiled.length - 1;
-                                const leftCount = Math.ceil(numStack / 2);
-                                let leftMinW = 0;
-                                let rightMinW = 0;
-                                for (let i = 1; i < tiled.length; i++) {
-                                    const m = this.core.bsp.getWindowMinSize(tiled[i]).w || 0;
-                                    if (i <= leftCount) leftMinW = Math.max(leftMinW, m);
-                                    else rightMinW = Math.max(rightMinW, m);
-                                }
-                                hi = 1 - 2 * Math.max(leftMinW, rightMinW) / masterDenom;
-                            }
-                            if (hi <= lo) { lo = 0.5; hi = 0.5; }
-                            if (Number.isFinite(newRatio))
-                                this.core._masterRatios.set(this.core.monitors.groupKey(ws, mon), Math.max(lo, Math.min(hi, newRatio)));
-                        }
-                    }
-                    if (this.core._grabHeightSign !== 0) {
-                        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
-                        const idx = tiled.indexOf(metaWindow);
-                        if (idx > 0 && this.core._grabInitialStackRatios) {
-                            this.core.debugLog(`MS_HEIGHT idx=${idx} dy=${dy} hSign=${this.core._grabHeightSign} ` +
-                                `initStackRatios=[${[...this.core._grabInitialStackRatios.entries()].map(([k,v])=>`${k}:${v.toFixed(2)}`).join(',')}]`);
-                            const numStack = tiled.length - 1;
-                            const gapTotal = gap * (numStack - 1);
-                            const totalStackH = areaH - gapTotal;
-                            if (totalStackH > 0 && numStack > 1) {
-                                const stackRatios = this.core.layouts.getStackRatios(ws, mon);
-                                const draggedStackIdx = idx - 1;
-                                const pixelDelta = dy * this.core._grabHeightSign;
-                                const otherDelta = -pixelDelta / (numStack - 1);
-                                let initTotal = 0;
-                                for (let j = 0; j < numStack; j++)
-                                    initTotal += this.core._grabInitialStackRatios.has(j)
-                                        ? this.core._grabInitialStackRatios.get(j) : 1.0;
-                                const newHeights = [];
-                                for (let j = 0; j < numStack; j++) {
-                                    const initW = this.core._grabInitialStackRatios.has(j)
-                                        ? this.core._grabInitialStackRatios.get(j) : 1.0;
-                                    const initH = totalStackH * initW / initTotal;
-                                    const delta = j === draggedStackIdx ? pixelDelta : otherDelta;
-                                    const minH = tiled.length > j + 1
-                                        ? (this.core.bsp.getWindowMinSize(tiled[j + 1]).h || 0) : 0;
-                                    newHeights.push(Math.max(minH, initH + delta));
-                                }
-                                const newTotalH = newHeights.reduce((a, b) => a + b, 0);
-                                if (newTotalH > 0) {
-                                    for (let j = 0; j < numStack; j++) {
-                                        const newW = newHeights[j] / newTotalH * numStack;
-                                        stackRatios.set(j, Math.max(0.1, newW));
-                                    }
-                                }
-                            } else if (totalStackH > 0) {
-                                const initialWeight = this.core._grabInitialStackRatios.has(idx - 1)
-                                    ? this.core._grabInitialStackRatios.get(idx - 1) : 1.0;
-                                const minH = tiled.length > idx
-                                    ? (this.core.bsp.getWindowMinSize(tiled[idx]).h || 0) : 0;
-                                const minWeight = totalStackH > 0 ? minH / totalStackH * numStack : 0.1;
-                                const newWeight = Math.max(Math.max(0.1, minWeight),
-                                    initialWeight + (dy * this.core._grabHeightSign) / totalStackH * numStack);
-                                const stackRatios = this.core.layouts.getStackRatios(ws, mon);
-                                stackRatios.set(idx - 1, newWeight);
-                                this.core.persistence.scheduleSaveLayouts();
-                            }
-                        }
-                    }
-                }
-
-                this.moveTiledExcept(metaWindow);
-                this.enforceGrabBoundary(metaWindow);
-                this.core.borders.updateBordersDuringGrab();
-            } else if (mode === 'move') {
-                this.core.dragPreview.updateMoveDragPreview(metaWindow);
-            }
-
-            return GLib.SOURCE_CONTINUE;
+            if (frame.width === 0 || frame.height === 0) return;
+            this.core.dragPreview.updateMoveDragPreview(metaWindow);
+        };
+        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', () => {
+            if (!this.core._settings || this.core._shuttingDown || !this.core._grabOp ||
+                !metaWindow.get_compositor_private()) return;
+            tick();
         });
+        this._liveResizeCursor = this.connectObject(global.backend.get_cursor_tracker(), 'position-invalidated',
+            () => global.stage.schedule_update());
+        global.stage.schedule_update();
     }
 
-    // One step of a Spiral resize: the splits from the pointer's travel since
-    // the press, every window stretched over its slot. false: the window's
-    // group is not a placing Spiral group.
-    spiralResizeTick(win) {
-        const ws = win.get_workspace();
-        if (!ws) return false;
-        const mon = this.core.monitors.windowMon(win);
-        if (!this.core.monitors.groupPlaces(ws, mon) || this.core.windows.getWorkspaceLayout(ws, mon) !== 'spiral')
-            return false;
+    // One step of a live resize: the splits (or the master-stack ratios) from
+    // the pointer's travel since the press, then the others laid out. A BSP
+    // layout never configures the grabbed window mid-grab.
+    resizeTick(metaWindow) {
+        const frame = metaWindow.get_frame_rect();
+        if (frame.width === 0 || frame.height === 0) return;
+        const ws = metaWindow.get_workspace();
+        if (!ws) return;
+        const [curX, curY] = global.get_pointer();
+        const dx = curX - this.core._grabStartX;
+        const dy = curY - this.core._grabStartY;
+
+        const gap = this.core._settings.get_int('inside-gap');
+        const mon = this.core.monitors.windowMon(metaWindow);
         const workArea = this.core.monitors.monitorWorkArea(ws, mon);
-        const tree = this.core.bsp.bspGetTree(ws, mon);
-        const area = tree && workArea ? this.core.geometry.outsideArea(workArea) : null;
-        if (!area) return true;
-        const [x, y] = global.get_pointer();
-        this.updateGrabSplits(tree, x - this.core._grabStartX, y - this.core._grabStartY,
-            this.core._settings.get_int('inside-gap'), area, ws, mon);
-        this.spiralLiveResize(win);
-        return true;
+        if (!workArea) return;
+
+        // A group that places nothing has no split to move.
+        const places = this.core.monitors.groupPlaces(ws, mon);
+        const layout = this.core.windows.getWorkspaceLayout(ws, mon);
+        const bsp = places && isBspLayout(layout);
+        if (bsp) {
+            const tree = this.core.bsp.bspGetTree(ws, mon);
+            const area = tree ? this.core.geometry.outsideArea(workArea) : null;
+            if (area) {
+                this.updateGrabSplits(tree, dx, dy, gap, area, ws, mon);
+                if (layout === 'spiral') {
+                    this.spiralLiveResize(metaWindow);
+                } else {
+                    this.hideOvershoot(metaWindow, tree, frame);
+                    this.moveTiledExcept(metaWindow);
+                    this.anchorGrabbed(metaWindow, tree);
+                }
+            }
+        } else if (places && (layout === 'master-stack' || layout === 'centered-master-stack')) {
+            const area = this.core.geometry.outsideArea(workArea);
+            if (!area) return;
+            const areaW = area.w;
+            const areaH = area.h;
+
+            if (this.core._grabWidthSign !== 0) {
+                const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
+                const idx = tiled.indexOf(metaWindow);
+                this.core.debugLog(`MS_RESIZE dx=${dx} dy=${dy} wSign=${this.core._grabWidthSign} hSign=${this.core._grabHeightSign} ` +
+                    `idx=${idx} numTiled=${tiled.length} initMasterRatio=${this.core._grabInitialMasterRatio.toFixed(3)}`);
+                let sign = this.core._grabWidthSign;
+                if (idx > 0) sign = -sign;
+                const masterDenom = layout === 'centered-master-stack' ? areaW - gap * 2 : areaW - gap;
+                if (masterDenom > 0) {
+                    let ratioDelta = (dx * sign) / masterDenom;
+                    if (layout === 'centered-master-stack' && idx > 0)
+                        ratioDelta *= 2;
+                    const newRatio = this.core._grabInitialMasterRatio + ratioDelta;
+                    const masterMin = tiled.length > 0 ? (this.core.bsp.getWindowMinSize(tiled[0]).w || 0) : 0;
+                    let stackMinW = 0;
+                    for (let i = 1; i < tiled.length; i++)
+                        stackMinW = Math.max(stackMinW, this.core.bsp.getWindowMinSize(tiled[i]).w || 0);
+                    let lo = masterMin / masterDenom;
+                    let hi = 1 - stackMinW / masterDenom;
+                    if (layout === 'centered-master-stack') {
+                        const numStack = tiled.length - 1;
+                        const leftCount = Math.ceil(numStack / 2);
+                        let leftMinW = 0;
+                        let rightMinW = 0;
+                        for (let i = 1; i < tiled.length; i++) {
+                            const m = this.core.bsp.getWindowMinSize(tiled[i]).w || 0;
+                            if (i <= leftCount) leftMinW = Math.max(leftMinW, m);
+                            else rightMinW = Math.max(rightMinW, m);
+                        }
+                        hi = 1 - 2 * Math.max(leftMinW, rightMinW) / masterDenom;
+                    }
+                    if (hi <= lo) { lo = 0.5; hi = 0.5; }
+                    if (Number.isFinite(newRatio))
+                        this.core._masterRatios.set(this.core.monitors.groupKey(ws, mon), Math.max(lo, Math.min(hi, newRatio)));
+                }
+            }
+            if (this.core._grabHeightSign !== 0) {
+                const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
+                const idx = tiled.indexOf(metaWindow);
+                if (idx > 0 && this.core._grabInitialStackRatios) {
+                    this.core.debugLog(`MS_HEIGHT idx=${idx} dy=${dy} hSign=${this.core._grabHeightSign} ` +
+                        `initStackRatios=[${[...this.core._grabInitialStackRatios.entries()].map(([k,v])=>`${k}:${v.toFixed(2)}`).join(',')}]`);
+                    const numStack = tiled.length - 1;
+                    const gapTotal = gap * (numStack - 1);
+                    const totalStackH = areaH - gapTotal;
+                    if (totalStackH > 0 && numStack > 1) {
+                        const stackRatios = this.core.layouts.getStackRatios(ws, mon);
+                        const draggedStackIdx = idx - 1;
+                        const pixelDelta = dy * this.core._grabHeightSign;
+                        const otherDelta = -pixelDelta / (numStack - 1);
+                        let initTotal = 0;
+                        for (let j = 0; j < numStack; j++)
+                            initTotal += this.core._grabInitialStackRatios.has(j)
+                                ? this.core._grabInitialStackRatios.get(j) : 1.0;
+                        const newHeights = [];
+                        for (let j = 0; j < numStack; j++) {
+                            const initW = this.core._grabInitialStackRatios.has(j)
+                                ? this.core._grabInitialStackRatios.get(j) : 1.0;
+                            const initH = totalStackH * initW / initTotal;
+                            const delta = j === draggedStackIdx ? pixelDelta : otherDelta;
+                            const minH = tiled.length > j + 1
+                                ? (this.core.bsp.getWindowMinSize(tiled[j + 1]).h || 0) : 0;
+                            newHeights.push(Math.max(minH, initH + delta));
+                        }
+                        const newTotalH = newHeights.reduce((a, b) => a + b, 0);
+                        if (newTotalH > 0) {
+                            for (let j = 0; j < numStack; j++) {
+                                const newW = newHeights[j] / newTotalH * numStack;
+                                stackRatios.set(j, Math.max(0.1, newW));
+                            }
+                        }
+                    } else if (totalStackH > 0) {
+                        const initialWeight = this.core._grabInitialStackRatios.has(idx - 1)
+                            ? this.core._grabInitialStackRatios.get(idx - 1) : 1.0;
+                        const minH = tiled.length > idx
+                            ? (this.core.bsp.getWindowMinSize(tiled[idx]).h || 0) : 0;
+                        const minWeight = totalStackH > 0 ? minH / totalStackH * numStack : 0.1;
+                        const newWeight = Math.max(Math.max(0.1, minWeight),
+                            initialWeight + (dy * this.core._grabHeightSign) / totalStackH * numStack);
+                        const stackRatios = this.core.layouts.getStackRatios(ws, mon);
+                        stackRatios.set(idx - 1, newWeight);
+                        this.core.persistence.scheduleSaveLayouts();
+                    }
+                }
+            }
+        }
+        if (!bsp) {
+            this.moveTiledExcept(metaWindow);
+            this.enforceGrabBoundary(metaWindow);
+        }
+        this.core.borders.updateBordersDuringGrab();
+    }
+
+    // Past a dwindle minimum mutter keeps growing the window and nothing sent
+    // holds it: lower it under its neighbours so the edge looks like a hard
+    // stop; handleGrabEnd raises it.
+    hideOvershoot(win, tree, f) {
+        const c = this.core;
+        if (c._grabLowered || !(c._grabClampedW || c._grabClampedH)) return;
+        const leaf = c.bsp.bspFindLeaf(tree, win);
+        if (!leaf) return;
+        if ((c._grabClampedW && f.width > leaf._w + 1) || (c._grabClampedH && f.height > leaf._h + 1)) {
+            c._grabLowered = true;
+            win.lower();
+        }
+    }
+
+    // On a monitor-edge axis (mirrored follow) mutter moves the frame's dragged
+    // edge while the dwindle slot keeps the monitor edge: the grabbed window is
+    // translated back onto its slot there, never scaled.
+    anchorGrabbed(grabbed, tree) {
+        const c = this.core;
+        if (c._grabFollowW > 0 && c._grabFollowH > 0) return;
+        const leaf = c.bsp.bspFindLeaf(tree, grabbed);
+        if (!leaf || !(leaf._w > 0) || !(leaf._h > 0)) return;
+        const f = grabbed.get_frame_rect();
+        const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
+        const draw = { x: c._grabFollowW < 0 ? slot.x : f.x, y: c._grabFollowH < 0 ? slot.y : f.y,
+            w: f.width, h: f.height };
+        if (!c._liveStretched) c._liveStretched = new Map();
+        c.transforms.stretchActorToSlot(grabbed, slot, draw);
     }
 
     // Spiral live resize: re-send changed slots only and stretch every actor
@@ -652,10 +684,10 @@ export class Grab extends PlaidSubsystem {
     }
 
     stopLiveResizeLoop() {
-        if (this.core._liveResizeId) {
-            GLib.source_remove(this.core._liveResizeId);
-            this.core._liveResizeId = 0;
-        }
+        if (this.core._liveResizeId) this.disconnectToken(this.core._liveResizeId);
+        this.core._liveResizeId = 0;
+        if (this._liveResizeCursor) this.disconnectToken(this._liveResizeCursor);
+        this._liveResizeCursor = null;
     }
 
     moveTiledExcept(skipWindow) {
@@ -877,8 +909,9 @@ export class Grab extends PlaidSubsystem {
             if (mode === 'direct') {
                 // fall through to the direct check below
             } else {
-                const ws = win.get_workspace();
-                if (ws && this.core._queuedAnimWorkspaces) this.core._queuedAnimWorkspaces.add(ws);
+                // Defer the check, not a retile (every animated commit lands
+                // here): placement.drainAnimQueue re-checks it.
+                this.core._deferredReassertWins?.add(win);
                 return;
             }
         }
@@ -977,6 +1010,9 @@ export class Grab extends PlaidSubsystem {
         this.stopPressTracking();
         this.stopLiveResizeLoop();
         this.disconnectGrabBoundaryHooks();
+        // Disabled mid-grab: no window left under its neighbours.
+        if (this.core._grabLowered) this.core._grabWindow?.raise();
+        this.core._grabLowered = false;
         this.core._grabOp = null;
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;

@@ -122,6 +122,7 @@ function resetCoreState(core, settings) {
   core._pendingRetileIds = new Map();
   core._pendingBorderId = 0;
   core._queuedAnimWorkspaces = new Set();
+  core._deferredReassertWins = new Set();
   core._animStartedAt = 0;
   core._animProgressAt = 0;
   core._animGen = 0;
@@ -156,6 +157,9 @@ function resetCoreState(core, settings) {
   core._grabResizeNodeW = null;
   core._grabResizeNodeH = null;
   core._grabInnerW = null;
+  core._grabClampedW = false;
+  core._grabClampedH = false;
+  core._grabLowered = false;
   core._grabInnerH = null;
   core._grabFollowW = 1;
   core._grabFollowH = 1;
@@ -286,6 +290,36 @@ export function makeSelf(settings = {}, overrides = {}) {
       return true;
     },
   });
+}
+
+// The grab loop's frame clock on the current `global`: the stage's
+// before-update and the cursor tracker's position-invalidated. frame() runs
+// one tick; restore() puts the old stage and backend back.
+export function frameClock() {
+  const g = globalThis.global;
+  const old = { stage: g.stage, backend: g.backend };
+  const handlers = [];
+  const emitter = () => ({
+    connectObject(...a) {
+      const obj = a.pop();
+      for (let i = 0; i + 1 < a.length; i += 2) handlers.push([this, obj, a[i], a[i + 1]]);
+    },
+    disconnectObject(obj) {
+      for (let i = handlers.length - 1; i >= 0; i--)
+        if (handlers[i][0] === this && handlers[i][1] === obj) handlers.splice(i, 1);
+    },
+  });
+  const stage = Object.assign(emitter(), { updates: 0, schedule_update() { this.updates++; } });
+  const tracker = emitter();
+  g.stage = stage;
+  g.backend = { ...(g.backend ?? {}), get_cursor_tracker: () => tracker };
+  const emit = (e, sig) => { for (const [o, , s, fn] of [...handlers]) if (o === e && s === sig) fn(e); };
+  return {
+    stage, tracker, handlers,
+    frame: () => emit(stage, 'before-update'),
+    move: () => emit(tracker, 'position-invalidated'),
+    restore: () => { g.stage = old.stage; g.backend = old.backend; },
+  };
 }
 
 let _winId = 0;

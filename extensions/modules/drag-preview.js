@@ -289,7 +289,7 @@ export class DragPreview {
     }
 
     hideDropPreview() {
-        // Hide, don't destroy — the 16ms grab loop alternates between
+        // Hide, don't destroy — the per-frame grab loop alternates between
         // target/no-target regions; recreating the widget each tick churns
         // allocations and re-layout under a live grab.
         if (this.core._dropPreview) {

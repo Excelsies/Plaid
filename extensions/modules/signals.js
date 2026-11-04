@@ -484,13 +484,15 @@ export class Signals extends PlaidSubsystem {
         this.core.bgApp.cancelMarkerSweep();
         // Tracked GLib sources (idle/timeout wrappers).
         this.removeAllSources();
+        // The grab loop is two signal connections, not a GLib source.
+        this.core.grab.stopLiveResizeLoop();
 
         // Direct source IDs owned by subsystems.
         const sourceFields = [
             '_pendingBorderId', '_stackSettleId', '_workspacePillUpdateId',
             '_workspaceLayoutsSaveId', '_conflictScanId', '_conflictDialogId',
             '_dropdownPendingId', '_dropdownSyncId', '_layoutPopupHideId',
-            '_pointerFocusId', '_liveResizeId', '_animTickId',
+            '_pointerFocusId', '_animTickId',
             '_backgroundAppReleaseId', '_backgroundAppRestartId',
             '_backgroundAppPendingId', '_backgroundAppParkCoalesceId',
             '_backgroundAppParkWatchTimeoutId', '_backgroundAppParkingFixId',

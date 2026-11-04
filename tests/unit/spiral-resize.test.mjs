@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import GLib from 'gi://GLib';
-import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
+import { makeSelf, fakeWin, leaf, split, frameClock } from '../helpers.mjs';
 
 // Spiral live resize (grab.spiralLiveResize and its grab-loop branch).
 
@@ -87,9 +87,8 @@ test('grab begin and loop: a Spiral resize picks the grabbed edge\'s divider, ho
   let ptr = [500, 250];
   globalThis.global = { ...old, get_pointer: () => [...ptr, 0],
     workspace_manager: { get_active_workspace: () => WS, get_n_workspaces: () => 1, get_workspace_by_index: () => WS } };
-  const origT = GLib.timeout_add;
-  let loop = null;
-  GLib.timeout_add = (_p, _ms, cb) => { loop = cb; return 7; };
+  const clock = frameClock();
+  const loop = clock.frame;
   try {
     a.get_window_type = () => 0;
     b.get_window_type = () => 0;
@@ -106,7 +105,7 @@ test('grab begin and loop: a Spiral resize picks the grabbed edge\'s divider, ho
     assert.deepEqual(a._configs, [[0, 0, 400, 500]]);
     assert.ok(self._liveStretched.has(a));
   } finally {
-    GLib.timeout_add = origT;
+    clock.restore();
     globalThis.global = old;
   }
 });
@@ -119,8 +118,7 @@ test('grab begin: a tiled pointer resize is measured from the press (Spiral, dwi
   const old = globalThis.global;
   globalThis.global = { ...old, get_pointer: () => [508, 250, 0],
     workspace_manager: { get_active_workspace: () => WS, get_n_workspaces: () => 1, get_workspace_by_index: () => WS } };
-  const origT = GLib.timeout_add;
-  GLib.timeout_add = () => 7;
+  const clock = frameClock();
   try {
     b.get_window_type = () => 0;
     self.grab.pressAnchor = () => [500, 250];
@@ -143,7 +141,7 @@ test('grab begin: a tiled pointer resize is measured from the press (Spiral, dwi
     self.grab.handleGrabBegin(b, W_EDGE);
     assert.equal(self._grabStartX, 508, 'floating: the pointer');
   } finally {
-    GLib.timeout_add = origT;
+    clock.restore();
     globalThis.global = old;
   }
 });
@@ -157,8 +155,7 @@ test('grab end: a release before the last tick still applies the last motion (a 
   let ptr = [500, 250];
   globalThis.global = { ...old, get_pointer: () => [...ptr, 0],
     workspace_manager: { get_active_workspace: () => WS, get_n_workspaces: () => 1, get_workspace_by_index: () => WS } };
-  const origT = GLib.timeout_add;
-  GLib.timeout_add = () => 7;
+  const clock = frameClock();
   try {
     b.get_window_type = () => 0;
     b.raise = () => {};
@@ -174,7 +171,7 @@ test('grab end: a release before the last tick still applies the last motion (a 
     self.grab.handleGrabEnd(b, 1 | (1 << 12));
     assert.equal(tree.ratio, 0.4);
   } finally {
-    GLib.timeout_add = origT;
+    clock.restore();
     globalThis.global = old;
   }
 });
@@ -190,9 +187,8 @@ test('grab begin and loop: a dwindle resize picks the grabbed edge\'s divider an
   let ptr = [500, 250];
   globalThis.global = { ...old, get_pointer: () => [...ptr, 0],
     workspace_manager: { get_active_workspace: () => WS, get_n_workspaces: () => 1, get_workspace_by_index: () => WS } };
-  const origT = GLib.timeout_add;
-  let loop = null;
-  GLib.timeout_add = (_p, _ms, cb) => { loop = cb; return 7; };
+  const clock = frameClock();
+  const loop = clock.frame;
   try {
     b.get_window_type = () => 0;
     self.grab.pressAnchor = () => null;
@@ -208,7 +204,7 @@ test('grab begin and loop: a dwindle resize picks the grabbed edge\'s divider an
     const inner = tree.second;
     assert.equal(inner._x + Math.floor(inner._w * inner.ratio), 750, 'b\'s right edge stays');
   } finally {
-    GLib.timeout_add = origT;
+    clock.restore();
     globalThis.global = old;
   }
 });

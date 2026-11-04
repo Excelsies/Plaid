@@ -99,12 +99,33 @@ export class Placement {
         this.core._animating = false;
         this.core._animTargets = null;
         this.core._animStates = null;
-        if (this.core._queuedAnimWorkspaces && this.core._queuedAnimWorkspaces.size > 0) {
-            const pending = [...this.core._queuedAnimWorkspaces];
-            this.core._queuedAnimWorkspaces.clear();
-            this.core.debugLog(`anim: cancelled, draining ${pending.length} queued retiles`);
-            for (const ws of pending) this.core.signals.scheduleRetile(ws);
+        if (this.core._queuedAnimWorkspaces && this.core._queuedAnimWorkspaces.size > 0)
+            this.core.debugLog(`anim: cancelled, draining ${this.core._queuedAnimWorkspaces.size} queued retiles`);
+        this.drainAnimQueue();
+    }
+
+    // Queued retiles, the visible workspace first, then the slot re-checks
+    // deferred by commits mid-animation (grab.maybeReassertSlot), but not on a
+    // workspace about to be retiled. Returns the workspaces scheduled.
+    drainAnimQueue() {
+        const queued = this.core._queuedAnimWorkspaces;
+        if (!queued) return [];
+        const pending = [...queued];
+        queued.clear();
+        if (pending.length > 1) {
+            const active = global.workspace_manager.get_active_workspace();
+            pending.sort((a, b) => (b === active) - (a === active));
         }
+        for (const ws of pending) this.core.signals.scheduleRetile(ws);
+        const deferred = this.core._deferredReassertWins;
+        if (!deferred || deferred.size === 0) return pending;
+        const wins = [...deferred];
+        deferred.clear();
+        for (const win of wins) {
+            const ws = win.get_workspace();
+            if (ws && !pending.includes(ws)) this.core.grab.maybeReassertSlot(win);
+        }
+        return pending;
     }
 
     revealHeldNewWindow(win, fadeDuration = 80) {
@@ -837,10 +858,8 @@ export class Placement {
                 this.core._animating = false;
                 if (this.core._animWorkspace && this.core._animWorkspace !== workspace)
                     this.core._queuedAnimWorkspaces.add(this.core._animWorkspace);
-                const pending = [...this.core._queuedAnimWorkspaces];
-                this.core._queuedAnimWorkspaces.clear();
+                const pending = this.drainAnimQueue();
                 this.core.debugLog(`anim: watchdog drained stalled queue (${pending.length})`);
-                for (const ws of pending) this.core.signals.scheduleRetile(ws);
             } else {
                 this.core._queuedAnimWorkspaces.add(workspace);
                 this.core.debugLog(`anim: retile queued while animating (queue=${this.core._queuedAnimWorkspaces.size})`);
@@ -895,7 +914,12 @@ export class Placement {
         for (const [win, slot] of this.core._animTargets) {
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
             const target = spiralWins.has(win) ? this.core.bsp.tileRect(win, slot, workspace, spiralWins.get(win)) : slot;
-            const frame = win.get_frame_rect();
+            let frame = win.get_frame_rect();
+            // A tick run lerps from where a slow client is heading, or the
+            // client is re-sent intermediate sizes after its slot's configure.
+            const sent = win._plaidTickSent;
+            if (!spiralWins.has(win) && sent && this.core.monitors.tickSentPending(win, frame))
+                frame = { x: sent.x, y: sent.y, width: sent.w, height: sent.h };
             const actor = win.get_compositor_private();
             const isNew = this.core._newWindowSet.has(win);
             this.core.debugLog(`anim: start ws=${this.core.geometry.wsIndex(workspace)} win=${win.get_wm_class_instance() || '?'} new=${isNew} ` +
@@ -921,11 +945,7 @@ export class Placement {
                 this.core._animStates = null;
                 this.core.persistence.scheduleSaveLayouts();
                 this.core.signals.scheduleBorders();
-                if (this.core._queuedAnimWorkspaces.size > 0) {
-                    const pending = [...this.core._queuedAnimWorkspaces];
-                    this.core._queuedAnimWorkspaces.clear();
-                    for (const ws of pending) this.core.signals.scheduleRetile(ws);
-                }
+                this.drainAnimQueue();
             }
         };
 
@@ -985,18 +1005,25 @@ export class Placement {
                 for (const s of this.core._animStates) {
                     // Regrouped mid-run: mutter put it on another monitor.
                     if (s.regrouped || !s.win.get_compositor_private()) continue;
-                    const x = s.startX + (s.targetX - s.startX) * e;
-                    const y = s.startY + (s.targetY - s.startY) * e;
-                    const w = s.startW + (s.targetW - s.startW) * e;
-                    const h = s.startH + (s.targetH - s.startH) * e;
-                    this.tickConfigure(s.win, Math.round(x), Math.round(y), Math.round(w), Math.round(h), s);
+                    const r = [s.startX + (s.targetX - s.startX) * e, s.startY + (s.targetY - s.startY) * e,
+                        s.startW + (s.targetW - s.startW) * e, s.startH + (s.targetH - s.startH) * e].map(Math.round);
+                    // Only a rect that moved, or a still window is re-sent every tick.
+                    const last = s.lastRect ?? [s.startX, s.startY, s.startW, s.startH];
+                    if (r.every((v, i) => v === last[i])) continue;
+                    s.lastRect = r;
+                    this.tickConfigure(s.win, r[0], r[1], r[2], r[3], s);
                 }
                 if (t >= 1) {
                     this.core._animTickId = 0;
                     this.core._animStates = null;
                     for (const s of existingStates) {
                         if (s.regrouped || !s.win.get_compositor_private()) { decTick(); continue; }
-                        this.tickConfigure(s.win, s.targetX, s.targetY, s.targetW, s.targetH, s);
+                        // Each configure costs a constraint pass: not for a window
+                        // already at its slot that no tick moved.
+                        const f = s.win.get_frame_rect();
+                        if (s.lastRect || f.x !== s.targetX || f.y !== s.targetY ||
+                            f.width !== s.targetW || f.height !== s.targetH)
+                            this.tickConfigure(s.win, s.targetX, s.targetY, s.targetW, s.targetH, s);
                         this.verifyAnimationLanding(s, 'tiled');
                         decTick();
                     }
@@ -1028,7 +1055,7 @@ export class Placement {
     // first: crossing a monitor, the move emits window-entered-monitor before
     // it returns (monitors.ownMoveInFlight).
     tickConfigure(win, x, y, w, h, run) {
-        this.core.monitors.recordTick(win, x, y, run);
+        this.core.monitors.recordTick(win, x, y, run, w, h);
         win.move_resize_frame(true, x, y, w, h);
     }
 

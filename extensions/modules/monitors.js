@@ -350,15 +350,32 @@ export class Monitors extends PlaidSubsystem {
     // the move emits window-entered-monitor before it returns. Only positions
     // this run's ticks sent: a frame a lagging client still shows may be the
     // run's start, where a user move can land too.
-    recordTick(win, x, y, run) {
+    // With the size (w, h): also the rect sent and the frames the ticks saw or
+    // sent while it is in flight (tickSentPending).
+    recordTick(win, x, y, run, w = null, h = null) {
         if (!run._plaidRun) run._plaidRun = ++lastRun;
         const sent = win._plaidTickSent;
         const inFlight = !!sent && sent.run === run._plaidRun && Date.now() - sent.at < TICK_SETTLE_MS;
         const sentAt = inFlight ? sent.sentAt : [];
         sentAt.push(`${x},${y}`);
         if (sentAt.length > 16) sentAt.splice(0, sentAt.length - 16);
+        let seen = null;
+        if (w !== null) {
+            const f = win.get_frame_rect();
+            seen = this.tickSentPending(win, f) ? sent.seen : [];
+            seen.push(`${f.x},${f.y},${f.width},${f.height}`, `${x},${y},${w},${h}`);
+            if (seen.length > 32) seen.splice(0, seen.length - 32);
+        }
         win._plaidTickSent = { at: Date.now(), run: run._plaidRun, sentAt,
-            end: [run.targetX, run.targetY, run.targetW, run.targetH] };
+            end: [run.targetX, run.targetY, run.targetW, run.targetH], x, y, w, h, seen };
+    }
+
+    // The last configure tick is still in flight: recent, not landed, and the
+    // frame is one the ticks saw or sent (else something else moved it).
+    tickSentPending(win, f) {
+        const sent = win._plaidTickSent;
+        return !!sent?.seen && Date.now() - sent.at < TICK_SETTLE_MS &&
+            sent.seen.includes(`${f.x},${f.y},${f.width},${f.height}`);
     }
 
     // The frame is at a position the configure ticks sent (mutter may clamp

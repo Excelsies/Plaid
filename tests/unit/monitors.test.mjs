@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
-import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
+import { makeSelf, fakeWin, leaf, split, frameClock } from '../helpers.mjs';
 import { Monitors } from '../../extensions/modules/monitors.js';
 import { sessionState } from '../../extensions/modules/session-state.js';
 
@@ -1567,18 +1567,22 @@ test('a monitor that does not tile: a drag within it, the drop, the preview and 
   u.self.grab.moveTiledExcept(u.c);
   assert.deepEqual(u.frames(), u.before, 'a resize tick lays nothing out');
   // The live-resize loop writes no ratio for that group.
-  let tick = null;
-  const orig = GLib.timeout_add;
-  GLib.timeout_add = (_p, _ms, fn) => { tick = fn; return 1; };
+  const clock = frameClock();
   try {
     u.self._grabOp = 1 | (2 << 12);
     u.self._grabWidthSign = 1;
     u.self._grabStartX = 1300;
     u.self.borders.updateBordersDuringGrab = () => {};
+    // The loop ticks only while the window has an actor.
+    let ticks = 0;
+    u.c.get_compositor_private = () => ({});
+    const orig = u.self.grab.resizeTick.bind(u.self.grab);
+    u.self.grab.resizeTick = (w) => { ticks++; return orig(w); };
     u.self.grab.startGrabLoop(u.c, 'resize');
-    tick();
+    clock.frame();
+    assert.equal(ticks, 1);
   } finally {
-    GLib.timeout_add = orig;
+    clock.restore();
   }
   assert.equal(u.self._masterRatios.size, 0);
   assert.deepEqual(u.frames(), u.before);
@@ -1592,18 +1596,17 @@ test('mouse-resizing the master on the second monitor changes that monitor\'s ra
   self._workspaceLayouts.set('1@DP-2', 'master-stack');
   self._workspaceLayouts.set(1, 'master-stack');
   self.borders.updateBordersDuringGrab = () => {};
-  let tick = null;
-  const orig = GLib.timeout_add;
-  GLib.timeout_add = (_p, _ms, fn) => { tick = fn; return 1; };
+  const clock = frameClock();
   try {
     self._grabOp = 1 | (2 << 12);
     self._grabWidthSign = 1;
     self._grabStartX = 1400;
     self._grabInitialMasterRatio = 0.5;
+    c.get_compositor_private = () => ({});
     self.grab.startGrabLoop(c, 'resize');
-    tick();
+    clock.frame();
   } finally {
-    GLib.timeout_add = orig;
+    clock.restore();
   }
   assert.equal(self._masterRatios.get('1@DP-2'), 0.6);
   assert.equal(self._masterRatios.has(1), false);
@@ -1978,17 +1981,16 @@ test('mouse resize over a stale dwindle tree on a monitor that does not tile mov
   u.c.connectObject = () => 1;
   global.workspace_manager.get_active_workspace = () => u.ws;
   u.self.borders.updateBordersDuringGrab = () => {};
-  let tick = null;
-  const orig = GLib.timeout_add;
-  GLib.timeout_add = (_p, _ms, fn) => { tick = fn; return 1; };
+  const clock = frameClock();
   try {
     global.get_pointer = () => [1450, 300, 0];
     u.self.grab.handleGrabBegin(u.c, 1 | (2 << 12));
     assert.equal(u.self._grabResizeNodeW, null, 'no split picked');
     global.get_pointer = () => [1550, 300, 0];
-    tick();
+    u.c.get_compositor_private = () => ({});
+    clock.frame();
   } finally {
-    GLib.timeout_add = orig;
+    clock.restore();
   }
   assert.equal(stale.ratio, 0.5);
   assert.equal(stale._w, undefined, 'the stale tree is not even tagged');
