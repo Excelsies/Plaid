@@ -397,6 +397,7 @@ export class Windows extends PlaidSubsystem {
         this.core._windowMonitors?.delete(win);
         if (this.core._grabbedWindow === win) this.core._grabbedWindow = null;
         win._plaidTickSent = null;
+        win._plaidOpenBox = null;
         this.core.transforms.release(win);
         this.core._toggleFloatWindows.delete(win);
         this.core._observedMinSizes.delete(win);
@@ -1106,6 +1107,7 @@ export class Windows extends PlaidSubsystem {
             for (const win of [...this.core._windowWorkspaces.keys()]) {
                 this.disconnectWindowSignals(win);
                 win._plaidTickSent = null;
+                win._plaidOpenBox = null;
                 if (win._plaidInvisibleTimer) {
                     GLib.source_remove(win._plaidInvisibleTimer);
                     win._plaidInvisibleTimer = 0;

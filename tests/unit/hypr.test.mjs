@@ -270,3 +270,190 @@ test('spiralLiveResize: an oversized neighbour is sent its slot grown in the wor
   assert.deepEqual(sent, [[300, 0, 700, 500]]);
   assert.deepEqual(drawn.find(([w]) => w === b)[1], { x: 300, y: 0, w: 700, h: 500 });
 });
+
+// Y3: a maximum below the open box floats a new window.
+
+test('maxBelowOpenBox: strict < on either axis in frame units, 0 unbounded, read once, Spiral only', () => {
+  const self = groupSelf('spiral');
+  const check = (opts, box, spiral = true) => {
+    const w = win('m', opts);
+    w._plaidOpenBox = box;
+    const r = self.bsp.maxBelowOpenBox(w, spiral);
+    assert.equal(w._plaidOpenBox, null, 'the box is read once');
+    return r;
+  };
+  const box = { w: 1000, h: 500 };
+  assert.equal(check({ maxSize: [1000, 500] }, box), null, 'equal: tiles');
+  assert.deepEqual(check({ maxSize: [999, 0] }, box), { max: { w: 999, h: 0 }, box });
+  assert.deepEqual(check({ maxSize: [0, 499] }, box), { max: { w: 0, h: 499 }, box });
+  assert.equal(check({ maxSize: [0, 0] }, box), null, '0x0: unbounded');
+  assert.equal(check({ maxHint: [false, 10, 10] }, box), null, 'unset hint');
+  assert.equal(check({ maxSize: [990, 490], frameDelta: [10, 10] }, box), null, 'frame units: 1000x500 tiles');
+  assert.ok(check({ maxSize: [989, 490], frameDelta: [10, 10] }, box), 'frame units: 999 floats');
+  assert.equal(check({ maxSize: [10, 10] }, null), null, 'no box: not a Spiral open');
+  assert.equal(check({ maxSize: [10, 10] }, box, false), null, 'not a Spiral group');
+});
+
+// The monitor (Hyprland's box for a first window) is larger than the gapped tiling area.
+const MONITOR = { x: 0, y: 0, width: 1040, height: 540 };
+
+test('open box: a new Spiral window records the leaf it splits, before the split; the first one its monitor', () => {
+  const self = groupSelf('spiral');
+  globalThis.global = { ...globalThis.global, get_pointer: () => [100, 100, 0],
+    display: { ...globalThis.global.display, focus_window: null, get_monitor_geometry: () => MONITOR } };
+  const a = win('a'), b = win('b'), old = win('o');
+  self._newWindowSet.add(a);
+  self._newWindowSet.add(b);
+  self.bsp.bspInsertForWorkspace(WS, a, 0);
+  assert.deepEqual(a._plaidOpenBox, { w: 1040, h: 540 });
+  self.bsp.bspInsertForWorkspace(WS, b, 0);
+  assert.deepEqual(b._plaidOpenBox, { w: 1000, h: 500 });
+  self.bsp.bspInsertForWorkspace(WS, old, 0);
+  assert.equal(old._plaidOpenBox, undefined, 'not a new window');
+  const dw = groupSelf('dwindle');
+  const c = win('c');
+  dw._newWindowSet.add(c);
+  dw.bsp.bspInsertForWorkspace(WS, c, 0);
+  assert.equal(c._plaidOpenBox, undefined, 'dwindle records none');
+});
+
+test('open box: syncTree records the pre-split leaf for a new window entering a Spiral tree', () => {
+  const self = groupSelf('spiral');
+  globalThis.global = { ...globalThis.global, get_pointer: () => [900, 100, 0],
+    display: { ...globalThis.global.display, focus_window: null } };
+  const a = win('a'), b = win('b'), c = win('c');
+  self._newWindowSet.add(c);
+  const tree = split('h', 0.5, leaf(a), leaf(b));
+  self.bsp.syncTree(WS, tree, [a, b, c], { x: 0, y: 0, w: 1000, h: 500 }, 0, 0);
+  assert.deepEqual(c._plaidOpenBox, { w: 500, h: 500 });
+});
+
+test('open box: a new window entering an empty or missing Spiral tree records its monitor; dwindle none', () => {
+  const prev = globalThis.global.display;
+  globalThis.global.display = { ...prev, get_monitor_geometry: () => MONITOR };
+  try {
+    for (const tree of [{ type: 'empty' }, null]) {
+      for (const [layout, box] of [['spiral', { w: 1040, h: 540 }], ['dwindle', undefined]]) {
+        const self = groupSelf(layout);
+        const a = win('a'), b = win('b');
+        self._newWindowSet.add(a);
+        self.bsp.syncTree(WS, tree, [a, b], { x: 0, y: 0, w: 1000, h: 500 }, 0, 0);
+        assert.deepEqual(a._plaidOpenBox, box, `${layout} ${tree ? 'empty' : 'no'} tree`);
+      }
+    }
+  } finally {
+    globalThis.global.display = prev;
+  }
+});
+
+test('open box: a first window on a non-primary monitor records that monitor, not the primary', () => {
+  const prev = globalThis.global;
+  globalThis.global = { ...prev, get_pointer: () => [3000, 100, 0],
+    display: { ...prev.display, focus_window: null, get_primary_monitor: () => 0,
+      get_monitor_geometry: (i) => (i === 1 ? { x: 2560, y: 0, width: 1920, height: 1080 } : { x: 0, y: 0, width: 2560, height: 1440 }) } };
+  try {
+    const self = groupSelf('spiral');
+    const a = win('a');
+    self._newWindowSet.add(a);
+    self.bsp.bspInsertForWorkspace(WS, a, 1);
+    assert.deepEqual(a._plaidOpenBox, { w: 1920, h: 1080 });
+    const b = win('b');
+    self._newWindowSet.add(b);
+    self.bsp.recordFirstOpenBox(b, null);
+    assert.deepEqual(b._plaidOpenBox, { w: 2560, h: 1440 }, 'no monitor named: the primary');
+  } finally {
+    globalThis.global = prev;
+  }
+});
+
+test('disable drops every managed window\'s open box', () => {
+  const self = groupSelf('spiral');
+  const w = win('w');
+  w.disconnectObject = () => {};
+  w._plaidOpenBox = { w: 1, h: 1 };
+  self._windowWorkspaces.set(w, WS);
+  self.windows.destroy();
+  assert.equal(w._plaidOpenBox, null);
+});
+
+function runSelf(layout) {
+  const self = groupSelf(layout, { 'inside-gap': 0 });
+  self.placement.getAnimationTime = () => 0.1;
+  self.placement.verifyAnimationLanding = () => true;
+  self.placement.armSettlePoll = () => {};
+  self.placement.deferNewWindowPlacement = () => {};
+  const laid = [];
+  self.layouts.retileDwindle = (_ws, tiled) => {
+    laid.push(...tiled);
+    for (const w of tiled) self._animTargets.set(w, { x: 0, y: 0, w: 500, h: 500 });
+  };
+  self.signals.scheduleRetile = () => {};
+  self.signals.scheduleBorders = () => {};
+  self.signals.addTimeout = () => 0;
+  self.persistence.scheduleSaveLayouts = () => {};
+  self.transforms.run = () => {};
+  self.transforms.stop = () => null;
+  self.monitors.windowConn = () => 'c';
+  return { self, laid };
+}
+
+function animWin(id, opts) {
+  const w = win(id, opts);
+  const actor = { opacity: 0, visible: false, set_opacity(v) { this.opacity = v; }, remove_all_transitions() {} };
+  w.get_compositor_private = () => actor;
+  w._actor = actor;
+  return w;
+}
+
+test('animRetile: a new Spiral window whose maximum is below its box floats, shown, out of the layout', () => {
+  for (const layout of ['spiral', 'dwindle']) {
+    const { self, laid } = runSelf(layout);
+    const a = animWin('a'), n = animWin('n', { maxSize: [400, 0] });
+    self._newWindowSet.add(n);
+    n._plaidOpenBox = { w: 1000, h: 500 };
+    let removed = null;
+    self.monitors.removeFromGroupTree = (w) => { removed = w; };
+    self.placement.animRetile(WS, [{ mon: 0, tiled: [a, n], layout, places: true }]);
+    const floated = layout === 'spiral';
+    assert.equal(self._toggleFloatWindows.has(n), floated, layout);
+    assert.equal(laid.includes(n), !floated, layout);
+    assert.equal(removed, floated ? n : null, layout);
+    assert.equal(n._plaidOpenBox, null, `${layout}: read once`);
+    if (floated)
+      assert.deepEqual([n._actor.visible, n._actor.opacity, self._newWindowSet.has(n)], [true, 255, false]);
+  }
+});
+
+test('animRetile: the box is not re-checked after the first placement', () => {
+  const { self } = runSelf('spiral');
+  const n = animWin('n', { maxSize: [400, 0] });
+  self._newWindowSet.add(n);
+  n._plaidOpenBox = { w: 300, h: 500 };
+  self.placement.animRetile(WS, [{ mon: 0, tiled: [n], layout: 'spiral', places: true }]);
+  assert.equal(self._toggleFloatWindows.has(n), false);
+  assert.equal(n._plaidOpenBox, null);
+  self._animating = false;
+  self._newWindowSet.add(n);
+  n.get_max_size = () => [true, 100, 100];
+  self.placement.animRetile(WS, [{ mon: 0, tiled: [n], layout: 'spiral', places: true }]);
+  assert.equal(self._toggleFloatWindows.has(n), false, 'a max set after open stays tiled');
+});
+
+test('animRetile: a window placed already (not new) is never checked, whatever box it kept', () => {
+  const { self, laid } = runSelf('spiral');
+  const n = animWin('n', { maxSize: [400, 0] });
+  n._plaidOpenBox = { w: 1000, h: 500 };
+  self.placement.animRetile(WS, [{ mon: 0, tiled: [n], layout: 'spiral', places: true }]);
+  assert.equal(self._toggleFloatWindows.has(n), false);
+  assert.ok(laid.includes(n));
+});
+
+test('removeWindow drops the open box', () => {
+  const self = groupSelf('spiral');
+  const w = win('w');
+  w._plaidOpenBox = { w: 1, h: 1 };
+  self.monitors.windowConn = () => null;
+  self.layouts.retileWorkspace = () => {};
+  self.windows.removeWindow(w);
+  assert.equal(w._plaidOpenBox, null);
+});

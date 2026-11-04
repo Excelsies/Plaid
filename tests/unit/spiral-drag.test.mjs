@@ -302,6 +302,26 @@ test('showDragLayout: a window opened mid-drag pops in at its ghost slot', () =>
   assert.equal(n._actor.opacity, 0, 'fading in');
 });
 
+test('showDragLayout: a window opened mid-drag whose maximum is below its box floats, as at any open', () => {
+  const a = W('a', { x: 0, y: 0, width: 500, height: 500 });
+  const b = W('b', { x: 500, y: 0, width: 500, height: 500 });
+  const n = W('n', { x: 300, y: 100, width: 300, height: 200 });
+  n.get_max_size = () => [true, 300, 200];
+  const self = dragSelf(split('h', 0.5, leaf(a), split('v', 0.5, leaf(b), leaf(n))), [a, b, n]);
+  self._newWindowSet.add(n);
+  n._plaidOpenBox = { w: 500, h: 500 };
+  let retiled = 0;
+  self.layouts.retileWorkspace = () => retiled++;
+  self.monitors.removeFromGroupTree = () => {};
+  self.spiral.showDragLayout(self.spiral.buildDragGhost(a, WS), false);
+  assert.equal(self._toggleFloatWindows.has(n), true);
+  assert.equal(self._transformStates.has(n), false, 'not popped in');
+  assert.equal(self._newWindowSet.has(n), false);
+  assert.equal(n._plaidOpenBox, null);
+  assert.equal(n._actor.opacity, 255, 'shown');
+  assert.equal(retiled, 1, 'the ghost is rebuilt without it');
+});
+
 test('shrinkDraggedWindow: once per drag', () => {
   const a = W('a', { x: 0, y: 0, width: 400, height: 200 });
   const self = dragSelf(leaf(a), [a]);

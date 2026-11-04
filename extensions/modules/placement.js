@@ -755,14 +755,45 @@ export class Placement {
         });
     }
 
+    // At its first placement a new Spiral window whose maximum is below the
+    // box it opened on floats where it is, before its group is laid out
+    // (bsp.maxBelowOpenBox). Drops it from `groups`.
+    floatNewBelowOpenBox(groups) {
+        for (const g of groups) {
+            const spiral = g.places && g.layout === 'spiral';
+            g.tiled = g.tiled.filter(win => {
+                if (!this.core._newWindowSet?.has(win)) return true;
+                const below = this.core.bsp.maxBelowOpenBox(win, spiral);
+                if (!below) return true;
+                this.floatAtOpen(win, below);
+                return false;
+            });
+        }
+    }
+
+    // A new window floated by maxBelowOpenBox: out of its tree, shown where
+    // it is.
+    floatAtOpen(win, { max, box }) {
+        const ws = win.get_workspace();
+        this.core.debugLog(`float: ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ws=${this.core.geometry.wsIndex(ws)} ` +
+            `max ${max.w}x${max.h} is below its open box ${box.w}x${box.h}`);
+        this.core._toggleFloatWindows.add(win);
+        this.core._newWindowSet.delete(win);
+        if (ws) this.core.monitors.removeFromGroupTree(win, ws, this.core.monitors.windowConn(win));
+        const actor = win.get_compositor_private();
+        if (actor) actor.set_opacity(255);
+        this.revealPlacedWindow(win);
+    }
+
     // groups: [{mon, tiled, layout, places}] (layouts.doRetileWorkspace),
     // every group in one run; places is monitors.groupPlaces' answer.
     animRetile(workspace, groups) {
-        const tiledWindows = groups.flatMap(g => g.tiled);
         if (!this.core._settings || this.core._shuttingDown) {
             this.core._animating = false;
             return;
         }
+        this.floatNewBelowOpenBox(groups);
+        const tiledWindows = groups.flatMap(g => g.tiled);
         // Each Spiral tile and its group's monitor.
         const spiralWins = new Map(groups.filter(g => g.places && g.layout === 'spiral')
             .flatMap(g => g.tiled.map(w => [w, g.mon])));

@@ -333,7 +333,11 @@ export class Bsp {
                 }
             }
         }
-        if (!target) return this.bspMakeLeaf(win);
+        if (!target) {
+            this.recordFirstOpenBox(win, mon);
+            return this.bspMakeLeaf(win);
+        }
+        this.recordOpenBox(win, target._w, target._h);
         const dir = target._w >= target._h ? 'h' : 'v';
         const newFirst = dir === 'h'
             ? px < target._x + Math.floor(target._w / 2)
@@ -349,9 +353,12 @@ export class Bsp {
     // pointer (spiralInsertNew).
     syncTree(workspace, tree, tiledWindows, area, gap, mon) {
         const ratio = this.bspSplitRatio(workspace, mon);
+        const spiral = this.core.windows.getWorkspaceLayout(workspace, mon) === 'spiral';
         if (!tree) {
-            for (const win of tiledWindows)
+            for (const win of tiledWindows) {
+                if (!tree && spiral) this.recordFirstOpenBox(win, mon);
                 tree = tree ? this.bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio) : this.bspMakeLeaf(win);
+            }
             return tree;
         }
         const tiled = new Set(tiledWindows);
@@ -360,13 +367,13 @@ export class Bsp {
                 tree = this.bspRemove(tree, tw);
         }
         const inTree = new Set(this.bspCollectWindows(tree));
-        const spiral = this.core.windows.getWorkspaceLayout(workspace, mon) === 'spiral';
         for (const win of tiledWindows) {
             if (inTree.has(win)) continue;
             if (spiral && tree.type !== 'empty') {
                 this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
                 tree = this.spiralInsertNew(workspace, tree, win, area, mon);
             } else {
+                if (spiral) this.recordFirstOpenBox(win, mon);
                 tree = this.bspInsert(tree, win, area.x, area.y, area.w, area.h, gap, ratio);
             }
             inTree.add(win);
@@ -439,6 +446,7 @@ export class Bsp {
                 tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, ratio);
             }
         } else {
+            if (spiral) this.recordFirstOpenBox(win, mon);
             tree = this.bspInsert(tree, win, areaX, areaY, areaW, areaH, gap, ratio);
         }
         this.bspSetTree(ws, mon, tree);
@@ -479,15 +487,56 @@ export class Bsp {
         }
         const [ok, w, h] = this.unpackSizeHint(raw);
         if (!ok || (w <= 0 && h <= 0)) return null;
+        const [dw, dh] = this.clientFrameDelta(win);
+        return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
+    }
+
+    // The max-size hint as a FRAME size (0: unbounded on that axis), or null.
+    windowMaxSizeHint(win) {
+        const [ok, w, h] = this.unpackSizeHint(win.get_max_size());
+        if (!ok || (w <= 0 && h <= 0)) return null;
+        const [dw, dh] = this.clientFrameDelta(win);
+        return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
+    }
+
+    // Mutter's client-to-frame size delta, measured on a probe rect
+    // (converting a G_MAXINT hint itself overflows).
+    clientFrameDelta(win) {
         const probe = win.get_frame_rect();
         probe.x = 0;
         probe.y = 0;
         probe.width = 1000;
         probe.height = 1000;
         const f = win.client_rect_to_frame_rect(probe);
-        const dw = f.width - 1000;
-        const dh = f.height - 1000;
-        return { w: w > 0 ? Math.max(0, w + dw) : 0, h: h > 0 ? Math.max(0, h + dh) : 0 };
+        return [f.width - 1000, f.height - 1000];
+    }
+
+    // A new Spiral window floats at its first placement when its maximum is
+    // below the box it opens on (Hyprland): the leaf it splits, before the
+    // split, or its monitor for the first window. Recorded for a new
+    // window only; read once (maxBelowOpenBox).
+    recordOpenBox(win, w, h) {
+        if (this.core._newWindowSet?.has(win)) win._plaidOpenBox = { w, h };
+    }
+
+    // The first window's box: its group's monitor, as Hyprland's
+    // (PMONITOR->m_size), not the gapped tiling area.
+    recordFirstOpenBox(win, mon) {
+        const m = mon === null || mon === undefined ? this.core.monitors.primaryMon() : mon;
+        const g = m >= 0 ? global.display.get_monitor_geometry(m) : null;
+        if (g) this.recordOpenBox(win, g.width, g.height);
+    }
+
+    // { max, box } when the new window's maximum (frame units) is below its
+    // open box on an axis, else null. The box goes either way: an open is
+    // checked once, and only in a Spiral group.
+    maxBelowOpenBox(win, spiral) {
+        const box = win._plaidOpenBox;
+        win._plaidOpenBox = null;
+        if (!box || !spiral) return null;
+        const max = this.windowMaxSizeHint(win);
+        if (!max) return null;
+        return (max.w > 0 && max.w < box.w) || (max.h > 0 && max.h < box.h) ? { max, box } : null;
     }
 
     isX11Client(win) {

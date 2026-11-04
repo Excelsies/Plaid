@@ -52,6 +52,7 @@ export class Spiral extends PlaidSubsystem {
         const conn = this.core.monitors.monConn(g.mon);
         const carry = this.core.transforms.takeOver(g.ws, w => this.core.monitors.windowConn(w) === conn);
         const states = [];
+        let floated = false;
         for (const [w, r] of atHome ? g.live : g.rects) {
             if (w === g.win || !w.get_compositor_private() || w.is_fullscreen()) continue;
             const f = w.get_frame_rect();
@@ -59,7 +60,16 @@ export class Spiral extends PlaidSubsystem {
             if (f.width <= 0 || f.height <= 0) continue;
             const s = { win: w, startX: f.x, startY: f.y, startW: f.width, startH: f.height,
                 targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
-            // Opened mid-drag: pop in at its slot, without the cursor warp.
+            // Opened mid-drag, its first placement: floated as at any open
+            // (bsp.maxBelowOpenBox), else popped in at its slot without the
+            // cursor warp.
+            const below = this.core._newWindowSet?.has(w) &&
+                this.core.bsp.maxBelowOpenBox(w, this.core.windows.getWorkspaceLayout(g.ws, g.mon) === 'spiral');
+            if (below) {
+                this.core.placement.floatAtOpen(w, below);
+                floated = true;
+                continue;
+            }
             if (this.core._newWindowSet?.has(w)) {
                 s.popin = true;
                 this.core._newWindowSet.delete(w);
@@ -70,6 +80,8 @@ export class Spiral extends PlaidSubsystem {
         this.core.debugLog(`spiral: drag ${atHome ? 'home' : 'reflow'} ws=${this.core.geometry.wsIndex(g.ws)} ` +
             `${g.win.get_wm_class_instance() || '?'} id=${g.win.get_id()} (${states.length} windows)`);
         this.core.transforms.run(states, () => {}, carry);
+        // The ghost is rebuilt without it (layouts.doRetileWorkspace).
+        if (floated) this.core.layouts.retileWorkspace(g.ws);
     }
 
     // The workspace under the drag changed (a window opened, closed or
