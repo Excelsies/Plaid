@@ -1278,6 +1278,91 @@ test('persistence: the primary stays in the old keys, other monitors round-trip 
   assert.equal(fresh._persistedDwindleByIndex.get('1@DP-2').ratio, 0.3);
 });
 
+test('persistence: each BSP layout keeps its own shape (":spiral" tail); other tags are carried verbatim', () => {
+  const [, ws1] = stubGlobal();
+  const a = W('a', ws1, 0), b = W('b', ws1, 0), c = W('c', ws1, 1), d = W('d', ws1, 1);
+  const { self } = groupSelf(ws1, [a, b, c, d]);
+  self._settings = recSettings();
+  self._workspaceLayouts.set(1, 'spiral');
+  // Dwindle's shape of ws 1, a layout this build does not know, and an
+  // unplugged monitor's Spiral shape.
+  self._persistedDwindleRaw.set(1, 'h0.6180(l,l)');
+  self._persistedDwindleRaw.set('2:foo', 'h0.5000(l,l)');
+  self._persistedDwindleRaw.set('4:bar', 'q7(x)');
+  self._persistedDwindleRaw.set('3@HDMI-9:spiral', 'h0.2500(l,l)');
+  self.bsp.bspSetTree(ws1, 0, split('h', 0.5, leaf(a), leaf(b)));
+  self.bsp.bspSetTree(ws1, 1, split('v', 0.3, leaf(c), leaf(d)));
+  self.persistence.savePersistedLayouts();
+  const v = self._settings.v;
+  assert.deepEqual(v['workspace-layouts'], ['1:spiral', '2:dwindle']);
+  assert.deepEqual(v['workspace-dwindle-trees'], ['1:h0.6180(l,l)', '1:spiral:h0.5000(l,l)', '2:foo:h0.5000(l,l)', '4:bar:q7(x)']);
+  assert.deepEqual(v['monitor-workspace-dwindle-trees'], ['DP-2:1:v0.3000(l,l)', 'HDMI-9:3:spiral:h0.2500(l,l)']);
+  assert.deepEqual([...self._persistedDwindleRaw.keys()].map(String).sort(),
+    ['1', '1:spiral', '1@DP-2', '2:foo', '3@HDMI-9:spiral', '4:bar']);
+
+  const fresh = makeSelf({}, { _keyedPrimary: 'DP-1' });
+  fresh._settings = recSettings(v);
+  fresh.persistence.loadPersistedLayoutRules();
+  assert.equal(fresh._persistedLayoutByIndex.get(1), 'spiral');
+  assert.deepEqual([...fresh._persistedDwindleByIndex.keys()].map(String).sort(), ['1', '1:spiral', '1@DP-2', '3@HDMI-9:spiral']);
+  assert.equal(fresh._persistedDwindleByIndex.get(1).ratio, 0.618);
+  assert.equal(fresh._persistedDwindleByIndex.get('1:spiral').ratio, 0.5);
+  assert.equal(fresh._persistedDwindleRaw.get('2:foo'), 'h0.5000(l,l)', 'kept, not applied');
+});
+
+test('persistence: the formats other builds write load ("index:dwindle:shape", the user\'s saved values)', () => {
+  stubGlobal();
+  const self = makeSelf({}, { _keyedPrimary: 'DP-1' });
+  self._settings = recSettings({
+    'workspace-dwindle-trees': ['1:spiral:h0.5000(l,v0.2724(l,l))', '2:dwindle:h0.7000(l,l)', '3:h0.6180(l,l)'],
+    'monitor-workspace-dwindle-trees': ['DP-6:1:spiral:h0.5000(l,l)'],
+    'workspace-layouts': ['1:spiral', '2:spiral', '3:spiral'],
+    'monitor-workspace-layouts': ['DP-6:1:spiral'],
+    layout: 'spiral',
+  });
+  self.persistence.loadPersistedLayoutRules();
+  const m = self._persistedDwindleByIndex;
+  assert.equal(m.get('1:spiral').second.ratio, 0.2724);
+  assert.equal(m.get(2).ratio, 0.7);
+  assert.equal(m.get(3).ratio, 0.618);
+  assert.equal(m.get('1@DP-6:spiral').ratio, 0.5);
+  assert.deepEqual([...self._persistedLayoutByIndex.values()], ['spiral', 'spiral', 'spiral', 'spiral']);
+});
+
+test('retileDwindle and refreshSavedShape: a tree reads and writes only its own layout\'s shape', () => {
+  const [, ws1] = stubGlobal();
+  const a = W('a', ws1, 0), b = W('b', ws1, 0);
+  const { self } = groupSelf(ws1, [a, b]);
+  self._workspaceLayouts.set(1, 'spiral');
+  self._persistedDwindleByIndex.set(1, split('h', 0.7, leaf(null), leaf(null)));
+  self._animTargets = new Map();
+  self.bsp.bspSetTree(ws1, 0, split('h', 0.5, leaf(a), leaf(b)));
+  self.layouts.retileDwindle(ws1, [a, b], 0);
+  assert.equal(self.bsp.bspGetTree(ws1, 0).ratio, 0.5, 'dwindle\'s shape is not Spiral\'s');
+  self._persistedDwindleByIndex.set('1:spiral', split('h', 0.3, leaf(null), leaf(null)));
+  self._dwindleLeafSigs.clear();
+  self.layouts.retileDwindle(ws1, [a, b], 0);
+  assert.equal(self.bsp.bspGetTree(ws1, 0).ratio, 0.3);
+  self.bsp.bspGetTree(ws1, 0).ratio = 0.4;
+  self.layouts.refreshSavedShape(ws1, self.bsp.bspGetTree(ws1, 0), 0);
+  assert.equal(self._persistedDwindleByIndex.get('1:spiral').ratio, 0.4);
+  assert.equal(self._persistedDwindleByIndex.get(1).ratio, 0.7);
+});
+
+test('saveGroupShapes and the index shift keep the layout tail', () => {
+  const [, ws1] = stubGlobal();
+  const c = W('c', ws1, 1), d = W('d', ws1, 1);
+  const { self } = groupSelf(ws1, [c, d]);
+  self._workspaceLayouts.set('1@DP-2', 'spiral');
+  self.bsp.bspSetTree(ws1, 1, split('v', 0.5, leaf(c), leaf(d)));
+  self.monitors.saveGroupShapes('DP-2');
+  assert.equal(self._persistedDwindleRaw.get('1@DP-2:spiral'), 'v0.5000(l,l)');
+  assert.equal(self._persistedDwindleRaw.has('1@DP-2'), false);
+  self._persistedDwindleRaw.set('1:spiral', 'h0.5000(l,l)');
+  self.persistence.shiftWorkspaceIndexKeys(1, 1);
+  assert.deepEqual([...self._persistedDwindleRaw.keys()].sort(), ['2:spiral', '2@DP-2:spiral']);
+});
+
 test('persistence: older settings load for the primary, and follow the connector they were saved for', () => {
   stubGlobal();
   const older = { 'workspace-layouts': ['1:master-stack'], 'workspace-dwindle-trees': ['1:h0.7000(l,l)'] };

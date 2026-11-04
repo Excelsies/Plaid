@@ -434,9 +434,11 @@ export class Monitors extends PlaidSubsystem {
         let saved = 0;
         for (let i = 1; i < wm.get_n_workspaces(); i++) {
             const ws = wm.get_workspace_by_index(i);
-            const key = this.groupKeyFor(i, conn);
+            const group = this.groupKeyFor(i, conn);
+            const layout = this.core.windows.layoutForKey(group);
             const tree = ws && this.core._bspTrees.get(this.groupObjFor(ws, conn));
-            if (!tree || tree.type !== 'split' || !isBspLayout(this.core.windows.layoutForKey(key))) continue;
+            if (!tree || tree.type !== 'split' || !isBspLayout(layout)) continue;
+            const key = this.core.persistence.shapeKey(group, layout);
             const shape = this.core.bsp.dwindleShapeToString(tree);
             this.core._persistedDwindleRaw?.set(key, shape);
             this.core._persistedDwindleByIndex?.set(key, this.core.bsp.dwindleShapeFromString(shape));

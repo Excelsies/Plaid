@@ -85,10 +85,12 @@ export class Persistence {
                 // a collapsed single-leaf tree would overwrite a good shape. So
                 // only a live 2+-window tree may overwrite an entry; no tree /
                 // leaf / empty PRESERVES the previously-saved shape.
+                // One entry per (slot, BSP layout): a shared one would stamp
+                // dwindle's ratios on Spiral's tree and the reverse.
                 const tree = this.core._bspTrees.get(ws);
-                if (tree && tree.type === 'split' &&
-                    isBspLayout(this.core.windows.getWorkspaceLayout(ws, null)))
-                    dwindleRaw.set(i, this.core.bsp.dwindleShapeToString(tree));
+                const layout = this.core.windows.getWorkspaceLayout(ws, null);
+                if (tree && tree.type === 'split' && isBspLayout(layout))
+                    dwindleRaw.set(this.shapeKey(i, layout), this.core.bsp.dwindleShapeToString(tree));
             }
             // The other monitors: "CONNECTOR:" + the same entry. A
             // disconnected monitor's rules stay for its return; live values and
@@ -109,7 +111,7 @@ export class Persistence {
                     monLayouts.set(key, layout);
                     const tree = this.core._bspTrees.get(monitors.groupObj(ws, mon));
                     if (tree && tree.type === 'split' && isBspLayout(layout))
-                        dwindleRaw.set(key, this.core.bsp.dwindleShapeToString(tree));
+                        dwindleRaw.set(this.shapeKey(key, layout), this.core.bsp.dwindleShapeToString(tree));
                 }
             }
             // "CONNECTOR:INDEX:value", sorted by monitor then workspace.
@@ -122,14 +124,18 @@ export class Persistence {
                 .map(e => e[2]);
             const weights = sr => (sr && sr.size > 0 ? [...sr].map(([k, v]) => `${k}:${v}`).join(',') : null);
             // Write merged dwindle shapes: filter out non-split leftovers, keep
-            // entries for workspaces beyond the current count, and re-sync the raw
-            // map to exactly what we wrote.
+            // entries for workspaces beyond the current count and entries of a
+            // layout this build does not know (verbatim), and re-sync the raw
+            // map to exactly what we wrote. A key's monitor, not its type, says
+            // which setting it goes to ("1:spiral" is the primary's).
             const dwindleTrees = [];
             const monShapes = new Map();
             for (const [key, shape] of dwindleRaw) {
+                const p = Monitors.parseGroupKey(key);
+                if (!p) continue;
                 const node = this.core.bsp.dwindleShapeFromString(shape);
-                if (!node || node.type !== 'split') continue;
-                if (typeof key === 'string') monShapes.set(key, shape);
+                if (this.knownShapeTail(p.tail) && (!node || node.type !== 'split')) continue;
+                if (p.conn) monShapes.set(key, shape);
                 else dwindleTrees.push(`${key}:${shape}`);
             }
             dwindleTrees.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
@@ -147,7 +153,11 @@ export class Persistence {
             this.core._settings.set_strv('workspace-master-ratios', masterRatios);
             this.core._settings.set_strv('workspace-stack-ratios', stackRatios);
             this.core._settings.set_strv('workspace-dwindle-trees', dwindleTrees);
-            const raw = new Map(dwindleTrees.map(e => [parseInt(e, 10), e.substring(e.indexOf(':') + 1)]));
+            const raw = new Map();
+            for (const entry of dwindleTrees) {
+                const e = this.parseDwindleTreeEntry(entry);
+                if (e) raw.set(e.key, e.shape);
+            }
             for (const entry of monDwindle) {
                 const m = Monitors.splitMonitorEntry(entry);
                 const e = m && this.parseDwindleTreeEntry(m.rest, m.conn);
@@ -261,6 +271,11 @@ export class Persistence {
             for (const { conn, entry } of this.persistedEntries('workspace-dwindle-trees', 'monitor-workspace-dwindle-trees')) {
                 const e = this.parseDwindleTreeEntry(entry, conn);
                 if (!e) continue;
+                // Another layout's shape is not applied, only kept.
+                if (!e.known) {
+                    raw.set(e.key, e.shape);
+                    continue;
+                }
                 const shape = this.core.bsp.dwindleShapeFromString(e.shape);
                 if (shape) {
                     map.set(e.key, shape);
@@ -274,13 +289,36 @@ export class Persistence {
         return map;
     }
 
-    // "index:shape" saved for monitor `conn` (null: the keyed primary).
+    // "index:shape" (dwindle, read by every build) or "index:layout:shape"
+    // saved for monitor `conn` (null: the keyed primary). Shapes never
+    // contain ':', so a second one marks a layout tag: 'dwindle' (an older
+    // tagged build) is dwindle's key, 'spiral' gets the key's ':spiral'
+    // tail, any other tag is kept under its own tail (known: false).
     parseDwindleTreeEntry(entry, conn = null) {
         const sep = entry.indexOf(':');
         if (sep <= 0) return null;
         const idx = parseInt(entry.substring(0, sep), 10);
         if (idx <= 0 || !Number.isInteger(idx)) return null;
-        return { key: this.core.monitors.groupKeyFor(idx, conn), shape: entry.substring(sep + 1) };
+        let shape = entry.substring(sep + 1);
+        let tag = 'dwindle';
+        const t = shape.indexOf(':');
+        if (t >= 0) {
+            tag = shape.substring(0, t);
+            shape = shape.substring(t + 1);
+        }
+        const group = this.core.monitors.groupKeyFor(idx, conn);
+        const known = isBspLayout(tag);
+        return { key: known ? this.shapeKey(group, tag) : `${group}:${tag}`, shape, known };
+    }
+
+    // The saved-shape key of a group (monitors.groupKey) for a BSP layout:
+    // dwindle keeps the bare group key, Spiral adds ':spiral'.
+    shapeKey(groupKey, layout) {
+        return layout === 'spiral' ? `${groupKey}:spiral` : groupKey;
+    }
+
+    knownShapeTail(tail) {
+        return tail === '' || tail === ':spiral';
     }
 
     // A setting's entries with the monitor they belong to (null: the keyed

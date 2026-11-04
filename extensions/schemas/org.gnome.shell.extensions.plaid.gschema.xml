@@ -216,7 +216,7 @@
     <key name="workspace-dwindle-trees" type="as">
       <default><![CDATA[[]]]></default>
       <summary>Persisted dwindle split arrangements per workspace</summary>
-      <description>Entries in the form "index:shape" where shape encodes the tree's split directions and ratios (e.g. 3:h0.8480(l,l)). Restored when a workspace's window set changes so resized arrangements survive logins</description>
+      <description>Entries in the form "index:shape" (dwindle) or "index:spiral:shape" (Spiral) where shape encodes the tree's split directions and ratios (e.g. 3:h0.8480(l,l)); entries tagged with another layout are kept as they are. Restored when a workspace's window set changes so resized arrangements survive logins</description>
     </key>
 
     <!-- Per-monitor tiling: the workspace-* keys above hold the monitor named
@@ -249,7 +249,7 @@
     <key name="monitor-workspace-dwindle-trees" type="as">
       <default><![CDATA[[]]]></default>
       <summary>Persisted dwindle split arrangements per workspace on the other monitors</summary>
-      <description>Entries of the form "CONNECTOR:INDEX:SHAPE" (e.g. "DP-3:3:h0.5000(l,l)"), as workspace-dwindle-trees.</description>
+      <description>Entries of the form "CONNECTOR:INDEX:SHAPE" or "CONNECTOR:INDEX:spiral:SHAPE" (e.g. "DP-3:3:h0.5000(l,l)"), as workspace-dwindle-trees.</description>
     </key>
 
     <!-- Keybindings: Window Movement -->

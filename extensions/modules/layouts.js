@@ -621,7 +621,7 @@ export class Layouts {
             if (switched || this.core._dwindleLeafSigs.get(key) !== sig) {
                 this.core._dwindleLeafSigs.set(key, sig);
                 const savedShape = this.core._persistedDwindleByIndex &&
-                    this.core._persistedDwindleByIndex.get(this.core.monitors.groupKey(workspace, mon));
+                    this.core._persistedDwindleByIndex.get(this.core.persistence.shapeKey(this.core.monitors.groupKey(workspace, mon), layout));
                 if (savedShape && this.core.bsp.reconcileTreeRatios(savedShape, tree))
                     this.core.debugLog(`dwindle: restored saved split ratios (ws=${this.core.geometry.wsIndex(workspace)}, windows=${tiledWindows.length})`);
             }
@@ -645,7 +645,9 @@ export class Layouts {
         // Same slots as the save: index 0 (the parking slot) is never stored.
         if (idx <= 0) return;
         const shape = this.core.bsp.dwindleShapeFromString(this.core.bsp.dwindleShapeToString(tree));
-        if (shape) this.core._persistedDwindleByIndex.set(this.core.monitors.groupKey(workspace, mon), shape);
+        const key = this.core.persistence.shapeKey(this.core.monitors.groupKey(workspace, mon),
+            this.core.windows.getWorkspaceLayout(workspace, mon));
+        if (shape) this.core._persistedDwindleByIndex.set(key, shape);
     }
 
 }
