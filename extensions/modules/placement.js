@@ -356,7 +356,7 @@ export class Placement {
             count += tiled.length;
             for (const win of tiled) {
                 if (win.minimized || win.is_fullscreen()) continue;
-                if (this.core._landingAccepted && this.core._landingAccepted.has(win)) continue;
+                if (this.hasAcceptedLanding(win)) continue;
                 const slot = this.core.grab.windowSlotRect(win, ws, layout, workArea, gap);
                 if (!slot) continue;
                 const f = win.get_frame_rect();
@@ -470,7 +470,7 @@ export class Placement {
         }
         const accepted = this.landingAccepted(win, s.targetX, s.targetY, s.targetW, s.targetH);
         // An accepted slot ends when the layout gives the window another.
-        if (!accepted && this.core._landingAccepted) this.core._landingAccepted.delete(win);
+        if (!accepted) this.landingSlotChanged(win);
         const f = win.get_frame_rect();
         // The deferred new-window placement must land PRECISELY (pure
         // mode): the 16px tolerance silently accepted off-landings like
@@ -494,8 +494,7 @@ export class Placement {
                             this.core.debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
                     }
                 }
-                const prev = this.core._mismatchFrames.get(win);
-                this.core._mismatchFrames.set(win, { x: f.x, y: f.y, w: f.width, h: f.height });
+                const prev = this.landingFrame(win, f);
                 const refusesShrink = f.width > s.targetW + 16 || f.height > s.targetH + 16;
                 // A settling client can re-apply its remembered geometry
                 // after placement (XWayland Emacs: 1936x1185). That is not a
@@ -575,19 +574,71 @@ export class Placement {
         this.core.debugLog(`min-learned: ${w}x${h} for ${win.get_wm_class_instance() || '?'}`);
     }
 
-    // A slot's landing state: its retry count, and whether it was accepted.
+    // One landing record per window: the current slot's key and misses, the
+    // window's miss total across slots, the accepted slot, and the last
+    // mismatched frame. Transitions: miss, accept, slot change, frame; land
+    // and close drop it (releaseLanding).
+    landingRecord(win) {
+        const records = this.core._landings;
+        if (!records || !win) return null;
+        let rec = records.get(win);
+        if (!rec) {
+            rec = { key: null, n: 0, total: 0, accepted: null, frame: null };
+            records.set(win, rec);
+        }
+        return rec;
+    }
+
+    // A counted miss on the slot `key`: another slot starts a fresh count.
+    landingMiss(win, key) {
+        const rec = this.landingRecord(win);
+        if (!rec) return null;
+        rec.n = (rec.key === key ? rec.n : 0) + 1;
+        rec.total++;
+        rec.key = key;
+        return rec;
+    }
+
+    // The window stays at this slot; its total still counts.
+    landingAccept(win, key) {
+        const rec = this.landingRecord(win);
+        if (!rec) return;
+        rec.key = key;
+        rec.n = 0;
+        rec.accepted = key;
+        rec.frame = null;
+    }
+
+    landingSlotChanged(win) {
+        const rec = this.core._landings?.get(win);
+        if (rec) rec.accepted = null;
+    }
+
+    // Records the mismatched frame and returns the previous one.
+    landingFrame(win, f) {
+        const rec = this.landingRecord(win);
+        if (!rec) return null;
+        const prev = rec.frame;
+        rec.frame = { x: f.x, y: f.y, w: f.width, h: f.height };
+        return prev;
+    }
+
+    hasAcceptedLanding(win) {
+        const rec = this.core._landings?.get(win);
+        return !!rec && rec.accepted !== null;
+    }
+
+    // Landed, closed, or out of the scratchpad: the record goes.
     releaseLanding(win) {
         if (!win) return;
-        if (this.core._landingRetries) this.core._landingRetries.delete(win);
-        if (this.core._landingAccepted) this.core._landingAccepted.delete(win);
-        if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
+        if (this.core._landings) this.core._landings.delete(win);
     }
 
     // The window was left at this slot after its retries; another slot
     // gets a fresh budget while the window's total allows it.
     landingAccepted(win, x, y, w, h) {
-        const key = this.core._landingAccepted ? this.core._landingAccepted.get(win) : undefined;
-        return key !== undefined && key === landingKey(x, y, w, h);
+        const rec = this.core._landings?.get(win);
+        return !!rec && rec.accepted !== null && rec.accepted === landingKey(x, y, w, h);
     }
 
     // The settle window closed: its hints count from here on, and so does a
@@ -599,7 +650,7 @@ export class Placement {
     }
 
     retryLanding(win, s, settling = false) {
-        if (!this.core._landingRetries || !this.core._landingAccepted || !this.core._settings || !win) return;
+        if (!this.core._landings || !this.core._settings || !win) return;
         if (!win.get_compositor_private()) {
             this.core.debugLog(`anim: landing retry skipped (window gone) id=${win.get_id()}`);
             return;
@@ -608,15 +659,11 @@ export class Placement {
         // a miss there is not counted.
         if (settling) return;
         const key = landingKey(s.targetX, s.targetY, s.targetW, s.targetH);
-        const prev = this.core._landingRetries.get(win);
-        const n = (prev && prev.key === key ? prev.n : 0) + 1;
-        const total = (prev ? prev.total : 0) + 1;
+        const { n, total } = this.landingMiss(win, key);
         if (n > LANDING_RETRIES || total > LANDING_MISSES) {
             // Never floated: the window keeps its leaf, and its slot is not
             // re-requested until the layout gives it another.
-            this.core._landingRetries.set(win, { key, n: 0, total });
-            this.core._landingAccepted.set(win, key);
-            if (this.core._mismatchFrames) this.core._mismatchFrames.delete(win);
+            this.landingAccept(win, key);
             // Clear the pending-warp state so a masked window is never left
             // invisible: an accepted slot makes every later
             // verifyAnimationLanding return false, so the success branch
@@ -643,10 +690,9 @@ export class Placement {
                 `frame=${Math.round(f.width)}x${Math.round(f.height)} slot=${Math.round(s.targetW)}x${Math.round(s.targetH)}`);
             return;
         }
-        this.core._landingRetries.set(win, { key, n, total });
         this.core.signals.addTimeout(200, () => {
             if (!this.core._settings) return GLib.SOURCE_REMOVE;
-            if (this.core._landingAccepted && this.core._landingAccepted.has(win)) return GLib.SOURCE_REMOVE;
+            if (this.hasAcceptedLanding(win)) return GLib.SOURCE_REMOVE;
             // Window-liveness: _removeWindow prunes the landing state on
             // close, so that guard no longer covers a window closed within
             // this 200ms window — touching a finalized Meta.Window here

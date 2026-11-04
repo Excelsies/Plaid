@@ -51,6 +51,29 @@ export function fakeSettings(values = {}) {
   };
 }
 
+// The landing tests read the per-window record through the two maps it
+// replaced: a counted miss (slot key, count, total) and an accepted slot.
+function landingViews(core) {
+  const rec = (win) => core._landings?.get(win);
+  Object.defineProperty(core, '_landingRetries', {
+    configurable: true,
+    get: () => ({
+      has: (win) => (rec(win)?.key ?? null) !== null,
+      get: (win) => {
+        const r = rec(win);
+        return r && r.key !== null ? { key: r.key, n: r.n, total: r.total } : undefined;
+      },
+    }),
+  });
+  Object.defineProperty(core, '_landingAccepted', {
+    configurable: true,
+    get: () => ({
+      has: (win) => (rec(win)?.accepted ?? null) !== null,
+      get: (win) => rec(win)?.accepted ?? undefined,
+    }),
+  });
+}
+
 function resetCoreState(core, settings) {
   core._settings = fakeSettings(settings);
   core._floatingClasses = new Set(settings['float-windows'] ?? []);
@@ -99,9 +122,8 @@ function resetCoreState(core, settings) {
   core._pendingBorderId = 0;
   core._queuedAnimWorkspaces = new Set();
   core._animStartedAt = 0;
-  core._landingRetries = new Map();
-  core._mismatchFrames = new Map();
-  core._landingAccepted = new Map();
+  core._landings = new Map();
+  landingViews(core);
   core._observedMinSizes = new Map();
   core._pendingWarp = new Set();
   core._retileAfterGrab = new Set();
