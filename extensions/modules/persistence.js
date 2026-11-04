@@ -134,8 +134,12 @@ export class Persistence {
             }
             const stackEntries = this.core._settings.get_strv('workspace-stack-ratios') || [];
             for (const entry of stackEntries) {
-                const [idxStr, weightsStr] = entry.split(':');
-                const idx = parseInt(idxStr, 10);
+                // "INDEX:SLOT:WEIGHT,SLOT:WEIGHT": the weights hold ':' too,
+                // so only the first one ends the index.
+                const sep = entry.indexOf(':');
+                if (sep <= 0) continue;
+                const idx = parseInt(entry.substring(0, sep), 10);
+                const weightsStr = entry.substring(sep + 1);
                 if (idx <= 0 || !Number.isInteger(idx)) continue;
                 const map = new Map();
                 for (const part of (weightsStr || '').split(',')) {
