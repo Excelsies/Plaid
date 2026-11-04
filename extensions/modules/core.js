@@ -181,6 +181,8 @@ export class PlaidCore {
         this._animTransformRun = false;
         this._transformStates = new Map();
         this._transformTimeline = null;
+        this._liveSent = null;
+        this._liveStretched = null;
         this._landings = new Map();
         this._observedMinSizes = new Map();
         this._pendingWarp = new Set();

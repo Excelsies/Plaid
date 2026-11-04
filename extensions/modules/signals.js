@@ -527,6 +527,7 @@ export class Signals extends PlaidSubsystem {
         }
 
         this.core.borders.stopBorderAnimation();
+        this.core.transforms.clearLiveStretch();
         this.core.placement.cancelAnimation();
     }
 

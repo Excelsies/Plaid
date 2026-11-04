@@ -201,6 +201,7 @@ export class Grab extends PlaidSubsystem {
         this.core.dragPreview.hideDropPreview();
         this.stopLiveResizeLoop();
         this.disconnectGrabBoundaryHooks();
+        this.core.transforms.handOffLiveStretch(metaWindow);
         this.core._grabOp = null;
         this.core._grabWindow = null;
         this.core._grabStartFrame = null;

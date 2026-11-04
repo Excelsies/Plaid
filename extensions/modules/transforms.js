@@ -149,7 +149,8 @@ export class Transforms extends PlaidSubsystem {
 
     // t0 null: not drawn yet, at its start.
     visual(s, now) {
-        const t = Math.min(1, Math.max(0, (now - (s.t0 ?? now)) / 1000 / s.dur));
+        // dur 0: arrived (a hand-off held at its slot).
+        const t = s.dur > 0 ? Math.min(1, Math.max(0, (now - (s.t0 ?? now)) / 1000 / s.dur)) : 1;
         const e = 1 - Math.pow(1 - t, 5);
         return [s.startX + (s.targetX - s.startX) * e, s.startY + (s.targetY - s.startY) * e,
             s.startW + (s.targetW - s.startW) * e, s.startH + (s.targetH - s.startH) * e];
@@ -284,7 +285,97 @@ export class Transforms extends PlaidSubsystem {
         return carry;
     }
 
+    // Live resize: the actor drawn over `draw` (default its slot) while its
+    // client catches up; same mapping as apply(). The stretch owns the
+    // transform (a resize during an animation).
+    stretchActorToSlot(win, slot, draw = slot) {
+        this.release(win);
+        const actor = win.get_compositor_private();
+        if (!actor || !this.core._liveStretched) return;
+        const f = win.get_frame_rect();
+        if (f.width <= 0 || f.height <= 0) return;
+        const flush = Math.abs(f.x - draw.x) <= 1 && Math.abs(f.y - draw.y) <= 1 &&
+            Math.abs(f.width - draw.w) <= 1 && Math.abs(f.height - draw.h) <= 1;
+        // Drawn at its own frame: the release retile eases it into its slot.
+        if (flush) {
+            if (this.core._liveStretched.delete(win)) {
+                actor.set_scale(1, 1);
+                actor.set_translation(0, 0, 0);
+            }
+            return;
+        }
+        const b = win.get_buffer_rect();
+        const sx = draw.w / f.width, sy = draw.h / f.height;
+        const tx = draw.x - b.x - (f.x - b.x) * sx, ty = draw.y - b.y - (f.y - b.y) * sy;
+        // Only a changing transform: each set_* queues a redraw.
+        if (Math.abs(actor.scale_x - sx) > 1e-4 || Math.abs(actor.scale_y - sy) > 1e-4 ||
+            Math.abs(actor.translation_x - tx) > 0.01 || Math.abs(actor.translation_y - ty) > 0.01) {
+            actor.remove_all_transitions();
+            actor.set_pivot_point(0, 0);
+            actor.set_scale(sx, sy);
+            actor.set_translation(tx, ty, 0);
+        }
+        // The slot, not the drawn rect: what the grab-end hand-off holds.
+        this.core._liveStretched.set(win, slot);
+    }
+
+    // Grab end: windows still stretched stay over their slot as an arrived
+    // ease for the release retile; reset, a lagging window would show its
+    // stale size.
+    handOffLiveStretch(grabbed) {
+        const live = this.core._liveStretched;
+        this.core._liveStretched = null;
+        this.core._liveSent = null;
+        if (!live || live.size === 0 || !grabbed) return;
+        // Until now the grabbed window's size was mutter's.
+        const g = live.get(grabbed);
+        if (g && grabbed.get_compositor_private())
+            grabbed.move_resize_frame(true, g.x, g.y, g.w, g.h);
+        const now = GLib.get_monotonic_time();
+        const conn = this.core.monitors.windowConn(grabbed);
+        const carry = this.takeOver(grabbed.get_workspace(), w => this.core.monitors.windowConn(w) === conn);
+        const states = [];
+        for (const [win, r] of live) {
+            const actor = win.get_compositor_private();
+            if (!actor) continue;
+            const at = { startX: r.x, startY: r.y, startW: r.w, startH: r.h,
+                targetX: r.x, targetY: r.y, targetW: r.w, targetH: r.h };
+            // sent: null: every commit but the slot's answers a queued grab
+            // configure.
+            carry.set(win, { ...at, win, actor, t0: now, dur: 0, sent: null, op0: null,
+                visual: [r.x, r.y, r.w, r.h] });
+            states.push({ ...at, win });
+        }
+        this.run(states, () => {}, carry);
+    }
+
+    // stop(true) for code that draws the windows itself from here: the run
+    // they belonged to counts them as landed, so it ends with its other
+    // windows (another group's tick run keeps going).
+    takeOver(workspace, only) {
+        const carry = this.stop(true, workspace, only);
+        for (const s of carry.values()) {
+            if (s.done) continue;
+            s.done = true;
+            s.onLanded(s);
+        }
+        return carry;
+    }
+
+    // Disable or shutdown mid-resize: every stretched actor at identity.
+    clearLiveStretch() {
+        for (const win of this.core._liveStretched?.keys() ?? []) {
+            const actor = win.get_compositor_private();
+            if (!actor) continue;
+            actor.set_scale(1, 1);
+            actor.set_translation(0, 0, 0);
+        }
+        this.core._liveStretched = null;
+        this.core._liveSent = null;
+    }
+
     destroy() {
+        this.clearLiveStretch();
         this.stop();
         this.stopTimeline();
         super.destroy();

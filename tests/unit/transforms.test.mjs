@@ -438,3 +438,117 @@ test('cancelAnimation: transform runs end at identity', () => {
   assert.equal(self._transformStates.size, 0);
   assert.equal(a._actor.translation_x, 0);
 });
+
+test('stretchActorToSlot: a lagging client is drawn over its slot; flush, it is left alone', () => {
+  clock = 0;
+  const self = driverSelf();
+  self._liveStretched = new Map();
+  const a = win({ x: 0, y: 0, width: 100, height: 100 });
+  const slot = { x: 0, y: 0, w: 200, h: 100 };
+  self.transforms.stretchActorToSlot(a, slot);
+  assert.equal(a._actor.scale_x, 2);
+  assert.equal(self._liveStretched.get(a), slot);
+  a._frame = { x: 0, y: 0, width: 200, height: 100 };
+  self.transforms.stretchActorToSlot(a, slot);
+  assert.equal(a._actor.scale_x, 1);
+  assert.equal(self._liveStretched.has(a), false);
+});
+
+test('stretchActorToSlot: drawn at `draw`, held at the slot', () => {
+  clock = 0;
+  const self = driverSelf();
+  self._liveStretched = new Map();
+  const a = win({ x: 100, y: 0, width: 100, height: 100 });
+  const slot = { x: 0, y: 0, w: 300, h: 100 };
+  self.transforms.stretchActorToSlot(a, slot, { x: 100, y: 0, w: 100, h: 100 });
+  assert.equal(a._actor.scale_x, 1, 'flush with draw');
+  self.transforms.stretchActorToSlot(a, slot, { x: 50, y: 0, w: 200, h: 100 });
+  assert.deepEqual([a._actor.scale_x, a._actor.translation_x], [2, -50]);
+  assert.equal(self._liveStretched.get(a), slot);
+});
+
+test('handOffLiveStretch: the grabbed window gets its slot; stretched ones are held there for the release retile', () => {
+  clock = 0;
+  const self = driverSelf();
+  self._liveStretched = new Map();
+  self._liveSent = new Map();
+  const g = win({ x: 0, y: 0, width: 250, height: 100 }, { lag: true });
+  const b = win({ x: 300, y: 0, width: 100, height: 100 }, { lag: true });
+  self.transforms.stretchActorToSlot(g, { x: 0, y: 0, w: 200, h: 100 });
+  self.transforms.stretchActorToSlot(b, { x: 220, y: 0, w: 180, h: 100 });
+  self.transforms.handOffLiveStretch(g);
+  assert.equal(self._liveStretched, null);
+  assert.equal(self._liveSent, null);
+  assert.deepEqual(g._log.filter(e => e[0] === 'configure'), [['configure', 0, 0, 200, 100]]);
+  // Held over the slot (an arrived ease) until the commit.
+  assert.ok(self._transformStates.has(b));
+  assert.equal(b._actor.scale_x, 1.8);
+  b._frame = { x: 220, y: 0, width: 180, height: 100 };
+  self.transforms.step();
+  assert.equal(self._transformStates.has(b), false);
+  assert.equal(b._actor.scale_x, 1);
+});
+
+test('clearLiveStretch: disable mid-resize resets every stretched actor', () => {
+  clock = 0;
+  const self = driverSelf();
+  self._liveStretched = new Map();
+  const a = win({ x: 0, y: 0, width: 100, height: 100 });
+  self.transforms.stretchActorToSlot(a, { x: 0, y: 0, w: 200, h: 100 });
+  self.transforms.destroy();
+  assert.equal(a._actor.scale_x, 1);
+  assert.equal(self._liveStretched, null);
+});
+
+test('wiring: a grab end hands the stretch off; shutdown clears it', () => {
+  const self = driverSelf();
+  const calls = [];
+  self.transforms.handOffLiveStretch = (w) => calls.push(['handoff', w]);
+  self.transforms.clearLiveStretch = () => calls.push(['clear']);
+  self.borders.startBorderAnimation = () => {};
+  self.borders.stopBorderAnimation = () => {};
+  const g = win({ x: 0, y: 0, width: 100, height: 100 });
+  self.grab.handleGrabEnd(g, 1);
+  self.signals.onShellShutdown();
+  assert.deepEqual(calls, [['handoff', g], ['clear']]);
+});
+
+test('stretchActorToSlot: with a CSD shadow the frame is drawn exactly over the slot', () => {
+  clock = 0;
+  const self = driverSelf();
+  self._liveStretched = new Map();
+  const a = shadowed({ x: 100, y: 50, width: 400, height: 300 }, [10, 12]);
+  self.transforms.stretchActorToSlot(a, { x: 80, y: 40, w: 700, h: 500 });
+  drawnFrame(a).forEach((x, i) => assert.ok(Math.abs(x - [80, 40, 700, 500][i]) < 1e-6, `${i}: ${x}`));
+});
+
+test('takeOver: the windows taken from a run count as landed there, the others keep running', () => {
+  clock = 0;
+  const self = driverSelf();
+  const a = win({ x: 0, y: 0, width: 100, height: 100 });
+  const b = win({ x: 0, y: 0, width: 100, height: 100 });
+  b._ws = 'OTHER';
+  const landed = [];
+  self.transforms.run([state(a, [200, 0, 100, 100]), state(b, [200, 0, 100, 100])], s => landed.push(s.win));
+  const carry = self.transforms.takeOver('WS');
+  assert.deepEqual(landed, [a]);
+  assert.ok(carry.has(a));
+  assert.notEqual(a._actor.translation_x, 0, 'left drawn where it is');
+  assert.ok(self._transformStates.has(b));
+  self.transforms.takeOver('WS');
+  assert.deepEqual(landed, [a], 'once');
+});
+
+test('takeOver: a state already landed (held for its commit) is not landed again', () => {
+  clock = 0;
+  const self = driverSelf();
+  const a = win({ x: 0, y: 0, width: 100, height: 100 }, { lag: true });
+  let landed = 0;
+  self.transforms.run([state(a, [0, 0, 400, 100])], () => landed++);
+  clock = ms(400);
+  self.transforms.step();
+  assert.equal(landed, 1);
+  assert.ok(self._transformStates.has(a), 'held');
+  self.transforms.takeOver('WS');
+  assert.equal(landed, 1);
+});
