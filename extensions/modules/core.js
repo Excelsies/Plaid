@@ -267,6 +267,7 @@ export class PlaidCore {
         this._scratchpadWindows = new Map();
         this._scratchpadVisible = false;
         this._dropPreview = null;
+        this._dropPreviewTarget = null;
         this._dropOverlay = null;
         this._shuttingDown = false;
         this._animating = false;

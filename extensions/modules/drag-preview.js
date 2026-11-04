@@ -3,8 +3,13 @@
 //
 // Methods live on this subsystem class.
 
+import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+const PREVIEW_STYLE = 'background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4;';
+const DROP_PREVIEW_FADE_MS = 120;
+const DROP_PREVIEW_GLIDE_MS = 80;
 
 
 export class DragPreview {
@@ -196,30 +201,76 @@ export class DragPreview {
         return this.core.bsp.bspFindLeafAtPoint(tree, ax, ay, aw, ah, px, py, gap);
     }
 
-    showDropPreview(x, y, w, h) {
+    // glide: fade in on its first appearance, then glide between targets
+    // (Spiral's zones); otherwise it jumps.
+    showDropPreview(x, y, w, h, glide = false) {
         if (w <= 0 || h <= 0) {
             this.hideDropPreview();
             return;
         }
         if (!this.core._dropPreview) {
             this.core._dropPreview = new St.Widget({
-                style: 'background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4;',
+                style: PREVIEW_STYLE,
                 reactive: false,
-                visible: true,
+                visible: false,
             });
             this.core._dropOverlay.add_child(this.core._dropPreview);
         }
+        if (glide) {
+            this.glideDropPreview(x, y, w, h);
+            return;
+        }
+        const p = this.core._dropPreview;
+        // After a glide: no ease left running, no partial fade, and no
+        // remembered target (a later glide to it would be skipped).
+        if (this.core._dropPreviewTarget || p.opacity !== 255) {
+            p.remove_all_transitions();
+            p.opacity = 255;
+            this.core._dropPreviewTarget = null;
+        }
+        if (p.style !== PREVIEW_STYLE)
+            p.style = PREVIEW_STYLE;
         this.core._dropPreview.visible = true;
         this.core._dropPreview.set_position(x, y);
         this.core._dropPreview.set_size(w, h);
+    }
+
+    // The preview's target is remembered (_dropPreviewTarget) so the same
+    // one is not re-eased every tick.
+    glideDropPreview(x, y, w, h) {
+        const p = this.core._dropPreview;
+        const t = this.core._dropPreviewTarget;
+        if (p.visible && t && t.x === x && t.y === y && t.w === w && t.h === h)
+            return;
+        this.core._dropPreviewTarget = { x, y, w, h };
+        if (!p.visible) {
+            // Styled here so a border-radius change applies to the next drag.
+            const radius = Math.max(0, this.core._settings.get_int('border-radius'));
+            p.style = `${PREVIEW_STYLE} border-radius: ${radius}px;`;
+            p.remove_all_transitions();
+            p.set_position(x, y);
+            p.set_size(w, h);
+            p.opacity = 0;
+            p.visible = true;
+            p.ease({ opacity: 255, duration: DROP_PREVIEW_FADE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            return;
+        }
+        p.ease({
+            x, y, width: w, height: h, opacity: 255,
+            duration: DROP_PREVIEW_GLIDE_MS,
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+        });
     }
 
     hideDropPreview() {
         // Hide, don't destroy — the 16ms grab loop alternates between
         // target/no-target regions; recreating the widget each tick churns
         // allocations and re-layout under a live grab.
-        if (this.core._dropPreview)
+        if (this.core._dropPreview) {
+            this.core._dropPreview.remove_all_transitions();
             this.core._dropPreview.visible = false;
+        }
+        this.core._dropPreviewTarget = null;
     }
 
     destroyDropPreview() {

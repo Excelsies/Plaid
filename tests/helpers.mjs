@@ -217,6 +217,7 @@ function resetCoreState(core, settings) {
   core._scratchpadWindows = new Map();
   core._scratchpadVisible = false;
   core._dropPreview = null;
+  core._dropPreviewTarget = null;
   core._dropOverlay = null;
   core._shuttingDown = false;
   core._animating = false;

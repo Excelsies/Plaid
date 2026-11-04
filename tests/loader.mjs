@@ -9,7 +9,7 @@
 // Register it with: node --import ./tests/register.mjs --test tests/
 
 const GI_SOURCES = {
-  Clutter: 'export default { Orientation: { HORIZONTAL: 0, VERTICAL: 1 }, AnimationMode: { EASE_OUT_CUBIC: 0 }, get_default_backend: undefined, ' +
+  Clutter: 'export default { Orientation: { HORIZONTAL: 0, VERTICAL: 1 }, AnimationMode: { EASE_OUT_CUBIC: 0, EASE_OUT_QUAD: 1 }, get_default_backend: undefined, ' +
     'EVENT_PROPAGATE: false, EVENT_STOP: true, EventType: { BUTTON_RELEASE: 7, SCROLL: 8 }, ' +
     'ScrollDirection: { UP: 0, DOWN: 1, LEFT: 2, RIGHT: 3, SMOOTH: 4 }, ModifierType: { MOD4_MASK: 1 << 26 }, ' +
     'Grab: class Grab {}, Event: { add_filter: () => 1, remove_filter: () => {} }, ' +
