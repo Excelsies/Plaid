@@ -519,6 +519,7 @@ export class Windows extends PlaidSubsystem {
                 this.core.monitors.removeFromGroupTree(win, ws, conn);
             this.core.layouts.retileWorkspace(ws);
         }
+        this.core.actions.noteClosed(win);
     }
 
     connectWindowSignals(win) {
@@ -568,6 +569,7 @@ export class Windows extends PlaidSubsystem {
         sigIds.push({ emitter: win, id: this.connectObject(win, 'notify::window-type', () => {
             this.onWindowIdentityChanged(win);
         }) });
+        sigIds.push({ emitter: win, id: this.connectObject(win, 'unmanaging', () => this.core.actions.noteClosing(win)) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'unmanaged', () => this.removeWindow(win)) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'workspace-changed', () => {
             const oldWs = this.core._windowWorkspaces.get(win);

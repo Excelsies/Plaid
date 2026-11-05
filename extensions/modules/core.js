@@ -289,6 +289,7 @@ export class PlaidCore {
         this._animStartTime = 0;
         this._animTickId = 0;
         this._newWindowSet = new Set();
+        this._closeFocus = new Map();
         this._floatHooks = new Map();
 
         const ctx = global.backend.get_context();
@@ -639,6 +640,7 @@ export class PlaidCore {
         this._animWindows = null;
         this._floatHooks = null;
         this._newWindowSet = null;
+        this._closeFocus = null;
         this._queuedAnimWorkspaces = null;
         this._deferredReassertWins = null;
         this._animStartedAt = 0;

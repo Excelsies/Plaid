@@ -12,6 +12,9 @@ import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.j
 import { LAYOUT_NAMES, isBspLayout } from './helpers.js';
 import { PlaidSubsystem } from './subsystem.js';
 
+// Focus after a close: a record older than this (a retile held up) is dropped.
+const CLOSE_FOCUS_MS = 1000;
+
 
 export class Actions extends PlaidSubsystem {
     constructor(core) {
@@ -57,6 +60,85 @@ export class Actions extends PlaidSubsystem {
             this.core._keyboardFocusChange = false;
             return false;
         });
+    }
+
+    // Hyprland's focus_on_close=0, in steps. The focused tile of a Spiral
+    // group is closing (mutter has not moved focus yet): its slot's centre,
+    // one record per window.
+    noteClosing(win) {
+        const records = this.core._closeFocus;
+        if (!records || !this.core._settings || this.core._shuttingDown) return;
+        if (global.display.focus_window !== win) return;
+        // Slots are a Spiral group's tiles only: no float, no other layout.
+        const ws = this.core._windowWorkspaces.get(win);
+        if (!ws) return;
+        const s = this.core.bsp.spiralSlots(ws, this.core.monitors.windowMon(win)).get(win);
+        if (s) {
+            records.set(win, { win, ws, conn: this.core.monitors.windowConn(win), at: Date.now(),
+                x: s.x + s.w / 2, y: s.y + s.h / 2, closed: false, picked: undefined });
+        }
+    }
+
+    // Focus moved (notify::focus-window): the first move after a close is
+    // mutter's pick. The background app's and a new window's stay.
+    noteFocus(win) {
+        for (const c of this.core._closeFocus?.values() ?? []) {
+            if (c.picked === undefined) this.pick(c, win);
+        }
+    }
+
+    pick(c, win) {
+        if (win && (win === this.core._backgroundAppWin || this.core._newWindowSet?.has(win)))
+            this.core._closeFocus.delete(c.win);
+        else
+            c.picked = win;
+    }
+
+    // It left (removeWindow). An actor destroyed at once (no close effect)
+    // runs this before mutter picks a focus.
+    noteClosed(win) {
+        const c = this.core._closeFocus?.get(win);
+        if (c) c.closed = true;
+    }
+
+    // Its workspace was laid out without it (scheduleRetile): once the idles
+    // queued before this one ran (the background app's focus restore), the
+    // leaf nearest that centre in the same group, unless focus moved since
+    // mutter's pick. The cursor follows with follow-focus, also when mutter
+    // picked that leaf itself.
+    focusAfterClose(ws) {
+        const records = this.core._closeFocus;
+        for (const c of [...records?.values() ?? []]) {
+            if (c.ws !== ws || !c.closed) continue;
+            records.delete(c.win);
+            if (c.picked === undefined) {
+                // No focus move seen: mutter's pick is the focus now.
+                const now = global.display.focus_window;
+                if (now === c.win) continue;
+                this.pick(c, now);
+                if (c.picked === undefined) continue;
+            }
+            this.core.signals.addIdle(() => this.focusLeafAfterClose(c));
+        }
+    }
+
+    focusLeafAfterClose(c) {
+        if (!this.core._settings || this.core._shuttingDown || this.core._grabOp ||
+            !this.core._settings.get_boolean('enabled') || Main.overview.visible || Main.modalCount > 0) return false;
+        if (Date.now() - c.at > CLOSE_FOCUS_MS) return false;
+        if (global.display.focus_window !== c.picked || c.ws !== global.workspace_manager.get_active_workspace()) return false;
+        // A window still opening is no candidate, as it is none for mutter's pick.
+        const slots = [...this.core.bsp.spiralSlots(c.ws, this.core.monitors.connMon(c.conn))]
+            .filter(([w]) => !this.core._newWindowSet?.has(w));
+        const next = this.core.geometry.nearestTo(slots, c.x, c.y);
+        if (!next) return false;
+        if (next !== c.picked) {
+            this.core.debugLog(`spiral: focus after close -> ${next.get_wm_class_instance() || '?'} id=${next.get_id()}`);
+            next.activate(this.core.currentTime());
+        }
+        if (this.core._settings.get_boolean('follow-focus'))
+            this.core.windows.cursorWarpDeferred(next);
+        return false;
     }
 
     swapWindow(direction) {

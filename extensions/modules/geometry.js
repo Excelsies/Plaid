@@ -87,12 +87,18 @@ export class Geometry {
         const pt = this.dropPoint(workArea, px, py, mon);
         if (!pt) return null;
         [px, py] = pt;
+        return this.nearestTo(rects, px, py);
+    }
+
+    // The key whose rect ([key, {x, y, w, h}] pairs) is closest to (px, py),
+    // the first on a tie; null when there is none.
+    nearestTo(rects, px, py) {
         let best = null;
         let bestD = Infinity;
-        for (const [win, r] of rects) {
+        for (const [key, r] of rects) {
             const d = this.pointRectDistSq(r.x, r.y, r.w, r.h, px, py);
             if (d < bestD) {
-                best = win;
+                best = key;
                 bestD = d;
             }
         }

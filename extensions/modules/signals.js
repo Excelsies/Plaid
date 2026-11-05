@@ -62,6 +62,7 @@ export class Signals extends PlaidSubsystem {
         this.connectObject(global.display, 'notify::focus-window', () => {
             this.core.borders.updateBorders();
             const win = global.display.focus_window;
+            this.core.actions.noteFocus(win);
             if (win) {
                 if (win !== this.core._backgroundAppWin) {
                     const ws = win.get_workspace();
@@ -566,6 +567,7 @@ export class Signals extends PlaidSubsystem {
             this.core._pendingRetileIds.delete(workspace);
             if (!this.core._settings || this.core._shuttingDown) return false;
             this.core.layouts.doRetileWorkspace(workspace);
+            this.core.actions.focusAfterClose(workspace);
             return false;
         });
         this.core._pendingRetileIds.set(workspace, id);

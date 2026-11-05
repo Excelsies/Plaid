@@ -42,7 +42,8 @@ const RESOURCE_SOURCES = [
   // Mutable stand-ins: tests set wm/overview fields and read the popped grabs.
   [/\/ui\/main\.js$/, 'export const wm = {};\nexport const overview = { visible: false };\n' +
     'export const sessionMode = { currentMode: \'user\', isLocked: false, connectObject() {}, disconnectObject() {} };\n' +
-    'export const popped = [];\nexport function popModal(grab) { popped.push(grab); }\n'],
+    'export const popped = [];\nexport function popModal(grab) { popped.push(grab); }\n' +
+    'export let modalCount = 0;\nexport function setModalCount(n) { modalCount = n; }\n'],
   [/\/workspaceSwitcherPopup\.js$/, 'export class WorkspaceSwitcherPopup {}\nexport class MonitorWorkspaceSwitcherPopup {}'],
   [/\/workspacesView\.js$/, 'export class WorkspacesView {}'],
   [/\/workspaceThumbnail\.js$/, 'export class ThumbnailsBox {}'],

@@ -237,6 +237,7 @@ function resetCoreState(core, settings) {
   core._animStartTime = 0;
   core._animTickId = 0;
   core._newWindowSet = new Set();
+  core._closeFocus = new Map();
   core._floatHooks = new Map();
   core._mutterSettings = null;
   core._signals = [];
