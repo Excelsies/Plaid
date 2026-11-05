@@ -264,14 +264,14 @@ export class Keybindings extends PlaidSubsystem {
                 const base = c.path.replace(/\/+$/, '').split('/').pop();
                 if (base) this.core._keybindConflictByName.set(base, entry);
             }
-            let id = Meta.prefs_get_keybinding_action(c.keyName);
-            // Fallback for mutter's built-in actions: their schema names map
-            // directly onto the KeyBindingAction enum (maximize → MAXIMIZE,
-            // toggle-tiled-left → TOGGLE_TILED_LEFT, …).
-            if (!id) {
-                const enumName = String(c.keyName || '').replace(/-/g, '_').toUpperCase();
-                id = Meta.KeyBindingAction[enumName] || 0;
-            }
+            // Only mutter's built-in actions are asked for their id: their schema
+            // names map onto the KeyBindingAction enum (maximize → MAXIMIZE,
+            // toggle-tiled-left → TOGGLE_TILED_LEFT, …). Any other action's id
+            // (the shell's switch-input-source-backward) is outside the enum,
+            // and the call throws on it; those are matched by name.
+            const enumName = String(c.keyName || '').replace(/-/g, '_').toUpperCase();
+            const known = Meta.KeyBindingAction[enumName] !== undefined;
+            const id = known ? Meta.prefs_get_keybinding_action(c.keyName) || Meta.KeyBindingAction[enumName] : 0;
             if (id) this.core._keybindConflictById.set(id, entry);
         }
         this.core.debugLog(`keybind feedback: ${this.core._keybindConflictById.size} by action, ` +
