@@ -142,8 +142,8 @@ test('orientation gate: one decision point for a group\'s own tree', () => {
   const src = f => readFileSync(new URL(`../../extensions/modules/${f}`, import.meta.url), 'utf8').replace(/\/\/.*$/gm, '');
   const count = (s, re) => (s.match(re) || []).length;
   const bsp = src('bsp.js'), layouts = src('layouts.js'), spiral = src('spiral.js');
-  // orientTree: its recursion, orientSpiral and orientLive.
-  assert.equal(count(bsp, /this\.orientTree\(/g), 4);
+  // orientTree: its recursion, orientSpiral, orientLive and orientChildren.
+  assert.equal(count(bsp, /this\.orientTree\(/g), 6);
   assert.equal(count(layouts + spiral, /orientTree\(/g), 0);
   // orientLive: the retile and the new window's tag; nothing else lays a live tree out oriented.
   assert.equal(count(layouts, /bsp\.orientLive\(/g), 1);

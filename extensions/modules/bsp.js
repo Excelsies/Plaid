@@ -155,8 +155,15 @@ export class Bsp {
             delete tree._orientSig;
             return;
         }
-        const shape = n => (n.type === 'split' ? `(${shape(n.first)},${shape(n.second)})` : n.type[0]);
-        const sig = `${area.x},${area.y},${area.w},${area.h}|${shape(tree)}|${this.windowIds(tree)}`;
+        // Which windows share each split, in any child order: a swap split
+        // re-orients its own children (orientChildren) and is no structural
+        // change for the rest; a window moved into another split is one.
+        const shape = n => {
+            if (n.type !== 'split') return n.window ? String(n.window.get_id()) : n.type[0];
+            const [x, y] = [shape(n.first), shape(n.second)];
+            return x < y ? `(${x},${y})` : `(${y},${x})`;
+        };
+        const sig = `${area.x},${area.y},${area.w},${area.h}|${shape(tree)}`;
         if (tree._orientSig === sig) return;
         const clear = n => {
             if (n.type !== 'split') return;
@@ -168,6 +175,15 @@ export class Bsp {
         clear(tree);
         tree._orientSig = sig;
         this.orientTree(tree, area, gap);
+    }
+
+    // A split edited in place (toggle or swap split) gives its children new
+    // boxes: they are oriented there; the split keeps what the edit made.
+    orientChildren(split, box, gap, ws, mon) {
+        if (!this.orientsSplits(ws, mon)) return;
+        const [a, b] = this.splitBoxes(split, box, gap);
+        this.orientTree(split.first, a, gap);
+        this.orientTree(split.second, b, gap);
     }
 
     // An edit of the live tree the signature cannot see (a restored shape's

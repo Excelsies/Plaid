@@ -314,6 +314,19 @@
       <description>Number of pixels to resize per keypress</description>
     </key>
 
+    <!-- Keybindings: Spiral splits -->
+    <key name="toggle-split" type="as">
+      <default><![CDATA[['<Super>g']]]></default>
+      <summary>Toggle split direction</summary>
+      <description>Spiral: the focused window's parent split turns side by side or stacked, and keeps that direction</description>
+    </key>
+
+    <key name="swap-split" type="as">
+      <default><![CDATA[['<Super><Shift>g']]]></default>
+      <summary>Swap split</summary>
+      <description>Spiral: the two sides of the focused window's parent split trade places</description>
+    </key>
+
     <!-- Keybindings: Window Resizing -->
     <key name="resize-shrink-width" type="as">
       <default><![CDATA[['<Super><Shift>h']]]></default>

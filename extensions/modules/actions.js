@@ -109,6 +109,56 @@ export class Actions extends PlaidSubsystem {
         });
     }
 
+    // Hyprland's togglesplit: the focused Spiral tile's parent split turns
+    // side by side <-> stacked, pinned against the box rule so the
+    // orientation pass keeps it; back on the rule's direction it is free.
+    toggleSplit() {
+        this.editParentSplit('toggle', (s, box) => {
+            s.direction = s.direction === 'h' ? 'v' : 'h';
+            if (s.direction === this.core.bsp.boxDirection(box)) delete s.pinned;
+            else s.pinned = true;
+        });
+    }
+
+    // Hyprland's swapsplit: the parent's two children trade places; the
+    // ratio stays with the first slot.
+    swapSplit() {
+        this.editParentSplit('swap', s => {
+            [s.first, s.second] = [s.second, s.first];
+        });
+    }
+
+    editParentSplit(what, edit) {
+        const focused = this.getActiveWindow();
+        if (!focused || this.core._grabOp || this.core.windows.isFloating(focused) || focused.is_fullscreen()) return;
+        const ws = focused.get_workspace();
+        if (!ws) return;
+        const monitors = this.core.monitors;
+        const mon = monitors.windowMon(focused);
+        if (mon < 0 || !monitors.groupPlaces(ws, mon) || !this.core.bsp.isSpiral(ws, mon)) return;
+        // A lone tile's tree is not synced: no parent of it is live.
+        if (monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w)).length < 2) return;
+        const tree = this.core.bsp.bspGetTree(ws, mon);
+        const path = [];
+        if (!tree || !this.core.bsp.bspFindPath(tree, focused, path) || path.length === 0) return;
+        const area = this.core.geometry.outsideArea(monitors.monitorWorkArea(ws, mon));
+        if (!area) return;
+        const parent = path[path.length - 1];
+        const gap = this.core._settings.get_int('inside-gap');
+        this.core.bsp.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
+        const box = { x: parent._x, y: parent._y, w: parent._w, h: parent._h };
+        edit(parent, box);
+        // Its children have new boxes (a turned split, a moved ratio): the
+        // rule orients them there. The gate (bsp.orientLive) sees no change.
+        this.core.bsp.orientChildren(parent, box, gap, ws, mon);
+        this.core.debugLog(`spiral: ${what} split of ${focused.get_wm_class_instance() || '?'} id=${focused.get_id()} ` +
+            `-> ${this.core.bsp.dwindleShapeToString(parent)}`);
+        this.core.layouts.refreshSavedShape(ws, tree, mon);
+        this.core.layouts.retileWorkspace(ws);
+        if (this.core._settings.get_boolean('follow-focus'))
+            this.core.windows.cursorWarpDeferred(focused);
+    }
+
     resizeWindow(action, axis) {
         const focused = this.getActiveWindow();
         if (!focused) return;

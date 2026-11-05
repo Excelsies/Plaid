@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
 
 // Spiral's Hyprland operations: directional focus and swap on slots.
@@ -356,3 +357,132 @@ test('retileDwindle: Spiral restores saved ratios past a direction mismatch; dwi
   }
 });
 
+// toggle-split / swap-split (Hyprland togglesplit / swapsplit), Spiral only.
+
+function splitSelf(layout = 'spiral', opts = {}) {
+  const a = win('a', null), b = win('b', null), c = win('c', null);
+  const ctx = groupSelf(layout, [a, b, c]);
+  const tree = split('h', 0.6, leaf(a), split('v', 0.3, leaf(b), leaf(c)));
+  ctx.self.bsp.bspSetTree(WS, 0, tree);
+  const refreshed = [];
+  ctx.self.layouts.refreshSavedShape = (ws, t, mon) => refreshed.push([ws, t, mon]);
+  global.display.focus_window = opts.focus === undefined ? b : opts.focus;
+  return { ...ctx, a, b, c, tree, refreshed };
+}
+
+test('toggleSplit: the focused tile\'s parent split flips and is pinned; the saved shape and the layout follow', () => {
+  const { self, b, tree, retiles, refreshed } = splitSelf();
+  self.actions.toggleSplit();
+  assert.deepEqual([tree.second.direction, tree.second.pinned, tree.direction, tree.pinned], ['h', true, 'h', undefined]);
+  assert.deepEqual(retiles, [WS]);
+  assert.deepEqual(refreshed, [[WS, tree, 0]]);
+  // It sticks: the next layout does not re-orient it (its box is 400x500).
+  self._bspLaidOutAs.set(self.monitors.groupObj(WS, 0), 'spiral');
+  self.layouts.retileDwindle(WS, self.monitors.getWindowsForGroup(WS, 0), 0);
+  assert.equal(self.bsp.bspGetTree(WS, 0).second.direction, 'h');
+  // Back on the box rule's direction (its box is 400x500): free again.
+  self.actions.toggleSplit();
+  assert.deepEqual([tree.second.direction, tree.second.pinned], ['v', undefined], 'toggled back, unpinned');
+  void b;
+});
+
+test('swapSplit: the parent\'s two children trade places, the ratio stays', () => {
+  const { self, a, b, c, tree, retiles, refreshed } = splitSelf('spiral', { focus: null });
+  global.display.focus_window = a;
+  self.actions.swapSplit();
+  assert.deepEqual([tree.first.type, tree.second.window, tree.ratio], ['split', a, 0.6]);
+  assert.deepEqual([tree.first.first.window, tree.first.second.window], [b, c]);
+  assert.deepEqual(retiles, [WS]);
+  assert.equal(refreshed.length, 1);
+});
+
+test('toggleSplit / swapSplit: nothing outside a Spiral tile with a parent', () => {
+  const cases = {
+    dwindle: () => splitSelf('dwindle'),
+    float: () => { const r = splitSelf(); r.floats.add(r.b); return r; },
+    fullscreen: () => { const r = splitSelf(); r.b.is_fullscreen = () => true; return r; },
+    grab: () => { const r = splitSelf(); r.self._grabOp = 1; return r; },
+    'no focus': () => splitSelf('spiral', { focus: null }),
+    'lone tile': () => { const r = splitSelf(); r.self.monitors.getWindowsForGroup = () => [r.b]; return r; },
+    'not in the tree': () => { const r = splitSelf(); global.display.focus_window = win('x', null); return r; },
+    'not placing': () => { const r = splitSelf(); r.self.monitors.groupPlaces = () => false; return r; },
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    for (const op of ['toggleSplit', 'swapSplit']) {
+      const { self, tree, retiles, refreshed } = make();
+      const before = self.bsp.dwindleShapeToString(tree) + tree.second.first.window?._testId;
+      self.actions[op]();
+      assert.equal(self.bsp.dwindleShapeToString(tree) + tree.second.first.window?._testId, before, `${name} ${op}`);
+      assert.deepEqual([retiles.length, refreshed.length], [0, 0], `${name} ${op}`);
+    }
+  }
+});
+
+test('keybindings: toggle-split and swap-split are registered to their actions', () => {
+  const self = makeSelf();
+  const keys = new Map();
+  const prev = Main.wm.addKeybinding;
+  Main.wm.addKeybinding = (key, _s, _f, _m, fn) => { keys.set(key, fn); return true; };
+  self.keybindings.checkKeybindingConflicts = () => {};
+  self.keybindings.connectObject = () => 0;
+  const called = [];
+  self.actions.toggleSplit = () => called.push('toggle');
+  self.actions.swapSplit = () => called.push('swap');
+  self.keybindings.registerKeybindings();
+  Main.wm.addKeybinding = prev;
+  keys.get('toggle-split')();
+  keys.get('swap-split')();
+  assert.deepEqual(called, ['toggle', 'swap']);
+});
+
+// The edited split's children are laid out in new boxes and the rule orients
+// them there (the gate sees no structural change). Toggle: 1000x1000
+// A|(B/C), A focused: the root stacks and B/C's 1000x500 box is side by side.
+// Swap: h0.3(A, B|C) on 1000x500: B|C moves into the 300x500 slot and stacks.
+test('toggleSplit / swapSplit: the edited split\'s children are oriented in their new boxes', () => {
+  {
+    const { self, a } = splitSelf();
+    self.monitors.monitorWorkArea = () => ({ x: 0, y: 0, width: 1000, height: 1000 });
+    const t = split('h', 0.5, leaf(a), split('v', 0.5, leaf(win('b2', null)), leaf(win('c2', null))));
+    self.bsp.bspSetTree(WS, 0, t);
+    global.display.focus_window = a;
+    self.actions.toggleSplit();
+    assert.deepEqual([t.direction, t.pinned, t.second.direction, t.second.pinned], ['v', true, 'h', undefined]);
+  }
+  {
+    const { self, a } = splitSelf();
+    const t = split('h', 0.3, leaf(a), split('h', 0.5, leaf(win('b3', null)), leaf(win('c3', null))));
+    self.bsp.bspSetTree(WS, 0, t);
+    global.display.focus_window = a;
+    self.actions.swapSplit();
+    assert.deepEqual([t.first.type, t.first.direction, t.ratio], ['split', 'v', 0.3]);
+  }
+  // Preserve Split Direction: nothing re-oriented.
+  {
+    const { self, a } = splitSelf();
+    self._settings.get_boolean = k => k === 'spiral-preserve-split';
+    const t = split('h', 0.3, leaf(a), split('h', 0.5, leaf(win('b4', null)), leaf(win('c4', null))));
+    self.bsp.bspSetTree(WS, 0, t);
+    global.display.focus_window = a;
+    self.actions.swapSplit();
+    assert.equal(t.first.direction, 'h');
+  }
+});
+
+// A swap split reorders a split's children; the gate must not take that for a
+// structural change and re-orient splits a resize left alone elsewhere.
+test('orientLive: a child-order swap is no structural change; a resized split elsewhere keeps its direction', () => {
+  const { self } = splitSelf();
+  const area = { x: 0, y: 0, w: 2000, h: 1000 };
+  const [A, B, C, D, E] = ['A', 'B', 'C', 'D', 'E'].map(n => win(n, null));
+  const t = split('h', 0.5, split('h', 0.5, leaf(A), leaf(B)), split('h', 0.5, leaf(C), split('v', 0.5, leaf(D), leaf(E))));
+  self.bsp.orientLive(t, area, 0, WS, 0);
+  t.ratio = 0.3;
+  t.first.direction = 'h';
+  self.bsp.orientLive(t, area, 0, WS, 0);
+  assert.equal(t.first.direction, 'h', 'a resize does not re-orient');
+  const s = t.second;
+  [s.first, s.second] = [s.second, s.first];
+  self.bsp.orientLive(t, area, 0, WS, 0);
+  assert.equal(t.first.direction, 'h', 'a swap does not re-orient the rest of the group');
+});

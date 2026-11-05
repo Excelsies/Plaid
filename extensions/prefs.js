@@ -656,6 +656,15 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         this._addShortcutRow(swapGroup, settings, 'swap-up', _('Swap Up'));
         this._addShortcutRow(swapGroup, settings, 'swap-down', _('Swap Down'));
 
+        const splitGroup = new Adw.PreferencesGroup({
+            title: _('Spiral Splits'),
+            description: _('The focused window\'s parent split, in Spiral'),
+        });
+        page.add(splitGroup);
+
+        this._addShortcutRow(splitGroup, settings, 'toggle-split', _('Toggle Split Direction'));
+        this._addShortcutRow(splitGroup, settings, 'swap-split', _('Swap Split'));
+
         const resizeGroup = new Adw.PreferencesGroup({
             title: _('Window Resizing'),
             description: _('Resize the focused window'),

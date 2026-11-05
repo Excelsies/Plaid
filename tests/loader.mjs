@@ -27,8 +27,8 @@ const GI_SOURCES = {
   Gio: 'export default {};',
   GLib: 'export default { PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true, idle_add: () => 1, timeout_add: () => 1, source_remove: (id) => { if (typeof id !== "number") throw new TypeError("GLib.source_remove: expected a source id, got " + typeof id); return true; }, get_monotonic_time: () => 0, MainContext: { default: () => ({ find_source_by_id: () => true }) } };',
   Graphene: 'export default {};',
-  Meta: 'export default { WindowType: { NORMAL: 0 }, WindowClientType: { WAYLAND: 0, X11: 1 }, GrabOp: { NONE: 0, KEYBOARD_RESIZING_UNKNOWN: 769 }, KeyBindingAction: {}, prefs_get_keybinding_action: () => 0, external_binding_name_for_action: () => null };',
-  Shell: 'export default {};',
+  Meta: 'export default { WindowType: { NORMAL: 0 }, WindowClientType: { WAYLAND: 0, X11: 1 }, GrabOp: { NONE: 0, KEYBOARD_RESIZING_UNKNOWN: 769 }, KeyBindingAction: {}, KeyBindingFlags: { NONE: 0 }, prefs_get_keybinding_action: () => 0, external_binding_name_for_action: () => null };',
+  Shell: 'export default { ActionMode: { NORMAL: 1 } };',
   St: 'export default {};',
   cairo: 'export default {};',
 };
