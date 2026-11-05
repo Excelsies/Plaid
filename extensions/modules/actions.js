@@ -22,6 +22,20 @@ export class Actions extends PlaidSubsystem {
         return global.display.focus_window;
     }
 
+    // A tiled Spiral window is compared by its slot (an oversized tile's
+    // frame covers its neighbours' edges), anything else by its frame.
+    directionalTarget(focused, direction, windows, ws) {
+        const slots = new Map();
+        for (const mon of new Set([focused, ...windows].map(w => this.core.monitors.windowMon(w)))) {
+            for (const [w, r] of this.core.bsp.spiralSlots(ws, mon)) slots.set(w, r);
+        }
+        const rectOf = w => {
+            const s = slots.get(w);
+            return s ? { x: s.x, y: s.y, width: s.w, height: s.h } : w.get_frame_rect();
+        };
+        return this.core.bsp.findDirectionalTarget(focused, direction, windows, rectOf);
+    }
+
     moveFocus(direction) {
         const focused = this.getActiveWindow();
         if (!focused) return;
@@ -33,7 +47,7 @@ export class Actions extends PlaidSubsystem {
             .filter(w => !this.core.windows.isFloating(w));
         if (windows.length <= 1) return;
 
-        const bestWindow = this.core.bsp.findDirectionalTarget(focused, direction, windows);
+        const bestWindow = this.directionalTarget(focused, direction, windows, ws);
         if (!bestWindow) return;
 
         this.core._keyboardFocusChange = true;
@@ -70,7 +84,7 @@ export class Actions extends PlaidSubsystem {
             !this.core.windows.isFloating(w) && monitors.groupPlaces(ws, monitors.windowMon(w)));
         if (windows.length <= 1) return;
 
-        const bestWindow = this.core.bsp.findDirectionalTarget(focused, direction, windows);
+        const bestWindow = this.directionalTarget(focused, direction, windows, ws);
         if (!bestWindow) return;
 
         const layout = this.core.windows.getWorkspaceLayout(ws, mon);

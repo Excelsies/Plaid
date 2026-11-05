@@ -818,8 +818,30 @@ export class Bsp {
         return changed;
     }
 
-    findDirectionalTarget(win, direction, windows) {
-        const f = win.get_frame_rect();
+    // The slots of Spiral group (ws, mon): each tiled window's leaf as the
+    // layout tags it (an oversized tile is drawn larger), a lone tile the
+    // tiling area. Empty for any other layout.
+    spiralSlots(ws, mon) {
+        const slots = new Map();
+        if (!this.isSpiral(ws, mon) || !this.core.monitors.groupPlaces(ws, mon)) return slots;
+        const area = this.core.geometry.outsideArea(this.core.monitors.monitorWorkArea(ws, mon));
+        const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
+        if (!area || tiled.length === 0) return slots;
+        if (tiled.length === 1) {
+            slots.set(tiled[0], { ...area });
+            return slots;
+        }
+        const tree = this.bspClone(this.bspGetTree(ws, mon));
+        this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, this.core._settings.get_int('inside-gap'));
+        for (const l of this.bspLeaves(tree)) {
+            if (tiled.includes(l.window)) slots.set(l.window, { x: l._x, y: l._y, w: l._w, h: l._h });
+        }
+        return slots;
+    }
+
+    // rectOf: the rect compared for each window (default its frame).
+    findDirectionalTarget(win, direction, windows, rectOf = w => w.get_frame_rect()) {
+        const f = rectOf(win);
         let best = null;
         // bestOverlap starts at 0 (not -1): the acceptance test requires
         // overlap > bestOverlap + 5, so the OLD -1 made the first candidate
@@ -833,7 +855,7 @@ export class Bsp {
 
         for (const w of windows) {
             if (w === win) continue;
-            const r = w.get_frame_rect();
+            const r = rectOf(w);
             if (r.width === 0 || r.height === 0) continue;
 
             let overlap, dist, perp;
