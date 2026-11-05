@@ -846,10 +846,11 @@ export class Windows extends PlaidSubsystem {
         this.moveWindow(win, rect.x, rect.y, rect.w, rect.h);
     }
 
-    // A tiled Spiral window that mutter tiled to a screen half (maximized on
-    // one axis: an edge drop, Super+Left/Right) goes back to its slot, as a
-    // Hyprland tile never leaves its layout. Not during a grab: the
-    // size-changed of a tile made at the release comes after it.
+    // A tiled window that mutter tiled to a screen half (maximized on one
+    // axis: an edge drop, Super+Left/Right) goes back to its slot, in every
+    // tiling layout, as a Hyprland tile never leaves its layout. GNOME's own
+    // edge-tiling setting is left alone. Not during a grab: the size-changed
+    // of a tile made at the release comes after it.
     releaseSideTile(win) {
         if (!this.core._settings || this.core._shuttingDown || !win) return false;
         if (!this.core._settings.get_boolean('enabled') || this.core._grabOp) return false;
@@ -857,7 +858,7 @@ export class Windows extends PlaidSubsystem {
         if (win.is_fullscreen() || this.isFloating(win) || !this.core._windowWorkspaces.has(win)) return false;
         const ws = win.get_workspace();
         const mon = this.core.monitors.windowMon(win);
-        if (!ws || mon < 0 || !this.core.monitors.groupPlaces(ws, mon) || this.getWorkspaceLayout(ws, mon) !== 'spiral')
+        if (!ws || mon < 0 || !this.core.monitors.groupPlaces(ws, mon))
             return false;
         this.core.debugLog(`side tile: released ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
             `ws=${this.core.geometry.wsIndex(ws)} flags=${win.get_maximize_flags()}`);

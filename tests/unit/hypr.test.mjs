@@ -461,7 +461,8 @@ test('removeWindow drops the open box', () => {
   assert.equal(w._plaidOpenBox, null);
 });
 
-// Y4: a mutter half tile on a Spiral tile is released to its slot.
+// Y4 (and D6 for dwindle and master-stack): a mutter half tile on a tile is
+// released to its slot.
 
 function sideSelf(layout, { flags = 2, maximized = false } = {}) {
   const self = groupSelf(layout);
@@ -474,11 +475,15 @@ function sideSelf(layout, { flags = 2, maximized = false } = {}) {
   return { self, w, calls };
 }
 
-test('releaseSideTile: a side-tiled Spiral tile is unmaximized and retiled; dwindle and master-stack keep it', () => {
+test('releaseSideTile: a side tile is unmaximized and retiled in every tiling layout; a floating group keeps it', () => {
   for (const [layout, flags, want] of [
     ['spiral', 2, ['unmaximize', 'retile']], ['spiral', 1, ['unmaximize', 'retile']],
-    ['dwindle', 2, []], ['master-stack', 2, []], ['centered-master-stack', 2, []]]) {
+    ['dwindle', 2, ['unmaximize', 'retile']], ['dwindle', 1, ['unmaximize', 'retile']],
+    ['master-stack', 2, ['unmaximize', 'retile']], ['centered-master-stack', 2, ['unmaximize', 'retile']],
+    ['floating', 2, []]]) {
     const { self, w, calls } = sideSelf(layout, { flags });
+    // As monitors.groupPlaces: a floating group places nothing.
+    self.monitors.groupPlaces = () => layout !== 'floating';
     assert.equal(self.windows.releaseSideTile(w), want.length > 0, `${layout} flags ${flags}`);
     assert.deepEqual(calls, want, `${layout} flags ${flags}`);
   }
