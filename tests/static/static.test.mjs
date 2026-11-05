@@ -345,6 +345,25 @@ function callSites(name) {
   return sites;
 }
 
+// Lines matching `re` in module code, counted per `file:enclosing method`.
+function callSitesOf(re) {
+  const sites = {};
+  for (const file of moduleFiles) {
+    const lines = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n');
+    let method = '?';
+    for (const raw of lines) {
+      const line = raw.replace(/\/\/.*$/, '');
+      const head = /^ {4}(\w+)\s*\([^)]*\)\s*\{\s*$/.exec(line);
+      if (head) method = head[1];
+      if (re.test(line)) {
+        const key = `${file.split('/').pop()}:${method}`;
+        sites[key] = (sites[key] ?? 0) + 1;
+      }
+    }
+  }
+  return sites;
+}
+
 // Spiral ignores minimums (bsp.minimumsIgnored): a BSP partition reads one
 // only through bsp.layoutMinSize, and every tree or slot clamp names its
 // group. A new getWindowMinSize call is refused until it is placed here.
@@ -410,6 +429,16 @@ test('Spiral is decided by the layout traits only', () => {
   assert.deepEqual(bad, []);
   // Names, captions, the traits table and the cycle order.
   assert.deepEqual(sites, { 'actions.js': 1, 'helpers.js': 2, 'prefs.js': 2 });
+});
+
+// A BSP split's child boxes are computed in one place (bsp.splitBoxes).
+test('BSP split geometry is computed by bsp.splitBoxes only', () => {
+  const geo = /\*\s*[\w.]*\bratio\)/;
+  for (const line of ['        const split = Math.floor((axisSize - gap) * node.ratio);',
+    '        const split = Math.floor((axis - gap) * node.ratio);'])
+    assert.ok(geo.test(line), `calibration: ${line.trim()}`);
+  const sites = Object.entries(callSitesOf(geo)).map(([k, v]) => `${k} ${v}`);
+  assert.deepEqual(sites, ['bsp.js:splitBoxes 1']);
 });
 
 // Shutdown removes the sourceFields with GLib.source_remove, which throws on

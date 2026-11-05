@@ -98,6 +98,19 @@ export class Bsp {
         return { type: 'split', direction: dir, ratio, first, second };
     }
 
+    // The boxes of a split's two children within its box: the first takes
+    // `ratio` of the span less one gap, the second the rest.
+    splitBoxes(node, box, gap) {
+        const isH = node.direction === 'h';
+        const split = Math.floor(((isH ? box.w : box.h) - gap) * node.ratio);
+        if (isH) {
+            return [{ x: box.x, y: box.y, w: split, h: box.h },
+                { x: box.x + split + gap, y: box.y, w: box.w - split - gap, h: box.h }];
+        }
+        return [{ x: box.x, y: box.y, w: box.w, h: split },
+            { x: box.x, y: box.y + split + gap, w: box.w, h: box.h - split - gap }];
+    }
+
     // Split ratio for new windows: Spiral halves the target (as Hyprland),
     // dwindle keeps dwindle-ratio.
     bspSplitRatio(ws, mon) {
@@ -114,14 +127,8 @@ export class Bsp {
             if (ratio === null) ratio = this.core._settings.get_double('dwindle-ratio');
             return this.bspMakeSplit(dir, ratio, node, this.bspMakeLeaf(win));
         }
-        const isH = node.direction === 'h';
-        const axisSize = isH ? w : h;
-        const split = Math.floor((axisSize - gap) * node.ratio);
-        const secondSize = axisSize - split - gap;
-        if (isH)
-            node.second = this.bspInsert(node.second, win, x + split + gap, y, secondSize, h, gap, ratio);
-        else
-            node.second = this.bspInsert(node.second, win, x, y + split + gap, w, secondSize, gap, ratio);
+        const [, b] = this.splitBoxes(node, { x, y, w, h }, gap);
+        node.second = this.bspInsert(node.second, win, b.x, b.y, b.w, b.h, gap, ratio);
         return node;
     }
 
@@ -204,7 +211,6 @@ export class Bsp {
             }
             return;
         }
-        const isH = node.direction === 'h';
         const firstEmpty = !node.first || node.first.type === 'empty';
         const secondEmpty = !node.second || node.second.type === 'empty';
         if (firstEmpty && secondEmpty) return;
@@ -216,17 +222,10 @@ export class Bsp {
             this.bspLayout(node.first, x, y, w, h, gap, skipWindow);
             return;
         }
-        const axisSize = isH ? w : h;
-        const split = Math.floor((axisSize - gap) * node.ratio);
-        const secondSize = axisSize - split - gap;
-        if (split < 0 || secondSize < 0) return;
-        if (isH) {
-            this.bspLayout(node.first, x, y, split, h, gap, skipWindow);
-            this.bspLayout(node.second, x + split + gap, y, secondSize, h, gap, skipWindow);
-        } else {
-            this.bspLayout(node.first, x, y, w, split, gap, skipWindow);
-            this.bspLayout(node.second, x, y + split + gap, w, secondSize, gap, skipWindow);
-        }
+        const [a, b] = this.splitBoxes(node, { x, y, w, h }, gap);
+        if ((node.direction === 'h' ? Math.min(a.w, b.w) : Math.min(a.h, b.h)) < 0) return;
+        this.bspLayout(node.first, a.x, a.y, a.w, a.h, gap, skipWindow);
+        this.bspLayout(node.second, b.x, b.y, b.w, b.h, gap, skipWindow);
     }
 
     bspFindPath(node, win, path) {
@@ -260,21 +259,9 @@ export class Bsp {
         if (!node) return null;
         if (node.type === 'empty') return node;
         if (node.type === 'leaf') return node;
-        const isH = node.direction === 'h';
-        const axisSize = isH ? w : h;
-        const split = Math.floor((axisSize - gap) * node.ratio);
-        const secondSize = axisSize - split - gap;
-        if (isH) {
-            if (px < x + split + gap)
-                return this.bspFindLeafAtPoint(node.first, x, y, split, h, px, py, gap);
-            else
-                return this.bspFindLeafAtPoint(node.second, x + split + gap, y, secondSize, h, px, py, gap);
-        } else {
-            if (py < y + split + gap)
-                return this.bspFindLeafAtPoint(node.first, x, y, w, split, px, py, gap);
-            else
-                return this.bspFindLeafAtPoint(node.second, x, y + split + gap, w, secondSize, px, py, gap);
-        }
+        const [a, b] = this.splitBoxes(node, { x, y, w, h }, gap);
+        const c = (node.direction === 'h' ? px < b.x : py < b.y) ? a : b;
+        return this.bspFindLeafAtPoint(c === a ? node.first : node.second, c.x, c.y, c.w, c.h, px, py, gap);
     }
 
     bspReplaceLeaf(node, targetLeaf, newWin, preferredRatio = null) {
@@ -399,17 +386,9 @@ export class Bsp {
         node._w = w;
         node._h = h;
         if (node.type === 'empty' || node.type === 'leaf') return;
-        const isH = node.direction === 'h';
-        const axisSize = isH ? w : h;
-        const split = Math.floor((axisSize - gap) * node.ratio);
-        const secondSize = axisSize - split - gap;
-        if (isH) {
-            this.bspTagGeometry(node.first, x, y, split, h, gap);
-            this.bspTagGeometry(node.second, x + split + gap, y, secondSize, h, gap);
-        } else {
-            this.bspTagGeometry(node.first, x, y, w, split, gap);
-            this.bspTagGeometry(node.second, x, y + split + gap, w, secondSize, gap);
-        }
+        const [a, b] = this.splitBoxes(node, { x, y, w, h }, gap);
+        this.bspTagGeometry(node.first, a.x, a.y, a.w, a.h, gap);
+        this.bspTagGeometry(node.second, b.x, b.y, b.w, b.h, gap);
     }
 
     // atPointer false: appended as dwindle's next leaf, wherever the pointer
@@ -708,17 +687,9 @@ export class Bsp {
         if (node.ratio !== before)
             this.core.debugLog(`clamp: ${node.direction}-split ratio ${before.toFixed(4)} -> ${node.ratio.toFixed(4)} ` +
                 `mins=${node.first._minW || 0}x${node.first._minH || 0}/${node.second._minW || 0}x${node.second._minH || 0}`);
-        const isH = node.direction === 'h';
-        const axis = isH ? areaW : areaH;
-        const split = Math.floor((axis - gap) * node.ratio);
-        const secondSize = axis - split - gap;
-        if (isH) {
-            this.clampTreeToMinSizes(node.first, split, areaH, gap);
-            this.clampTreeToMinSizes(node.second, secondSize, areaH, gap);
-        } else {
-            this.clampTreeToMinSizes(node.first, areaW, split, gap);
-            this.clampTreeToMinSizes(node.second, areaW, secondSize, gap);
-        }
+        const [a, b] = this.splitBoxes(node, { x: 0, y: 0, w: areaW, h: areaH }, gap);
+        this.clampTreeToMinSizes(node.first, a.w, a.h, gap);
+        this.clampTreeToMinSizes(node.second, b.w, b.h, gap);
     }
 
     adjustForConstraints(node, parent, isFirst, x, y, w, h, gap, parentAxis) {
@@ -761,19 +732,11 @@ export class Bsp {
             return parent.ratio !== before;
         }
         if (node.type !== 'split') return false;
-        const isH = node.direction === 'h';
-        const axisSize = isH ? w : h;
-        const split = Math.floor((axisSize - gap) * node.ratio);
-        const secondSize = axisSize - split - gap;
-        const childAxis = axisSize - gap;
+        const childAxis = (node.direction === 'h' ? w : h) - gap;
+        const [a, b] = this.splitBoxes(node, { x, y, w, h }, gap);
         let changed = false;
-        if (isH) {
-            changed = this.adjustForConstraints(node.first, node, true, x, y, split, h, gap, childAxis) || changed;
-            changed = this.adjustForConstraints(node.second, node, false, x + split + gap, y, secondSize, h, gap, childAxis) || changed;
-        } else {
-            changed = this.adjustForConstraints(node.first, node, true, x, y, w, split, gap, childAxis) || changed;
-            changed = this.adjustForConstraints(node.second, node, false, x, y + split + gap, w, secondSize, gap, childAxis) || changed;
-        }
+        changed = this.adjustForConstraints(node.first, node, true, a.x, a.y, a.w, a.h, gap, childAxis) || changed;
+        changed = this.adjustForConstraints(node.second, node, false, b.x, b.y, b.w, b.h, gap, childAxis) || changed;
         return changed;
     }
 

@@ -103,3 +103,12 @@ test('_bspReplaceLeaf replaces a target leaf with a split holding the new window
   assert.equal(replaced.first.window, a);
   assert.equal(replaced.second.window, b);
 });
+
+test('splitBoxes: the first child takes the ratio of the span less one gap', () => {
+  const self = makeSelf();
+  const box = { x: 10, y: 20, w: 1000, h: 500 };
+  assert.deepEqual(self.bsp.splitBoxes({ direction: 'h', ratio: 0.3 }, box, 10),
+    [{ x: 10, y: 20, w: 297, h: 500 }, { x: 317, y: 20, w: 693, h: 500 }]);
+  assert.deepEqual(self.bsp.splitBoxes({ direction: 'v', ratio: 0.5 }, box, 10),
+    [{ x: 10, y: 20, w: 1000, h: 245 }, { x: 10, y: 275, w: 1000, h: 245 }]);
+});
