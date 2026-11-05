@@ -207,3 +207,49 @@ test('removeWindow drops a deferred slot re-check', () => {
   self.windows.removeWindow(a);
   assert.equal(self._deferredReassertWins.has(a), false);
 });
+
+test('tick run: a new window the run did not place stays new; a new one it starts arms the reveal backstop', () => {
+  const ws = {};
+  const a = win(ws, 1, { x: 500, y: 0, width: 500, height: 500 });
+  const n = win(ws, 2, { x: 0, y: 0, width: 0, height: 0 });
+  const c = win(ws, 3, { x: 0, y: 0, width: 100, height: 100 });
+  const { self, ticks } = runSelf(new Map([[a, { x: 300, y: 0, w: 700, h: 500 }], [c, { x: 0, y: 0, w: 300, h: 500 }]]));
+  self.layouts.retileDwindle = (_ws, tiled) => {
+    for (const w of tiled) if (w !== n) self._animTargets.set(w, w === a ? { x: 300, y: 0, w: 700, h: 500 } : { x: 0, y: 0, w: 300, h: 500 });
+  };
+  const armed = [];
+  self.windows.armRevealBackstop = (w) => armed.push(w);
+  self.placement.deferNewWindowPlacement = (_s, _d, done) => done();
+  self._newWindowSet.add(n).add(c);
+  const at = { now: 1000 };
+  withClock(ticks, at, () => {
+    self.placement.animRetile(ws, group([a, n, c]));
+    at.now = 1200; ticks.at(-1)();
+  });
+  assert.equal(self._animating, false);
+  assert.deepEqual(armed, [c]);
+  assert.equal(self._newWindowSet.has(n), true, 'not placed by this run: still new');
+  assert.equal(self._newWindowSet.has(c), false);
+});
+
+test('deferNewWindowPlacement: a busy client is frozen only after a second without a frame change', () => {
+  const ws = {};
+  const w = win(ws, 1, { x: 400, y: 300, width: 800, height: 600 }, { lag: true });
+  let eased = 0;
+  w.get_compositor_private = () => ({ remove_all_transitions() {}, set_opacity() {}, ease() { eased++; } });
+  const { self, ticks } = runSelf(new Map());
+  self.placement.verifyAnimationLanding = () => false;
+  self.placement.landingAccepted = () => false;
+  // The attempt loop's 80 / 100 ms retries.
+  const attempts = [];
+  self.signals.addTimeout = (ms, fn) => { if (ms === 80 || ms === 100) attempts.push(fn); return 1; };
+  const at = { now: 0 };
+  withClock(ticks, at, () => {
+    self.placement.deferNewWindowPlacement({ win: w, actor: w.get_compositor_private(), targetX: 0, targetY: 0, targetW: 10, targetH: 10 },
+      100, () => {}, self._animGen);
+    for (const t of [0, 100, 200, 300]) { at.now = t; attempts.at(-1)(); }
+    assert.equal(eased, 0, 'identical frames for 300 ms: still placing');
+    at.now = 1200; attempts.at(-1)();
+    assert.equal(eased, 1, 'frozen: revealed where it is');
+  });
+});

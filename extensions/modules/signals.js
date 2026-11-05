@@ -59,61 +59,7 @@ export class Signals extends PlaidSubsystem {
             const s = new Gio.Settings({ schema_id: schemaId });
             this.connectObject(s, 'changed', () => this.core.keybindings.scheduleConflictScan());
         }
-        this.connectObject(global.display, 'window-created', (_d, win) => {
-            if (this.core.dropdown.handleDropdownWindowCreated(win)) return;
-            if (this.core.bgApp.handleBackgroundAppWindowCreated(win)) return;
-            if (this.core.windows.shouldManage(win)) {
-                this.core.windows.addWindow(win);
-                const doRetile = () => {
-                    if (!this.core._settings) return;
-                    const ws = win.get_workspace();
-                    if (ws) this.core.layouts.retileWorkspace(ws);
-                };
-                const actor = win.get_compositor_private();
-                if (actor) {
-                    const firstFrameId = this.connectObject(actor, 'first-frame', () => {
-                        actor.disconnectObject(firstFrameId);
-                        this.core.windows.markPendingWindowInvisible(win, actor);
-                        doRetile();
-                    });
-                } else {
-                    this.addIdle(() => {
-                        this.core.windows.markPendingWindowInvisible(win, win.get_compositor_private());
-                        doRetile();
-                        return false;
-                    });
-                }
-            } else if (this.core.windows.isFloating(win)) {
-                const doRestore = () => {
-                    if (!this.core._settings) return;
-                    this.core.windows.restoreFloatNaturalRect(win);
-                };
-                const actor = win.get_compositor_private();
-                if (actor) {
-                    const firstFrameId = this.connectObject(actor, 'first-frame', () => {
-                        actor.disconnectObject(firstFrameId);
-                        if (!this.core._settings) return;
-                        doRestore();
-                        if (this.core._settings.get_boolean('follow-focus') &&
-                            win.get_window_type() === Meta.WindowType.NORMAL)
-                            this.core.windows.cursorWarpDeferred(win);
-                        this.core.windows.connectFloatHooks(win);
-                        this.core.borders.updateBorders();
-                    });
-                } else {
-                    this.addIdle(() => {
-                        if (!this.core._settings) return false;
-                        doRestore();
-                        if (this.core._settings.get_boolean('follow-focus') &&
-                            win.get_window_type() === Meta.WindowType.NORMAL)
-                            this.core.windows.cursorWarpDeferred(win);
-                        this.core.windows.connectFloatHooks(win);
-                        this.core.borders.updateBorders();
-                        return false;
-                    });
-                }
-            }
-        });
+        this.connectObject(global.display, 'window-created', (_d, win) => this.onWindowCreated(win));
         this.connectObject(global.display, 'notify::focus-window', () => {
             this.core.borders.updateBorders();
             const win = global.display.focus_window;
@@ -336,6 +282,85 @@ export class Signals extends PlaidSubsystem {
         });
         this.core.grab.connectGrabSignals();
 
+    }
+
+    onWindowCreated(win) {
+        if (this.core.dropdown.handleDropdownWindowCreated(win)) return;
+        if (this.core.bgApp.handleBackgroundAppWindowCreated(win)) return;
+        if (this.core.windows.shouldManage(win)) {
+            this.core.windows.addWindow(win);
+            const doRetile = () => {
+                if (!this.core._settings) return;
+                const ws = win.get_workspace();
+                if (ws) this.core.layouts.retileWorkspace(ws);
+            };
+            const actor = win.get_compositor_private();
+            if (actor) {
+                // Nothing is painted in the overview, so first-frame would
+                // not come: place from 'shown' then, once (shared with
+                // first-frame).
+                let placed = false;
+                const tokens = [];
+                // Also for a window closed before its first frame.
+                const drop = () => {
+                    for (const t of tokens) this.disconnectToken(t);
+                    tokens.length = 0;
+                };
+                const placeOnce = () => {
+                    if (placed) return;
+                    placed = true;
+                    drop();
+                    this.core.windows.markPendingWindowInvisible(win, actor);
+                    doRetile();
+                };
+                tokens.push(this.connectObject(actor, 'first-frame', placeOnce));
+                tokens.push(this.connectObject(win, 'shown', () => {
+                    if (Main.overview.visible) placeOnce();
+                }));
+                tokens.push(this.connectObject(win, 'unmanaged', drop));
+            } else {
+                this.addIdle(() => {
+                    this.core.windows.markPendingWindowInvisible(win, win.get_compositor_private());
+                    doRetile();
+                    return false;
+                });
+            }
+        } else if (this.core.windows.isFloating(win)) {
+            const doRestore = () => {
+                if (!this.core._settings) return;
+                this.core.windows.restoreFloatNaturalRect(win);
+            };
+            const actor = win.get_compositor_private();
+            if (actor) {
+                const tokens = [];
+                const drop = () => {
+                    for (const t of tokens) this.disconnectToken(t);
+                    tokens.length = 0;
+                };
+                tokens.push(this.connectObject(actor, 'first-frame', () => {
+                    drop();
+                    if (!this.core._settings) return;
+                    doRestore();
+                    if (this.core._settings.get_boolean('follow-focus') &&
+                        win.get_window_type() === Meta.WindowType.NORMAL)
+                        this.core.windows.cursorWarpDeferred(win);
+                    this.core.windows.connectFloatHooks(win);
+                    this.core.borders.updateBorders();
+                }));
+                tokens.push(this.connectObject(win, 'unmanaged', drop));
+            } else {
+                this.addIdle(() => {
+                    if (!this.core._settings) return false;
+                    doRestore();
+                    if (this.core._settings.get_boolean('follow-focus') &&
+                        win.get_window_type() === Meta.WindowType.NORMAL)
+                        this.core.windows.cursorWarpDeferred(win);
+                    this.core.windows.connectFloatHooks(win);
+                    this.core.borders.updateBorders();
+                    return false;
+                });
+            }
+        }
     }
 
     onWorkspaceAdded(index) {

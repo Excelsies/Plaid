@@ -4,6 +4,7 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { PlaidSubsystem } from './subsystem.js';
 import { isBspLayout } from './helpers.js';
 
@@ -215,6 +216,9 @@ export class Windows extends PlaidSubsystem {
             if (this.core._settings.get_boolean('follow-focus') &&
                 win.get_window_type() === Meta.WindowType.NORMAL)
                 this.cursorWarpDeferred(win);
+            // Size hints arrive with the first commit: a window hidden as a
+            // tile may float now, and no retile places a float.
+            if (this.core._newWindowSet?.has(win)) this.releaseSpawnHide(win);
             this.core.debugLog('hide skip: floating');
             return;
         }
@@ -229,6 +233,13 @@ export class Windows extends PlaidSubsystem {
         if (!this.core._newWindowSet.has(win)) {
             this.core.debugLog('hide skip: not in newWindowSet');
             return;
+        }
+        // GNOME's async map effect re-shows the hidden actor at the spawn rect;
+        // Plaid fades it in at its slot. Only before the map, or the skip eats
+        // the next effect (close, maximize).
+        if (!win._plaidMapEffectSkipped && !actor.mapped) {
+            win._plaidMapEffectSkipped = true;
+            Main.wm.skipNextEffect(actor);
         }
         {
             // An invisible actor is never painted — even by the offscreen mask
@@ -245,33 +256,111 @@ export class Windows extends PlaidSubsystem {
             }
             this.core.debugLog(`hide applied: ${win.get_wm_class_instance() || '?'}`);
         }
-        if (!win._plaidInvisibleTimer) {
-            win._plaidInvisibleTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2500, () => {
-                win._plaidInvisibleTimer = 0;
-                if (!this.core._settings) return GLib.SOURCE_REMOVE;
-                const fr = win.get_frame_rect();
-                this.core.debugLog(`backstop reveal: ${win.get_wm_class_instance() || '?'} ws=${this.core.geometry.wsIndex(win.get_workspace())} tiled=${this.core._windowWorkspaces.has(win)} ` +
-                    `frame=(${Math.round(fr.x)},${Math.round(fr.y)},${Math.round(fr.width)},${Math.round(fr.height)})`);
-                if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
-                {
-                    const a = win.get_compositor_private();
-                    if (a) {
-                        a.visible = true;
-                        a.set_opacity(255);
-                    }
-                }
-                {
-                    const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-                    if (effect && effect.setOpacityUniform)
-                        effect.setOpacityUniform(1);
-                }
-                // The blur/flair skipped during the pending-warp window must
-                // attach once the reveal fires.
-                this.core.signals.scheduleBorders();
-                this.core.borders.updateBorders();
+        this.armRevealBackstop(win);
+    }
+
+    // Last-resort reveal for a spawn-hidden window whose placement never
+    // completed; re-armed on every hide.
+    armRevealBackstop(win) {
+        if (win._plaidInvisibleTimer) return;
+        win._plaidInvisibleTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2500, () => {
+            win._plaidInvisibleTimer = 0;
+            if (!this.core._settings || this.core._shuttingDown) return GLib.SOURCE_REMOVE;
+            const pending = !!this.core._newWindowSet?.has(win);
+            // Nothing is painted while the overview is up: revealing now would
+            // only expose the window at the spawn rect when it closes.
+            if (pending && Main.overview.visible) {
+                this.armRevealBackstop(win);
                 return GLib.SOURCE_REMOVE;
-            });
+            }
+            const fr = win.get_frame_rect();
+            this.core.debugLog(`backstop reveal: ${win.get_wm_class_instance() || '?'} ws=${this.core.geometry.wsIndex(win.get_workspace())} tiled=${this.core._windowWorkspaces.has(win)} ` +
+                `frame=(${Math.round(fr.x)},${Math.round(fr.y)},${Math.round(fr.width)},${Math.round(fr.height)})`);
+            if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
+            // Place first, or it appears at the spawn rect over the tiles.
+            if (pending && this.core._windowWorkspaces.has(win) && !this.isFloating(win)) {
+                this.core._newWindowSet.delete(win);
+                const slot = this.currentSlotRect(win);
+                if (slot) win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
+                const ws = win.get_workspace();
+                if (ws) this.core.layouts.retileWorkspace(ws);
+            }
+            this.showSpawnHidden(win);
+            // The blur/flair skipped during the pending-warp window must
+            // attach once the reveal fires.
+            this.core.signals.scheduleBorders();
+            this.core.borders.updateBorders();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // A spawn-hidden window that will not be placed (it floats): out of the
+    // new-window choreography and shown where it is.
+    releaseSpawnHide(win) {
+        this.core._newWindowSet?.delete(win);
+        if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
+        if (win._plaidInvisibleTimer) {
+            GLib.source_remove(win._plaidInvisibleTimer);
+            win._plaidInvisibleTimer = 0;
         }
+        this.showSpawnHidden(win);
+        this.core.signals.scheduleBorders();
+    }
+
+    // The offscreen mask's opacity uniform multiplies its whole output.
+    showSpawnHidden(win) {
+        const a = win.get_compositor_private();
+        if (a) {
+            a.visible = true;
+            a.set_opacity(255);
+        }
+        const effect = this.core._windowMasks && this.core._windowMasks.get(win);
+        if (effect && effect.setOpacityUniform)
+            effect.setOpacityUniform(1);
+    }
+
+    // The window's slot in its group, or null (no group, no slot).
+    currentSlotRect(win) {
+        const ws = win.get_workspace();
+        const mon = this.core.monitors.windowMon(win);
+        if (!ws || mon < 0) return null;
+        return this.core.grab.windowSlotRect(win, ws, this.getWorkspaceLayout(ws, mon),
+            this.core.monitors.monitorWorkArea(ws, mon), this.core._settings.get_int('inside-gap'));
+    }
+
+    // Configure a new window to its slot before its first commit, so a slow
+    // client never draws the spawn rect. Also runs from the identity notify
+    // (the Wayland app id arrives after window-created).
+    prePlaceNewWindow(win) {
+        if (this.core._shuttingDown || win._plaidPrePlaced || !this.core._newWindowSet?.has(win)) return;
+        if (!this.core._windowWorkspaces.has(win) || this.isFloating(win)) return;
+        // Placement guard: a window whose identity is still
+        // unresolved (no wm-class, no GTK app id) may be float-listed
+        // — the class resolves AFTER window-created for flatpaks and
+        // for native apps whose /usr/bin/name misses the float-list
+        // token (e.g. org.gnome.nautilus vs /usr/bin/nautilus), so
+        // _shouldManage registered it as tiled. Pre-mapping it at
+        // the single-window full-area slot makes mutter AUTO-MAXIMIZE
+        // it on map (placement area > 80% of the work area —
+        // MAX_UNMAXIMIZED_WINDOW_AREA in core/place.c), and the later
+        // float flip cannot restore the remembered size (the restore
+        // refuses maximized windows). Unresolved windows are placed
+        // by the first-frame retile, after identity resolution —
+        // float-listed ones are then never touched by the tiler and
+        // open at their own remembered geometry.
+        const idKnown = !!(win.get_wm_class_instance() ||
+            win.get_gtk_application_id());
+        const ws = win.get_workspace();
+        const mon = this.core.monitors.windowMon(win);
+        if (!idKnown || !ws || mon < 0 || !win.get_compositor_private()) return;
+        // Not for a lone window: mutter auto-maximizes it, and that effect
+        // consumes the map-effect skip.
+        if (this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.isFloating(w)).length < 2) return;
+        const slot = this.currentSlotRect(win);
+        if (!slot) return;
+        win._plaidPrePlaced = true;
+        this.core.debugLog(`preplace: ${win.get_wm_class_instance() || '?'} slot=(${slot.x},${slot.y},${slot.w},${slot.h})`);
+        win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
     }
 
     // Not placed yet (-1): the primary; window-entered-monitor follows
@@ -356,34 +445,7 @@ export class Windows extends PlaidSubsystem {
                         effect.setOpacityUniform(0);
                 }
             }
-            {
-                const wsNow = win.get_workspace();
-                // Placement guard: a window whose identity is still
-                // unresolved (no wm-class, no GTK app id) may be float-listed
-                // — the class resolves AFTER window-created for flatpaks and
-                // for native apps whose /usr/bin/name misses the float-list
-                // token (e.g. org.gnome.nautilus vs /usr/bin/nautilus), so
-                // _shouldManage registered it as tiled. Pre-mapping it at
-                // the single-window full-area slot makes mutter AUTO-MAXIMIZE
-                // it on map (placement area > 80% of the work area —
-                // MAX_UNMAXIMIZED_WINDOW_AREA in core/place.c), and the later
-                // float flip cannot restore the remembered size (the restore
-                // refuses maximized windows). Unresolved windows are placed
-                // by the first-frame retile, after identity resolution —
-                // float-listed ones are then never touched by the tiler and
-                // open at their own remembered geometry.
-                const idKnown = !!(win.get_wm_class_instance() ||
-                    win.get_gtk_application_id());
-                const slotMon = this.core.monitors.windowMon(win);
-                if (wsNow && idKnown && !this.isFloating(win) && slotMon >= 0) {
-                    const slot = this.core.grab.windowSlotRect(win, wsNow,
-                        this.getWorkspaceLayout(wsNow, slotMon),
-                        this.core.monitors.monitorWorkArea(wsNow, slotMon),
-                        this.core._settings.get_int('inside-gap'));
-                    if (slot && win.get_compositor_private())
-                        win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
-                }
-            }
+            this.prePlaceNewWindow(win);
         }
     }
 
@@ -891,7 +953,10 @@ export class Windows extends PlaidSubsystem {
             }
             return;
         }
-        if (!this.isFloating(win)) return;
+        if (!this.isFloating(win)) {
+            this.prePlaceNewWindow(win);
+            return;
+        }
         const ws = win.get_workspace();
         // A fullscreen tile keeps its leaf (video players retitle constantly).
         const mon = this.core.monitors.windowMon(win);
@@ -910,7 +975,9 @@ export class Windows extends PlaidSubsystem {
         if (win.is_maximized()) {
             { win.unmaximize(); }
         }
-        this.restoreFloatNaturalRect(win);
+        // A pre-placed window is tile-sized: restore it too, but only while it
+        // is being placed, or a floated one snaps back on every title change.
+        this.restoreFloatNaturalRect(win, !!win._plaidPrePlaced && !!this.core._newWindowSet?.has(win));
         // Reveal: the window can be pending-hidden from the tiled
         // choreography (actor.visible=false + mask uniform 0) when its
         // identity resolved late to floating — nothing else reveals it, so
@@ -939,7 +1006,7 @@ export class Windows extends PlaidSubsystem {
         }
     }
 
-    restoreFloatNaturalRect(win) {
+    restoreFloatNaturalRect(win, force = false) {
         if (!this.core._savedRects || !this.core._savedRects.has(win)) return;
         if (win.is_fullscreen() || win.is_maximized()) return;
         const saved = this.core._savedRects.get(win);
@@ -953,7 +1020,7 @@ export class Windows extends PlaidSubsystem {
             workArea = ws.get_work_area_for_monitor(win.get_monitor());
         }
         if (!this.core.geometry.isValidWorkArea(workArea)) return;
-        if (frame.width < workArea.width - 20 || frame.height < workArea.height - 20) return;
+        if (!force && (frame.width < workArea.width - 20 || frame.height < workArea.height - 20)) return;
         this.core.debugLog(`float: restoring natural rect (${saved.x},${saved.y},${saved.w},${saved.h})`);
         this.moveWindow(win, saved.x, saved.y, saved.w, saved.h);
     }

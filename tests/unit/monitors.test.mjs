@@ -2091,6 +2091,7 @@ const PLACES_CALLER_ASKS = {
   'bsp.js adjustForConstraints': 'tree recursion; adjustPinnedTree asks',
   'drag-preview.js showMasterStackPreview': 'updateMoveDragPreview asks',
   'grab.js enforceGrabBoundary': 'its slot is windowSlotRect, which asks',
+  'windows.js currentSlotRect': 'its slot is windowSlotRect, which asks',
   'layouts.js getMasterRatio': 'getter (a default entry)',
   'layouts.js getStackRatios': 'getter (a default entry)',
   'layouts.js clampMasterStackRatios': 'part of a layout pass',

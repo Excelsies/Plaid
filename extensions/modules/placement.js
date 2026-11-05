@@ -11,6 +11,8 @@ import { isBspLayout } from './helpers.js';
 // slots (a layout that keeps moving the slot), reset when it lands.
 const LANDING_RETRIES = 3;
 const LANDING_MISSES = 9;
+// A new window stuck this long while placement fails is revealed where it is.
+const NEW_WINDOW_FROZEN_MS = 1000;
 
 // A slot as a landing key: the frame it asks for, in whole pixels.
 function landingKey(x, y, w, h) {
@@ -322,7 +324,7 @@ export class Placement {
         };
         let tries = 0;
         let lastFrameKey = null;
-        let sameFrameCount = 0;
+        let frameSince = 0;
         const attempt = () => {
             if (!this.core._settings || animGen !== this.core._animGen) return;
             this.core._animProgressAt = Date.now();
@@ -355,27 +357,25 @@ export class Placement {
                 // finish at the target regardless.
                 tries++;
                 this.core.debugLog(`place: attempt ${tries} mismatch`);
-                // Provably-ignored move: the frame is byte-identical across
-                // consecutive attempts while the verify keeps failing —
-                // mutter/Qt are not honoring geometry ops at all (the
-                // map-time settling race; the goverlay trace
-                // burned all 16 retries on a frozen frame, keeping the
-                // window invisible ~1.7s for nothing). Stop retrying and
-                // take the give-up path NOW: reveal at the spawn geometry,
-                // then the settle poll + the 2s re-retile land it the
-                // moment mutter wakes up. Windows whose frame MOVES between
-                // attempts keep the full budget and stay hidden — normal
-                // placement polish is unchanged.
-                if (frameKey !== null && frameKey === lastFrameKey) {
-                    sameFrameCount++;
-                } else {
-                    sameFrameCount = 0;
-                }
+                // Provably-ignored move: the frame stays the same across
+                // attempts while the verify keeps failing — mutter/Qt are not
+                // honoring geometry ops at all (the map-time settling race;
+                // the goverlay trace burned all 16 retries on a frozen frame,
+                // keeping the window invisible ~1.7s for nothing). Once it has
+                // not changed for NEW_WINDOW_FROZEN_MS, take the give-up path:
+                // reveal at the spawn geometry, then the settle poll + the 2s
+                // re-retile land it the moment mutter wakes up. A client
+                // blocking ~400ms per resize is not ignoring the request, and
+                // windows whose frame MOVES between attempts keep the full
+                // budget and stay hidden — normal placement polish is
+                // unchanged.
+                const now = Date.now();
+                if (frameKey === null || frameKey !== lastFrameKey) frameSince = now;
                 lastFrameKey = frameKey;
-                const frozen = sameFrameCount >= 2;
+                const frozen = frameKey !== null && now - frameSince >= NEW_WINDOW_FROZEN_MS;
                 if (tries > 15 || frozen) {
                     this.core.debugLog(frozen
-                        ? `anim: new-window placement frozen after ${tries} identical frames — finishing at spawn`
+                        ? `anim: new-window placement frozen (frame unchanged 1s, ${tries} attempts) — finishing at spawn`
                         : 'anim: new-window placement gave up after retries — finishing at target');
                     {
                         if (s.win && s.win.get_compositor_private())
@@ -862,6 +862,16 @@ export class Placement {
                 this.core.debugLog(`anim: watchdog drained stalled queue (${pending.length})`);
             } else {
                 this.core._queuedAnimWorkspaces.add(workspace);
+                // Re-hide spawn-hidden windows something re-showed (a map or
+                // size-change effect) until this queued retile places them.
+                for (const win of this.core._newWindowSet) {
+                    if (win.get_workspace() !== workspace || !this.core._pendingWarp?.has(win)) continue;
+                    const a = win.get_compositor_private();
+                    if (a && (a.visible || a.opacity > 0)) {
+                        a.visible = false;
+                        a.set_opacity(0);
+                    }
+                }
                 this.core.debugLog(`anim: retile queued while animating (queue=${this.core._queuedAnimWorkspaces.size})`);
                 return;
             }
@@ -901,7 +911,12 @@ export class Placement {
             this.core.debugLog('anim: no targets (bail)');
             this.core._animTargets = null;
             this.core._animWindows = null;
-            for (const win of tiledWindows) this.core._newWindowSet.delete(win);
+            // Only windows with a committed frame are done; earlier ones have
+            // no target yet.
+            for (const win of tiledWindows) {
+                const f = win.get_frame_rect();
+                if (f.width > 0 && f.height > 0) this.core._newWindowSet.delete(win);
+            }
             this.core.signals.scheduleBorders();
             return;
         }
@@ -941,7 +956,7 @@ export class Placement {
                 this.core._animating = false;
                 this.core._animWindows = null;
                 this.core.debugLog(`anim: done ws=${this.core.geometry.wsIndex(workspace)} queued=${this.core._queuedAnimWorkspaces.size}`);
-                for (const w of tiledWindows) this.core._newWindowSet.delete(w);
+                for (const st of states) this.core._newWindowSet.delete(st.win);
                 this.core._animStates = null;
                 this.core.persistence.scheduleSaveLayouts();
                 this.core.signals.scheduleBorders();
@@ -969,6 +984,7 @@ export class Placement {
                 // No show() here — a new window hidden via actor.visible=false
                 // must stay invisible until the placement reveals it at its
                 // slot.
+                this.core.windows.armRevealBackstop(s.win);
             }
         }
 

@@ -457,7 +457,9 @@ export class Bsp {
         }
         this.bspSetTree(ws, mon, tree);
         // Spiral tags the new leaf now (same min clamp as the retile), so the
-        // pre-map placement has its slot before the next layout pass.
+        // pre-map placement has its slot before the next layout pass. Dwindle
+        // leaves it to its retile: tagged here, a burst of min-size windows
+        // was left overlapping.
         if (spiral) {
             this.treeMinSizes(tree, gap, ws, mon);
             this.clampTreeToMinSizes(tree, areaW, areaH, gap);
