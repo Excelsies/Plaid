@@ -7,7 +7,7 @@
 
 import Meta from 'gi://Meta';
 
-import { isBspLayout } from './helpers.js';
+import { isBspLayout, isSpiralLayout } from './helpers.js';
 
 
 
@@ -63,6 +63,11 @@ export class Bsp {
         this.core = core;
     }
 
+    // Group (ws, mon) is laid out as Spiral.
+    isSpiral(ws, mon) {
+        return isSpiralLayout(this.core.windows.getWorkspaceLayout(ws, mon));
+    }
+
     bspGetTree(workspace, mon) {
         const key = this.core.monitors.groupObj(workspace, mon);
         if (!this.core._bspTrees.has(key))
@@ -96,7 +101,7 @@ export class Bsp {
     // Split ratio for new windows: Spiral halves the target (as Hyprland),
     // dwindle keeps dwindle-ratio.
     bspSplitRatio(ws, mon) {
-        if (ws && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral') return 0.5;
+        if (ws && this.isSpiral(ws, mon)) return 0.5;
         return this.core._settings.get_double('dwindle-ratio');
     }
 
@@ -359,7 +364,7 @@ export class Bsp {
     // pointer (spiralInsertNew).
     syncTree(workspace, tree, tiledWindows, area, gap, mon) {
         const ratio = this.bspSplitRatio(workspace, mon);
-        const spiral = this.core.windows.getWorkspaceLayout(workspace, mon) === 'spiral';
+        const spiral = this.isSpiral(workspace, mon);
         if (!tree) {
             for (const win of tiledWindows) {
                 if (!tree && spiral) this.recordFirstOpenBox(win, mon);
@@ -427,7 +432,7 @@ export class Bsp {
         const areaW = area.w;
         const areaH = area.h;
 
-        const spiral = this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
+        const spiral = this.isSpiral(ws, mon);
         const ratio = this.bspSplitRatio(ws, mon);
         if (tree && spiral) {
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
@@ -600,7 +605,7 @@ export class Bsp {
     // a learned one: a tile is exactly its slot (Hyprland). Nothing is learned
     // from or bent for a window there either.
     minimumsIgnored(ws, mon) {
-        return !!ws && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral';
+        return !!ws && this.isSpiral(ws, mon);
     }
 
     // The minimum a BSP partition of group (ws, mon) gives `win`.

@@ -4,7 +4,7 @@ import Gtk from 'gi://Gtk';
 import Gdk from 'gi://Gdk';
 import { ExtensionPreferences, gettext as _ } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import { normalizeAccel, normalizeTypedAccel } from './modules/helpers.js';
+import { normalizeAccel, normalizeTypedAccel, isSpiralLayout } from './modules/helpers.js';
 import { collectOtherBindings, findConflicts, describeConflict, clearConflictBinding } from './modules/keybind-conflicts.js';
 
 // Conflicts for one shortcut row — the same scan the extension runs, so the
@@ -237,7 +237,7 @@ export default class TilingWMPreferences extends ExtensionPreferences {
                 cr.fill();
             };
 
-            if (layout === 'spiral') {
+            if (isSpiralLayout(layout)) {
                 // 50/50 halving: each new window takes half of the last one.
                 const hw = Math.floor((W - gap) / 2);
                 const hh = Math.floor((H - gap) / 2);

@@ -6,7 +6,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { PlaidSubsystem } from './subsystem.js';
-import { isBspLayout } from './helpers.js';
+import { isBspLayout, isSpiralLayout } from './helpers.js';
 
 export class Windows extends PlaidSubsystem {
     constructor(core) {
@@ -1088,7 +1088,7 @@ export class Windows extends PlaidSubsystem {
         if (tiled.length <= 1) return;
 
         const layout = this.getWorkspaceLayout(ws, mon);
-        if (layout === 'spiral') {
+        if (isSpiralLayout(layout)) {
             if (!this.core.spiral.drop(window, ws, mon, px, py)) return;
         } else if (isBspLayout(layout)) {
             const tree = this.core.bsp.bspGetTree(ws, mon);

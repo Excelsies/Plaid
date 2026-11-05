@@ -5,7 +5,7 @@
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import { PlaidSubsystem } from './subsystem.js';
-import { isBspLayout } from './helpers.js';
+import { isBspLayout, isSpiralLayout } from './helpers.js';
 
 // --- Grab-Based Mouse Resize & Swap ---
 
@@ -500,7 +500,7 @@ export class Grab extends PlaidSubsystem {
             const area = tree ? this.core.geometry.outsideArea(workArea) : null;
             if (area) {
                 this.updateGrabSplits(tree, dx, dy, gap, area, ws, mon);
-                if (layout === 'spiral') {
+                if (isSpiralLayout(layout)) {
                     this.spiralLiveResize(metaWindow);
                 } else {
                     this.hideOvershoot(metaWindow, tree, frame);

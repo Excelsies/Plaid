@@ -379,6 +379,39 @@ test('lone BSP tiles take their rect from bsp.loneTileRect only', () => {
   });
 });
 
+// "Is this Spiral" is answered by the layout traits (helpers.js isSpiralLayout,
+// bsp.isSpiral for a group): no layout name is compared anywhere else, and a
+// new 'spiral' literal is refused until it is placed here.
+test('Spiral is decided by the layout traits only', () => {
+  const quoted = /['"]spiral['"]/;
+  const compare = new RegExp(`(?:[!=]==?|\\bcase)\\s*${quoted.source}|${quoted.source}\\s*[!=]==?`);
+  // Calibration on lines copied verbatim from the tree before the traits.
+  for (const line of [
+    "        if (ws && this.core.windows.getWorkspaceLayout(ws, mon) === 'spiral') return 0.5;",
+    "            const spiral = g.places && g.layout === 'spiral';",
+    "        return layout === 'dwindle' || layout === 'spiral';",
+    "        return layout === 'spiral' ? `${groupKey}:spiral` : groupKey;",
+  ])
+    assert.ok(compare.test(line), `calibration: ${line.trim()}`);
+  assert.ok(compare.test("case 'spiral':") && compare.test('"spiral" !== layout'), 'calibration: case / reversed');
+  assert.ok(!compare.test("    return tail === '' || tail === ':spiral';"), 'calibration: the shape tag is not a layout name');
+  const sites = {};
+  const bad = [];
+  for (const file of sourceFiles) {
+    const name = file.split('/').pop();
+    const lines = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n');
+    lines.forEach((raw, i) => {
+      const line = raw.replace(/\/\/.*$/, '');
+      if (compare.test(line)) bad.push(`${name}:${i + 1} ${line.trim()}`);
+      const n = (line.match(new RegExp(quoted.source, 'g')) || []).length;
+      if (n) sites[name] = (sites[name] ?? 0) + n;
+    });
+  }
+  assert.deepEqual(bad, []);
+  // Names, captions, the traits table and the cycle order.
+  assert.deepEqual(sites, { 'actions.js': 1, 'helpers.js': 2, 'prefs.js': 2 });
+});
+
 // Shutdown removes the sourceFields with GLib.source_remove, which throws on
 // anything but a source id (a connectObject token stopped shutdown mid-way).
 // Every assignment of a listed field is 0/null or a GLib source id.

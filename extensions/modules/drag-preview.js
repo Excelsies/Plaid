@@ -9,7 +9,7 @@ import Clutter from 'gi://Clutter';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-import { isBspLayout } from './helpers.js';
+import { isBspLayout, isSpiralLayout } from './helpers.js';
 
 const PREVIEW_STYLE = 'background-color: rgba(53, 132, 228, 0.15); border: 2px solid #3584e4;';
 const DROP_PREVIEW_FADE_MS = 120;
@@ -59,8 +59,7 @@ export class DragPreview {
         const ptrMon = monitors.monitorAt(px, py);
         if (ptrMon !== src && monitors.monitorTiled(ptrMon)) {
             // A Spiral source re-flows without the window.
-            if (dragging && monitors.groupPlaces(ws, src) &&
-                this.core.windows.getWorkspaceLayout(ws, src) === 'spiral')
+            if (dragging && monitors.groupPlaces(ws, src) && this.core.bsp.isSpiral(ws, src))
                 this.core.spiral.leaveSource(metaWindow, ws, src);
             const rect = dragging ? this.crossDropPlan(metaWindow, ws, ptrMon, px, py)?.rect : null;
             if (rect)
@@ -81,7 +80,7 @@ export class DragPreview {
         }
 
         const layout = this.core.windows.getWorkspaceLayout(ws, src);
-        if (layout === 'spiral') {
+        if (isSpiralLayout(layout)) {
             this.core.spiral.updateDragPreview(metaWindow, ws, px, py, dragging);
             return;
         }
@@ -119,7 +118,7 @@ export class DragPreview {
         const tiled = this.core.monitors.getWindowsForGroup(ws, mon)
             .filter(w => !this.core.windows.isFloating(w) && w !== win);
         if (tiled.length === 0) return { rect: this.core.bsp.loneTileRect(win, workArea, ws, mon) };
-        if (layout === 'spiral') {
+        if (isSpiralLayout(layout)) {
             // The target monitor's own ghost: zones and the drop's tree.
             let g = this.core._dropGhost;
             if (!g || g.ws !== ws || g.mon !== mon || g.win !== win) {

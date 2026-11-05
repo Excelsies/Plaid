@@ -5,7 +5,7 @@ import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 
-import { isBspLayout } from './helpers.js';
+import { isBspLayout, isSpiralLayout } from './helpers.js';
 
 // Counted misses: per slot before it is accepted, and per window across
 // slots (a layout that keeps moving the slot), reset when it lands.
@@ -755,7 +755,7 @@ export class Placement {
     // (bsp.maxBelowOpenBox). Drops it from `groups`.
     floatNewBelowOpenBox(groups) {
         for (const g of groups) {
-            const spiral = g.places && g.layout === 'spiral';
+            const spiral = g.places && isSpiralLayout(g.layout);
             g.tiled = g.tiled.filter(win => {
                 if (!this.core._newWindowSet?.has(win)) return true;
                 const below = this.core.bsp.maxBelowOpenBox(win, spiral);
@@ -787,7 +787,7 @@ export class Placement {
         this.floatNewBelowOpenBox(groups);
         const tiledWindows = groups.flatMap(g => g.tiled);
         // Each Spiral tile and its group's monitor.
-        const spiralWins = new Map(groups.filter(g => g.places && g.layout === 'spiral')
+        const spiralWins = new Map(groups.filter(g => g.places && isSpiralLayout(g.layout))
             .flatMap(g => g.tiled.map(w => [w, g.mon])));
         if (this.core._animating && !this.core._animTickId && this.core._animWorkspace === workspace &&
             spiralWins.size > 0 && !this.core._animTickLeft && this.core.transforms.running(workspace)) {

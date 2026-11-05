@@ -10,7 +10,7 @@
 import GLib from 'gi://GLib';
 
 import { Monitors } from './monitors.js';
-import { LAYOUT_NAMES, isBspLayout } from './helpers.js';
+import { LAYOUT_NAMES, isBspLayout, isSpiralLayout } from './helpers.js';
 
 
 export class Persistence {
@@ -314,7 +314,7 @@ export class Persistence {
     // The saved-shape key of a group (monitors.groupKey) for a BSP layout:
     // dwindle keeps the bare group key, Spiral adds ':spiral'.
     shapeKey(groupKey, layout) {
-        return layout === 'spiral' ? `${groupKey}:spiral` : groupKey;
+        return isSpiralLayout(layout) ? `${groupKey}:spiral` : groupKey;
     }
 
     knownShapeTail(tail) {

@@ -64,7 +64,7 @@ export class Spiral extends PlaidSubsystem {
             // (bsp.maxBelowOpenBox), else popped in at its slot without the
             // cursor warp.
             const below = this.core._newWindowSet?.has(w) &&
-                this.core.bsp.maxBelowOpenBox(w, this.core.windows.getWorkspaceLayout(g.ws, g.mon) === 'spiral');
+                this.core.bsp.maxBelowOpenBox(w, this.core.bsp.isSpiral(g.ws, g.mon));
             if (below) {
                 this.core.placement.floatAtOpen(w, below);
                 floated = true;

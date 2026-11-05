@@ -10,10 +10,25 @@ export const LAYOUT_NAMES = {
     'floating': 'Floating',
 };
 
-// The layouts tiled from a BSP tree: Spiral is dwindle with 50/50 splits,
-// Hyprland-style insertion and its own drag and animation.
+// What a layout is, by name: the one place a layout name is compared.
+// Spiral is dwindle with 50/50 splits, Hyprland-style insertion and rules,
+// and its own drag and animation.
+const LAYOUT_TRAITS = {
+    'dwindle': { bsp: true, spiral: false },
+    'spiral': { bsp: true, spiral: true },
+};
+
+function layoutTraits(layout) {
+    return Object.hasOwn(LAYOUT_TRAITS, layout) ? LAYOUT_TRAITS[layout] : null;
+}
+
+// The layouts tiled from a BSP tree.
 export function isBspLayout(layout) {
-    return layout === 'dwindle' || layout === 'spiral';
+    return !!layoutTraits(layout)?.bsp;
+}
+
+export function isSpiralLayout(layout) {
+    return !!layoutTraits(layout)?.spiral;
 }
 
 // Canonical form of an accelerator for comparison: '<Shift><Super>h' and
