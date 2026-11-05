@@ -128,23 +128,39 @@ export class Persistence {
             // layout this build does not know (verbatim), and re-sync the raw
             // map to exactly what we wrote. A key's monitor, not its type, says
             // which setting it goes to ("1:spiral" is the primary's).
+            // A known shape is written lowercase (the encoding every build
+            // reads); its pins go to spiral-split-pins.
             const dwindleTrees = [];
             const monShapes = new Map();
+            const pins = [];
+            const monPins = new Map();
             for (const [key, shape] of dwindleRaw) {
                 const p = Monitors.parseGroupKey(key);
                 if (!p) continue;
                 const node = this.core.bsp.dwindleShapeFromString(shape);
-                if (this.knownShapeTail(p.tail) && (!node || node.type !== 'split')) continue;
-                if (p.conn) monShapes.set(key, shape);
-                else dwindleTrees.push(`${key}:${shape}`);
+                const known = this.knownShapeTail(p.tail);
+                if (known && (!node || node.type !== 'split')) continue;
+                const out = known ? shape.toLowerCase() : shape;
+                const mask = known ? this.pinMask(p.tail, shape) : null;
+                if (p.conn) {
+                    monShapes.set(key, out);
+                    if (mask) monPins.set(key, mask);
+                } else {
+                    dwindleTrees.push(`${key}:${out}`);
+                    if (mask) pins.push(`${key}:${mask}`);
+                }
             }
             dwindleTrees.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+            pins.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
             const monDwindle = monEntries(monShapes, sh => sh);
+            const splitPins = [...pins, ...monEntries(monPins, m => m)];
             // The monitor the single-monitor keys describe goes first: a
             // re-parse on the writes below must read them for it. A primary
             // without a connector yet leaves the last real name.
             if (Monitors.savedConn(primary))
                 this.core._settings.set_string('monitor-primary-connector', primary);
+            // Pins before the shapes: a re-parse on a shapes write reads them.
+            this.core._settings.set_strv('spiral-split-pins', splitPins);
             this.core._settings.set_strv('monitor-workspace-layouts', monEntries(monLayouts, v => v));
             this.core._settings.set_strv('monitor-workspace-master-ratios', monEntries(monMaster, v => `${v}`));
             this.core._settings.set_strv('monitor-workspace-stack-ratios', monEntries(monStack, weights));
@@ -163,6 +179,7 @@ export class Persistence {
                 const e = m && this.parseDwindleTreeEntry(m.rest, m.conn);
                 if (e) raw.set(e.key, e.shape);
             }
+            this.applySplitPins(raw, null, splitPins, null);
             this.core._persistedDwindleRaw = raw;
             this.core.debugLog(`persisted layouts: ${layouts.length} ws, ${masterRatios.length} master, ${stackRatios.length} stack, ${dwindleTrees.length} dwindle; ` +
                 `other monitors: ${monLayouts.size} layouts, ${monDwindle.length} dwindle`);
@@ -282,11 +299,42 @@ export class Persistence {
                     raw.set(e.key, e.shape);
                 }
             }
+            this.applySplitPins(raw, map, this.core._settings.get_strv('spiral-split-pins'),
+                this.core._settings.get_string('monitor-primary-connector') || null);
         } catch (e) {
             this.core.debugLog(`parse dwindle shapes failed: ${e.message}`);
         }
         this.core._persistedDwindleRaw = raw;
         return map;
+    }
+
+    // A Spiral shape's pins as spiral-split-pins stores them: its structure
+    // with the pinned splits H/V ("h(l,V(l,l))"), or null when none.
+    pinMask(tail, shape) {
+        if (!isSpiralLayout(tail.slice(1)) || !/[HV]/.test(shape)) return null;
+        return shape.replace(/[0-9.]/g, '');
+    }
+
+    // spiral-split-pins entries ("INDEX:spiral:MASK" for primaryConn,
+    // "CONNECTOR:INDEX:spiral:MASK") onto the saved shapes. Older builds
+    // never read this key and rewrite the shapes without it: a pin applies
+    // only while its shape still has the mask's structure.
+    applySplitPins(raw, map, entries, primaryConn) {
+        for (const entry of entries || []) {
+            const m = /^\d/.test(entry) ? { conn: primaryConn, rest: entry } : Monitors.splitMonitorEntry(entry);
+            const e = m ? this.parseDwindleTreeEntry(m.rest, m.conn) : null;
+            const shape = e ? raw.get(e.key) : null;
+            if (!e || !isSpiralLayout(e.tag) || typeof shape !== 'string') continue;
+            const base = shape.toLowerCase();
+            if (base.replace(/[0-9.]/g, '') !== e.shape.toLowerCase() || !/[HV]/.test(e.shape)) continue;
+            const pinned = [...e.shape.matchAll(/[hvHV]/g)].map(d => d[0] === 'H' || d[0] === 'V');
+            let i = 0;
+            const merged = base.replace(/[hv]/g, d => (pinned[i++] ? d.toUpperCase() : d));
+            const node = this.core.bsp.dwindleShapeFromString(merged);
+            if (!node) continue;
+            raw.set(e.key, merged);
+            map?.set(e.key, node);
+        }
     }
 
     // "index:shape" (dwindle, read by every build) or "index:layout:shape"
@@ -308,7 +356,7 @@ export class Persistence {
         }
         const group = this.core.monitors.groupKeyFor(idx, conn);
         const known = isBspLayout(tag);
-        return { key: known ? this.shapeKey(group, tag) : `${group}:${tag}`, shape, known };
+        return { key: known ? this.shapeKey(group, tag) : `${group}:${tag}`, shape, known, tag };
     }
 
     // The saved-shape key of a group (monitors.groupKey) for a BSP layout:

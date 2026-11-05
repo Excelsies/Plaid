@@ -252,6 +252,18 @@
       <description>Entries of the form "CONNECTOR:INDEX:SHAPE" or "CONNECTOR:INDEX:spiral:SHAPE" (e.g. "DP-3:3:h0.5000(l,l)"), as workspace-dwindle-trees.</description>
     </key>
 
+    <key name="spiral-preserve-split" type="b">
+      <default>false</default>
+      <summary>Preserve split direction</summary>
+      <description>Spiral keeps each split's direction from when it was made. Off (Hyprland's default): each split takes its direction from its box at every layout, stacked when the box is taller than wide; a split made by a drop or by toggle split keeps its own</description>
+    </key>
+
+    <key name="spiral-split-pins" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Pinned Spiral splits</summary>
+      <description>Entries "INDEX:spiral:MASK" (the primary's group, as workspace-dwindle-trees) or "CONNECTOR:INDEX:spiral:MASK": MASK is the saved shape's structure with its pinned splits upper-case (e.g. "1:spiral:h(l,V(l,l))"). A pin applies only while the saved shape still has that structure</description>
+    </key>
+
     <!-- Keybindings: Window Movement -->
     <key name="move-focus-left" type="as">
       <default><![CDATA[['<Super><Alt>h']]]></default>

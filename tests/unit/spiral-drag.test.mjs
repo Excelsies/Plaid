@@ -132,13 +132,15 @@ test('atHome: the whole slot until the pointer leaves it, then only its core; 12
   assert.equal(self.spiral.atHome(g, 490, 250), false);
 });
 
+// The ghost is oriented as its layout will be: without a, b|c side by side.
 test('buildDragGhost: the others\' slots without the window, its home, the live slots', () => {
   const a = W('a'), b = W('b'), c = W('c');
   const self = dragSelf(split('h', 0.5, leaf(a), split('v', 0.5, leaf(b), leaf(c))), [a, b, c]);
   const g = self.spiral.buildDragGhost(a, WS);
   assert.deepEqual(g.home, { x: 0, y: 0, w: 500, h: 500 });
-  assert.deepEqual(g.rects.get(b), { x: 0, y: 0, w: 1000, h: 250 });
+  assert.deepEqual(g.rects.get(b), { x: 0, y: 0, w: 500, h: 500 });
   assert.equal(g.rects.has(a), false);
+  // The live slots as laid out: no pass on them (b/c stays stacked).
   assert.deepEqual(g.live.get(c), { x: 500, y: 250, w: 500, h: 250 });
   self.monitors.monitorWorkArea = () => ({ x: 0, y: 0, width: 1, height: 1 });
   assert.equal(self.spiral.buildDragGhost(a, WS), null, 'no valid work area: no ghost');
@@ -157,8 +159,9 @@ test('updateDragPreview: away from home the others reflow to the ghost and the z
   assert.equal(self._dragShrunk?.win, a, 'shrunk');
   assert.equal(a._actor.eased[0].scale_x, 0.85);
   assert.deepEqual(self._transformStates.get(b)?.targetY, 0);
-  assert.deepEqual([self._transformStates.get(b).targetW, self._transformStates.get(b).targetH], [1000, 250]);
-  assert.deepEqual(shown.at(-1), [0, 0, 1000, 125], 'b\'s top zone');
+  assert.deepEqual([self._transformStates.get(b).targetX, self._transformStates.get(b).targetW,
+    self._transformStates.get(b).targetH], [0, 500, 500]);
+  assert.deepEqual(shown.at(-1), [500, 0, 500, 250], 'c\'s top zone');
   // Two frames of the reflow: b is drawn on its way to the ghost slot.
   self.transforms.step();
   clock = 100 * 1000;
@@ -176,14 +179,15 @@ test('drop: inserted into the ghost tree at the zone; home or no ghost leaves th
   withGlobal([0, 0], () => {
     assert.equal(self.spiral.drop(a, WS, 0, 250, 250), false, 'home');
     assert.equal(self.bsp.bspGetTree(WS, 0), tree);
-    // The ghost the preview showed: b spans the top, its bottom zone.
+    // The ghost the preview showed: b|c side by side, c's left zone.
     self._dragGhost = self.spiral.buildDragGhost(a, WS);
     self._dragGhost.leftHome = true;
     assert.equal(self.spiral.drop(a, WS, 0, 600, 240), true);
   });
   const t = self.bsp.bspGetTree(WS, 0);
-  assert.equal(t.direction, 'v');
-  assert.deepEqual([t.first.first.window, t.first.second.window, t.second.window], [b, a, c]);
+  // c's 500x500 box splits side by side anyway: the drop pins nothing.
+  assert.deepEqual([t.direction, t.second.direction, t.second.pinned], ['h', 'h', undefined]);
+  assert.deepEqual([t.first.window, t.second.first.window, t.second.second.window], [b, a, c]);
 });
 
 test('refreshDragGhost and the retile hook: a window closed mid-drag leaves the ghost before the retile is deferred', () => {

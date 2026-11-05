@@ -458,7 +458,7 @@ export class Monitors extends PlaidSubsystem {
             const key = this.core.persistence.shapeKey(group, layout);
             const shape = this.core.bsp.dwindleShapeToString(tree);
             this.core._persistedDwindleRaw?.set(key, shape);
-            this.core._persistedDwindleByIndex?.set(key, this.core.bsp.dwindleShapeFromString(shape));
+            this.core._persistedDwindleByIndex?.set(key, this.core.bsp.savedShape(tree));
             saved++;
         }
         this.core.debugLog(`group: monitor ${conn} removed, ${saved} arrangements kept`);

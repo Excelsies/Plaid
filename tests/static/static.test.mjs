@@ -379,8 +379,9 @@ test('BSP min sites read minimums through bsp.layoutMinSize, naming their group'
   });
   for (const name of ['treeMinSizes', 'bspSlotRects']) {
     for (const [site, args] of Object.entries(callSites(name))) {
+      // bspSlotRects may add its orient flag after the group.
       for (const a of args)
-        assert.equal(a.split(',').length, 4, `${site}: ${name}(${a}) does not name its group (ws, mon)`);
+        assert.ok([4, name === 'bspSlotRects' ? 5 : 4].includes(a.split(',').length), `${site}: ${name}(${a}) does not name its group (ws, mon)`);
     }
   }
 });

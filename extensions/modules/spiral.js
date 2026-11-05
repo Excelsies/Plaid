@@ -33,11 +33,14 @@ export class Spiral extends PlaidSubsystem {
         const tree = bsp.bspGetTree(ws, mon);
         const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!tree || !this.core.geometry.isValidWorkArea(workArea)) return null;
-        const live = bsp.bspSlotRects(bsp.bspClone(tree), workArea, ws, mon);
+        // The live slots as laid out (a resize since the last structural
+        // change left them unoriented); the ghost lost a window, so it is
+        // oriented as the layout without it will be.
+        const live = bsp.bspSlotRects(bsp.bspClone(tree), workArea, ws, mon, false);
         const home = live.get(win) ?? null;
         const ghost = home ? bsp.bspRemove(bsp.bspClone(tree), win) : bsp.bspClone(tree);
         if (!ghost || ghost.type === 'empty') return null;
-        return { ws, mon, win, workArea, tree: ghost, rects: bsp.bspSlotRects(ghost, workArea, ws, mon),
+        return { ws, mon, win, workArea, tree: ghost, rects: bsp.bspSlotRects(ghost, workArea, ws, mon, !!home),
             live, home, atHome: null, leftHome: false, zones: new Map() };
     }
 
@@ -166,10 +169,15 @@ export class Spiral extends PlaidSubsystem {
         return rect ? { target, side, rect } : null;
     }
 
+    // A drop's side is pinned where the box rule would turn it (the target's
+    // box in the tagged tree; untagged: pinned), so the orientation pass
+    // keeps it; a side the rule gives anyway follows its box later.
     dropTree(tree, target, win, side) {
+        const bsp = this.core.bsp;
         const dir = (side === 'left' || side === 'right') ? 'h' : 'v';
-        return this.core.bsp.bspInsertAtLeaf(tree, this.core.bsp.bspFindLeaf(tree, target), win, dir,
-            side === 'left' || side === 'top', 0.5);
+        const leaf = bsp.bspFindLeaf(tree, target);
+        const pinned = !(leaf?._w > 0 && leaf._h > 0) || dir !== bsp.boxDirection({ w: leaf._w, h: leaf._h });
+        return bsp.bspInsertAtLeaf(tree, leaf, win, dir, side === 'left' || side === 'top', 0.5, pinned);
     }
 
     // The move-drag preview of a Spiral group (dragPreview): the ghost is

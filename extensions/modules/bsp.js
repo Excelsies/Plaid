@@ -80,9 +80,11 @@ export class Bsp {
     }
 
     // Structure, ratios, windows and geometry tags; no shared nodes.
+    // A copy is a new tree for the orientation gate (orientLive): no signature.
     bspClone(node) {
         if (!node) return node;
         const copy = { ...node };
+        delete copy._orientSig;
         if (node.type === 'split') {
             copy.first = this.bspClone(node.first);
             copy.second = this.bspClone(node.second);
@@ -109,6 +111,76 @@ export class Bsp {
         }
         return [{ x: box.x, y: box.y, w: box.w, h: split },
             { x: box.x, y: box.y + split + gap, w: box.w, h: box.h - split - gap }];
+    }
+
+    // The box rule (Hyprland's splitTop = h > w): a split is stacked when its
+    // box is taller than wide, side by side otherwise.
+    boxDirection(box) {
+        return box.h > box.w ? 'v' : 'h';
+    }
+
+    // Hyprland's preserve_split=false: each split takes its direction from
+    // its box. A pinned split (a drop or toggle split against the rule)
+    // keeps its own.
+    orientTree(node, box, gap) {
+        if (!node || node.type !== 'split') return;
+        if (!node.pinned) node.direction = this.boxDirection(box);
+        const [a, b] = this.splitBoxes(node, box, gap);
+        this.orientTree(node.first, a, gap);
+        this.orientTree(node.second, b, gap);
+    }
+
+    // Group (ws, mon) takes its split directions from the boxes: Spiral,
+    // unless spiral-preserve-split is set.
+    orientsSplits(ws, mon) {
+        return this.isSpiral(ws, mon) && !this.core._settings.get_boolean('spiral-preserve-split');
+    }
+
+    // The orientation pass on a tree planned for group (ws, mon) that is not
+    // its own yet: a drag ghost, a drop's tree, movewindow's.
+    orientSpiral(tree, area, gap, ws, mon) {
+        if (this.orientsSplits(ws, mon)) this.orientTree(tree, area, gap);
+    }
+
+    // The one decision point for re-orienting group (ws, mon)'s own tree: only
+    // when its structure or area changed since its last pass (a window opened,
+    // closed, floated or moved in or out, a drop or movewindow, a restored
+    // shape, a monitor or work-area change) or it starts orienting (a layout
+    // switch, spiral-preserve-split turned off). Never for a ratio-only
+    // retile (a mouse or keyboard resize), never during a grab. The
+    // signature lives on the root; a former root under it keeps none.
+    orientLive(tree, area, gap, ws, mon) {
+        if (!tree || tree.type !== 'split' || this.core._grabOp) return;
+        if (!this.orientsSplits(ws, mon)) {
+            delete tree._orientSig;
+            return;
+        }
+        const shape = n => (n.type === 'split' ? `(${shape(n.first)},${shape(n.second)})` : n.type[0]);
+        const sig = `${area.x},${area.y},${area.w},${area.h}|${shape(tree)}|${this.windowIds(tree)}`;
+        if (tree._orientSig === sig) return;
+        const clear = n => {
+            if (n.type !== 'split') return;
+            delete n.first._orientSig;
+            delete n.second._orientSig;
+            clear(n.first);
+            clear(n.second);
+        };
+        clear(tree);
+        tree._orientSig = sig;
+        this.orientTree(tree, area, gap);
+    }
+
+    // An edit of the live tree the signature cannot see (a restored shape's
+    // ratios; movewindow's new tree): the group's next layout re-orients. A
+    // tree set from a copy (a drop's) carries no signature (bspClone).
+    markStructural(ws, mon) {
+        const tree = this.bspGetTree(ws, mon);
+        if (tree) delete tree._orientSig;
+    }
+
+    // The ids of the windows under a node, sorted: who a split holds.
+    windowIds(node) {
+        return this.bspCollectWindows(node).map(w => w.get_id()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(',');
     }
 
     // Split ratio for new windows: Spiral halves the target (as Hyprland),
@@ -142,8 +214,15 @@ export class Bsp {
         node.second = this.bspRemove(node.second, win);
         if (node.first.type === 'empty' && node.second.type === 'empty')
             return { type: 'empty' };
-        if (node.first.type === 'empty') return node.second;
-        if (node.second.type === 'empty') return node.first;
+        if (node.first.type === 'empty') return this.promoted(node.second);
+        if (node.second.type === 'empty') return this.promoted(node.first);
+        return node;
+    }
+
+    // The side that survives a removal takes its parent's box: a pin it
+    // carried was for the old one.
+    promoted(node) {
+        if (node.type === 'split') delete node.pinned;
         return node;
     }
 
@@ -165,10 +244,12 @@ export class Bsp {
         return out;
     }
 
-    // Every leaf's slot as a retile of group (ws, mon) lays it out (min-size
-    // clamp included), so drag previews match the result. Clamps ratios in
-    // place: pass a clone.
-    bspSlotRects(tree, workArea, ws, mon) {
+    // Every leaf's slot as a retile of group (ws, mon) lays it out (Spiral's
+    // orientation and the min-size clamp included), so drag previews match
+    // the result. Orients and clamps in place: pass a clone. orient false:
+    // the tree's own directions (the live layout, which only a structural
+    // change re-orients).
+    bspSlotRects(tree, workArea, ws, mon, orient = true) {
         const rects = new Map();
         if (!tree || tree.type === 'empty') return rects;
         if (tree.type === 'leaf') {
@@ -179,6 +260,7 @@ export class Bsp {
         const area = this.core.geometry.outsideArea(workArea);
         if (!area) return rects;
         const gap = this.core._settings.get_int('inside-gap');
+        if (orient) this.orientSpiral(tree, area, gap, ws, mon);
         this.treeMinSizes(tree, gap, ws, mon);
         this.clampTreeToMinSizes(tree, area.w, area.h, gap);
         this.bspTagGeometry(tree, area.x, area.y, area.w, area.h, gap);
@@ -287,18 +369,21 @@ export class Bsp {
     }
 
     // Split targetLeaf with newWin on an explicit side (drop zones): dir 'h'
-    // = side by side, 'v' = stacked; newFirst puts newWin left/top.
-    bspInsertAtLeaf(node, targetLeaf, newWin, dir, newFirst, ratio) {
+    // = side by side, 'v' = stacked; newFirst puts newWin left/top; pinned
+    // keeps dir through Spiral's orientation pass.
+    bspInsertAtLeaf(node, targetLeaf, newWin, dir, newFirst, ratio, pinned = false) {
         if (!node || node.type === 'empty') return node;
         if (node.type === 'leaf') {
             if (node !== targetLeaf) return node;
             const leaf = this.bspMakeLeaf(newWin);
-            return newFirst
+            const split = newFirst
                 ? this.bspMakeSplit(dir, ratio, leaf, node)
                 : this.bspMakeSplit(dir, ratio, node, leaf);
+            if (pinned) split.pinned = true;
+            return split;
         }
-        node.first = this.bspInsertAtLeaf(node.first, targetLeaf, newWin, dir, newFirst, ratio);
-        node.second = this.bspInsertAtLeaf(node.second, targetLeaf, newWin, dir, newFirst, ratio);
+        node.first = this.bspInsertAtLeaf(node.first, targetLeaf, newWin, dir, newFirst, ratio, pinned);
+        node.second = this.bspInsertAtLeaf(node.second, targetLeaf, newWin, dir, newFirst, ratio, pinned);
         return node;
     }
 
@@ -445,6 +530,7 @@ export class Bsp {
         // leaves it to its retile: tagged here, a burst of min-size windows
         // was left overlapping.
         if (spiral) {
+            this.orientLive(tree, area, gap, ws, mon);
             this.treeMinSizes(tree, gap, ws, mon);
             this.clampTreeToMinSizes(tree, areaW, areaH, gap);
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
@@ -743,6 +829,8 @@ export class Bsp {
     dwindleShapeToString(node) {
         // Prefix encoding: l=leaf, e=empty, split = dir+ratio(child,child)
         // e.g. "h0.8480(l,l)" — one ':' per entry (the index separator).
+        // A pinned split is H/V here only: the settings keys get the
+        // lowercase shape and the pins apart (persistence.pinMask).
         if (!node || node.type === 'empty') return 'e';
         if (node.type === 'leaf') return 'l';
         if (node.type !== 'split') return 'e';
@@ -752,8 +840,23 @@ export class Bsp {
         // (ratio must be strictly between 0 and 1) — the whole entry was
         // silently dropped from the written strv, losing the saved shape.
         const r = Math.min(0.9999, Math.max(0.0001, ratio));
-        return `${node.direction === 'v' ? 'v' : 'h'}${r.toFixed(4)}` +
+        const dir = node.direction === 'v' ? 'v' : 'h';
+        return `${node.pinned ? dir.toUpperCase() : dir}${r.toFixed(4)}` +
             `(${this.dwindleShapeToString(node.first)},${this.dwindleShapeToString(node.second)})`;
+    }
+
+    // The saved form of a live tree (refreshSavedShape, a removed monitor's
+    // arrangements): its shape, each pinned split naming its windows.
+    savedShape(tree) {
+        const shape = this.dwindleShapeFromString(this.dwindleShapeToString(tree));
+        const mark = (s, n) => {
+            if (s?.type !== 'split' || n?.type !== 'split') return;
+            if (s.pinned) s.ids = this.windowIds(n);
+            mark(s.first, n.first);
+            mark(s.second, n.second);
+        };
+        mark(shape, tree);
+        return shape;
     }
 
     dwindleShapeFromString(str) {
@@ -767,8 +870,8 @@ export class Bsp {
             const c = str[i];
             if (c === 'l') { i++; return { type: 'leaf' }; }
             if (c === 'e') { i++; return { type: 'empty' }; }
-            if (c !== 'h' && c !== 'v') return null;
-            const dir = c;
+            if (!'hvHV'.includes(c)) return null;
+            const dir = c.toLowerCase();
             i++;
             const start = i;
             while (i < str.length && /[0-9.]/.test(str[i])) i++;
@@ -782,7 +885,9 @@ export class Bsp {
             const second = parseNode();
             if (!second || str[i] !== ')') return null;
             i++;
-            return { type: 'split', direction: dir, ratio, first, second };
+            const node = { type: 'split', direction: dir, ratio, first, second };
+            if (c !== dir) node.pinned = true;
+            return node;
         };
         try {
             const node = parseNode();
@@ -792,7 +897,13 @@ export class Bsp {
         }
     }
 
-    reconcileTreeRatios(saved, live) {
+    // anyDirection: the group orients its splits from the boxes, so a
+    // direction mismatch is no divergence (the leaf counts decide), and a
+    // pinned saved split brings its direction back. Otherwise neither.
+    // A pin saved from a live tree names the windows under it (savedShape)
+    // and comes back only over the same ones; a shape read from the settings
+    // names none (window ids do not outlive the session).
+    reconcileTreeRatios(saved, live, anyDirection = false) {
         // Copy saved split ratios into the LIVE tree wherever the two
         // structures correspond (same direction down the path). A direction
         // mismatch means this branch's history diverged (different window
@@ -800,21 +911,28 @@ export class Bsp {
         // ratios. Never touches leaves. Returns true when anything changed.
         if (!saved || !live) return false;
         if (saved.type !== 'split' || live.type !== 'split') return false;
-        if (saved.direction !== live.direction) return false;
+        const sameShape = _leafCount(saved.first) === _leafCount(live.first) &&
+            _leafCount(saved.second) === _leafCount(live.second);
         let changed = false;
+        if (anyDirection && saved.pinned && !live.pinned && sameShape &&
+            (saved.ids === undefined || saved.ids === this.windowIds(live))) {
+            live.direction = saved.direction;
+            live.pinned = true;
+            changed = true;
+        }
+        if (!anyDirection && saved.direction !== live.direction) return changed;
         const r = Number(saved.ratio);
         // Only share a ratio between arrangements of the SAME shape — a shape
         // saved from a smaller/mirrored tree (e.g. a 2-window 85/15) applied to a
         // bigger or flipped one starves everything past the first split.
-        if (_leafCount(saved.first) === _leafCount(live.first) &&
-            _leafCount(saved.second) === _leafCount(live.second) &&
+        if (sameShape &&
             Number.isFinite(r) && r > 0.02 && r < 0.98 &&
             Math.abs(live.ratio - r) > 0.0005) {
             live.ratio = r;
             changed = true;
         }
-        changed = this.reconcileTreeRatios(saved.first, live.first) || changed;
-        changed = this.reconcileTreeRatios(saved.second, live.second) || changed;
+        changed = this.reconcileTreeRatios(saved.first, live.first, anyDirection) || changed;
+        changed = this.reconcileTreeRatios(saved.second, live.second, anyDirection) || changed;
         return changed;
     }
 

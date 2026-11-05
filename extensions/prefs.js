@@ -181,12 +181,15 @@ export default class TilingWMPreferences extends ExtensionPreferences {
 
         const dwindleRatioRow = this._addSpinRow(group, settings, 'dwindle-ratio', _('Dwindle Split Ratio'),
             _('Ratio for dwindle splits. Default 0.5 (even split)'), 0.0, 1.0, 0.05, 0.1, 4);
+        const preserveSplitRow = this._addSwitchRow(group, settings, 'spiral-preserve-split', _('Preserve Split Direction'),
+            _('Keep each split\'s direction from when it was made. Off: it follows its box, as in Hyprland'));
         const masterRatioRow = this._addSpinRow(group, settings, 'master-ratio', _('Master Ratio'),
             _('Ratio of the screen allocated to the master window'), 0.15, 0.85, 0.05, 0.1, 4);
 
         const updateRatioVisibility = () => {
             const layout = settings.get_string('layout');
             dwindleRatioRow.set_visible(layout === 'dwindle');
+            preserveSplitRow.set_visible(isSpiralLayout(layout));
             masterRatioRow.set_visible(layout === 'master-stack' || layout === 'centered-master-stack');
         };
         updateRatioVisibility();

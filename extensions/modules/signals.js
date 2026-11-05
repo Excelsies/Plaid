@@ -251,6 +251,7 @@ export class Signals extends PlaidSubsystem {
             this.core.persistence.scheduleSaveLayouts();
         });
         this.connectObject(this.core._settings, 'changed::dwindle-ratio', () => this.core.layouts.retileAll());
+        this.connectObject(this.core._settings, 'changed::spiral-preserve-split', () => this.core.layouts.retileAll());
         this.connectObject(this.core._settings, 'changed::master-ratio', () => this.core.layouts.retileAll());
         this.connectObject(this.core._settings, 'changed::active-border-width', () => this.core.borders.updateBorders());
         this.connectObject(this.core._settings, 'changed::borders-enabled', () => this.core.borders.updateBorders());

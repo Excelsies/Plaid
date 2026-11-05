@@ -608,6 +608,7 @@ export class Layouts {
             const reset = node => {
                 if (!node || node.type !== 'split') return;
                 node.ratio = ratio;
+                delete node.pinned;
                 reset(node.first);
                 reset(node.second);
             };
@@ -630,10 +631,14 @@ export class Layouts {
                 this.core._dwindleLeafSigs.set(key, sig);
                 const savedShape = this.core._persistedDwindleByIndex &&
                     this.core._persistedDwindleByIndex.get(this.core.persistence.shapeKey(this.core.monitors.groupKey(workspace, mon), layout));
-                if (savedShape && this.core.bsp.reconcileTreeRatios(savedShape, tree))
+                if (savedShape && this.core.bsp.reconcileTreeRatios(savedShape, tree, this.core.bsp.orientsSplits(workspace, mon))) {
                     this.core.debugLog(`dwindle: restored saved split ratios (ws=${this.core.geometry.wsIndex(workspace)}, windows=${tiledWindows.length})`);
+                    this.core.bsp.markStructural(workspace, mon);
+                }
             }
         }
+        // Spiral's orientation pass, on the restored ratios.
+        this.core.bsp.orientLive(tree, area, gap, workspace, mon);
 
         this.core.bsp.treeMinSizes(tree, gap, workspace, mon);
         this.core.bsp.clampTreeToMinSizes(tree, areaW, areaH, gap);
@@ -652,7 +657,7 @@ export class Layouts {
         const idx = this.core.geometry.wsIndex(workspace);
         // Same slots as the save: index 0 (the parking slot) is never stored.
         if (idx <= 0) return;
-        const shape = this.core.bsp.dwindleShapeFromString(this.core.bsp.dwindleShapeToString(tree));
+        const shape = this.core.bsp.savedShape(tree);
         const key = this.core.persistence.shapeKey(this.core.monitors.groupKey(workspace, mon),
             this.core.windows.getWorkspaceLayout(workspace, mon));
         if (shape) this.core._persistedDwindleByIndex.set(key, shape);
