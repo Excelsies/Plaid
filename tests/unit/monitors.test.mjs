@@ -325,6 +325,142 @@ test('lock cycle: the restore re-keys the stash for its own primary, whatever wa
   assert.equal(next.windows.getWorkspaceLayout(ws, 1), 'master-stack');
 });
 
+test('lock cycle: a layout switch after the restore resets the splits, as without a lock', () => {
+  const [, ws, ws2] = stubGlobal();
+  const a = liveWin('a', ws, 0), b = liveWin('b', ws, 0), d = liveWin('d', ws2, 1), e = liveWin('e', ws2, 1);
+  const { self } = groupSelf(ws, [a, b]);
+  const tiles = (s) => {
+    s.windows.isFloating = () => false;
+    s.windows.isFullscreenTile = () => false;
+    s.grab.safeMove = () => {};
+  };
+  tiles(self);
+  self.bsp.bspSetTree(ws, 0, split('h', 0.7, leaf(a), leaf(b)));
+  self.layouts.retileDwindle(ws, [a, b], 0);
+  self.bsp.bspSetTree(ws2, 1, split('v', 0.5, leaf(d), leaf(e)));
+  self.layouts.retileDwindle(ws2, [d, e], 1);
+  const g2 = self.monitors.groupObj(ws2, 1);
+  assert.deepEqual([self._bspLaidOutAs.get(ws), self._bspLaidOutAs.get(g2)], ['dwindle', 'dwindle']);
+  const sig = self._dwindleLeafSigs.get(ws);
+  global.workspace_manager.get_n_workspaces = () => 2;
+  const next = lockCycle(self, [a, b]);
+  assert.equal(next._dwindleLeafSigs.get(ws), sig, 'the leaf signature is the stashed one');
+  assert.equal(next._bspLaidOutAs.has(g2), false, 'a removed workspace takes its group with it');
+  assert.equal(next._dwindleLeafSigs.has(g2), false);
+  tiles(next);
+  next._workspaceLayouts.set(1, 'spiral');
+  next.layouts.retileDwindle(ws, [a, b], 0);
+  assert.equal(next.bsp.bspGetTree(ws, 0).ratio, 0.5, 'reset to the Spiral ratio');
+  assert.equal(next._bspLaidOutAs.get(ws), 'spiral');
+});
+
+test('lock cycle: natural, maximize-toggle and float-maximize rects survive for live windows', () => {
+  const [, ws] = stubGlobal();
+  const a = liveWin('a', ws, 0), f = liveWin('f', ws, 0), gone = liveWin('gone', ws, 0);
+  const { self } = groupSelf(ws, [a]);
+  const natural = { x: 10, y: 20, w: 300, h: 200 };
+  const before = { x: 40, y: 50, w: 400, h: 300 };
+  for (const w of [a, gone]) {
+    self._savedRects.set(w, natural);
+    self._maximizeToggleRects.set(w, before);
+  }
+  for (const w of [f, gone]) {
+    self._floatMaxRects.set(w, before);
+    self._gappedMaxSet.add(w);
+  }
+  gone.get_compositor_private = () => null;
+  const next = lockCycle(self, [a]);
+  assert.deepEqual(next._savedRects.get(a), natural, 'the natural rect from before the lock');
+  assert.deepEqual(next._maximizeToggleRects.get(a), before);
+  assert.deepEqual(next._floatMaxRects.get(f), before);
+  assert.equal(next._gappedMaxSet.has(f), true, 'a gapped float still restores on maximize');
+  for (const m of [next._savedRects, next._maximizeToggleRects, next._floatMaxRects, next._gappedMaxSet])
+    assert.equal(m.has(gone), false);
+});
+
+// A float with maximize state and signal hooks that record their handlers.
+function floatWin(title, ws, mon) {
+  const w = liveWin(title, ws, mon);
+  const hooks = [];
+  const emitter = (o) => Object.assign(o, {
+    connectObject(...a) { const tok = a.pop(); for (let i = 0; i + 1 < a.length; i += 2) hooks.push([o, a[i], a[i + 1], tok]); },
+    disconnectObject(tok) { for (let i = hooks.length - 1; i >= 0; i--) if (hooks[i][3] === tok) hooks.splice(i, 1); },
+  });
+  const actor = emitter({});
+  emitter(w);
+  Object.assign(w, {
+    _max: false, _unmax: 0, hooks, actor,
+    _plaidSignalsConnected: false,
+    get_compositor_private: () => actor,
+    is_maximized: () => w._max,
+    is_fullscreen: () => false,
+    unmaximize: () => { w._unmax++; w._max = false; },
+    fire: (o, sig) => { for (const [e, s, fn] of [...hooks]) if (e === o && s === sig) fn(o); },
+  });
+  return w;
+}
+
+test('resume: a float maximized natively while Plaid was off stays maximized', () => {
+  const [, ws] = stubGlobal();
+  const f = floatWin('f', ws, 0);
+  const { self } = groupSelf(ws, []);
+  // Gap-maximized before the disable.
+  self._floatMaxRects.set(f, { x: 40, y: 50, w: 400, h: 300 });
+  self._gappedMaxSet.add(f);
+  const next = lockCycle(self, [f]);
+  next.windows.isFloating = () => true;
+  next.windows.moveWindow = (w, x, y, width, height) => { w._frame = { x, y, width, height }; };
+  f._max = true;
+  next.windows.adoptFloat(f, true);
+  assert.equal(f.is_maximized(), true, 'not restored to the rect from before the disable');
+  assert.equal(f._unmax, 0);
+  assert.equal(next._gappedMaxSet.has(f), false);
+  assert.equal(next._floatMaxRects.has(f), false);
+});
+
+test('resume: a float moved while Plaid was off keeps its new rect; a gapped one keeps its old', () => {
+  const [, ws] = stubGlobal();
+  const f = floatWin('f', ws, 0), g = floatWin('g', ws, 0);
+  const { self } = groupSelf(ws, []);
+  self._floatMaxRects.set(f, { x: 40, y: 50, w: 400, h: 300 });
+  self._floatMaxRects.set(g, { x: 40, y: 50, w: 400, h: 300 });
+  self._gappedMaxSet.add(g);
+  const next = lockCycle(self, [f, g]);
+  next.windows.isFloating = () => true;
+  f._frame = { x: 200, y: 100, width: 500, height: 350 };
+  next.windows.adoptFloat(f, false);
+  next.windows.adoptFloat(g, false);
+  assert.deepEqual(next._floatMaxRects.get(f), { x: 200, y: 100, w: 500, h: 350 });
+  assert.deepEqual(next._floatMaxRects.get(g), { x: 40, y: 50, w: 400, h: 300 });
+});
+
+test('resume: a restored window the pass does not add gets its signals back, and its close removes it', () => {
+  const [, ws] = stubGlobal();
+  const a = floatWin('a', ws, 0), x = floatWin('x', ws, 0);
+  const { self } = groupSelf(ws, [a, x]);
+  sessionState.stashedTiling = null;
+  self.stashTilingState();
+  const next = groupSelf(ws, []).self;
+  next._windowWorkspaces = new Map();
+  try {
+    next.restoreTilingState();
+    // a is managed (added by the pass); x, a late float, is not.
+    next.windows.addWindow(a, true);
+  } finally {
+    sessionState.stashedTiling = null;
+  }
+  assert.equal(next._windowSignals?.has(x) ?? false, false, 'the pass alone leaves x deaf');
+  next.windows.reconnectRestored();
+  assert.equal(next._windowSignals.has(x), true);
+  const hooked = a.hooks.length;
+  next.windows.reconnectRestored();
+  assert.equal(a.hooks.length, hooked, 'a window already connected is not connected twice');
+  x.fire(x.actor, 'destroy');
+  assert.equal(next._windowWorkspaces.has(x), false);
+  assert.equal(next._windowMonitors.has(x), false);
+  assert.equal(next._workspaceOrders.get(ws).includes(x), false);
+});
+
 function plugSecond() {
   global.display.get_n_monitors = () => 2;
   global.display.get_primary_monitor = () => 1;

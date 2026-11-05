@@ -636,6 +636,27 @@ export class Windows extends PlaidSubsystem {
         win._plaidSignalsConnected = false;
     }
 
+    // A float found at enable. A native maximize made while Plaid was off
+    // replaces its gapped state, and its rect is the one it has now.
+    adoptFloat(win, convert) {
+        if (win.is_maximized()) {
+            this.core._gappedMaxSet.delete(win);
+            this.core._floatMaxRects.delete(win);
+        }
+        this.trackFloatGeometry(win);
+        if (convert) this.convertMaximizedToGaps(win);
+        this.connectFloatHooks(win);
+    }
+
+    // A restored window the resume pass did not add (a float kept in the
+    // maps by a late float rule) gets its signals back, so its close still
+    // removes it.
+    reconnectRestored() {
+        for (const win of this.core._windowWorkspaces.keys()) {
+            if (win.get_compositor_private()) this.connectWindowSignals(win);
+        }
+    }
+
     connectFloatHooks(win) {
         if (!this.core._settings || !this.core._floatHooks || this.core._floatHooks.has(win)) return;
         const ids = [

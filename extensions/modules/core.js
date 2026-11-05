@@ -348,10 +348,7 @@ export class PlaidCore {
                             this.windows.releaseSideTile(win);
                         }
                     } else if (this.windows.isFloating(win)) {
-                        this.windows.restoreFloatNaturalRect(win);
-                        if (!resumeLockCycle)
-                            this.windows.convertMaximizedToGaps(win);
-                        this.windows.connectFloatHooks(win);
+                        this.windows.adoptFloat(win, !resumeLockCycle);
                     } else if (bgCommand && !this._backgroundAppWin &&
                         this.bgApp.isMarkerProcess(win, 'PLAID_BGAPP=1', bgCommand)) {
                         this.debugLog('background app: idle-pass re-claim of surviving window');
@@ -359,6 +356,7 @@ export class PlaidCore {
                     }
                 }
             }
+            this.windows.reconnectRestored();
             if (this.resumeRetilesAll(resumeLockCycle))
                 this.layouts.retileAll();
             this.bgApp.checkDynamicWorkspaces();
@@ -412,6 +410,12 @@ export class PlaidCore {
                 toggleFloatWindows: this._toggleFloatWindows,
                 scratchpadVisible: this._scratchpadVisible,
                 observedMinSizes: this._observedMinSizes,
+                savedRects: this._savedRects,
+                maximizeToggleRects: this._maximizeToggleRects,
+                floatMaxRects: this._floatMaxRects,
+                gappedMaxSet: this._gappedMaxSet,
+                dwindleLeafSigs: this._dwindleLeafSigs,
+                bspLaidOutAs: this._bspLaidOutAs,
                 windowMonitors: this._windowMonitors,
                 groupObjs: this._groupObjs,
                 keyedPrimary: this._keyedPrimary,
@@ -496,6 +500,13 @@ export class PlaidCore {
                 s.groupObjs.delete(ws);
             }
         }
+        // Signatures and laid-out layouts go with their trees.
+        for (const map of [s.dwindleLeafSigs, s.bspLaidOutAs]) {
+            if (!map) continue;
+            for (const k of [...map.keys()]) {
+                if (!s.bspTrees.has(k)) map.delete(k);
+            }
+        }
         for (const [ws, tree] of s.bspTrees) {
             if (!tree) continue;
             let t = tree;
@@ -513,6 +524,19 @@ export class PlaidCore {
         this._windowWorkspaces = s.windowWorkspaces;
         this._windowWSIndices = s.windowWSIndices;
         this._lastFocusedPerWorkspace = s.lastFocusedPerWorkspace;
+        if (s.dwindleLeafSigs) this._dwindleLeafSigs = s.dwindleLeafSigs;
+        if (s.bspLaidOutAs) this._bspLaidOutAs = s.bspLaidOutAs;
+        // Per-window rects and the float-maximize set, for live windows.
+        const liveOnly = (m) => {
+            for (const w of [...m.keys()]) {
+                if (!alive(w)) m.delete(w);
+            }
+            return m;
+        };
+        if (s.savedRects) this._savedRects = liveOnly(s.savedRects);
+        if (s.maximizeToggleRects) this._maximizeToggleRects = liveOnly(s.maximizeToggleRects);
+        if (s.floatMaxRects) this._floatMaxRects = liveOnly(s.floatMaxRects);
+        if (s.gappedMaxSet) this._gappedMaxSet = liveOnly(s.gappedMaxSet);
         if (s.windowMonitors) this._windowMonitors = s.windowMonitors;
         if (s.groupObjs) this._groupObjs = s.groupObjs;
         if (s.lastRealFocusedWindow && alive(s.lastRealFocusedWindow))
