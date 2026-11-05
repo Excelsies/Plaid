@@ -382,7 +382,7 @@
 
     <!-- Auto-update from the project releases -->
     <key name="release-check-enabled" type="b">
-      <default>true</default>
+      <default>false</default>
       <summary>Automatic Plaid updates</summary>
       <description>Download and install new Plaid releases automatically; they load on the next login.</description>
     </key>
