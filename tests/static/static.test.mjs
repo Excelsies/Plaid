@@ -228,11 +228,12 @@ test('GI namespaces are imported where they are used', () => {
   // keybind-conflicts.js receives Gio as an injected parameter so it can run
   // in the GTK-only prefs process. layouts.js mentions St.Settings only in a
   // comment; workspaces.js mentions org.gnome.Shell in a D-Bus name string.
-  // placement.js mentions Meta.Window only in a comment.
+  // placement.js and signals.js mention Meta only in comments.
   const allowed = new Set([
     'keybind-conflicts.js:Gio',
     'layouts.js:St',
     'placement.js:Meta',
+    'signals.js:Meta',
     'workspaces.js:Shell',
   ]);
   for (const file of [join(ext, 'extension.js'), ...moduleFiles]) {

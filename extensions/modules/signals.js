@@ -5,7 +5,6 @@
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -341,9 +340,6 @@ export class Signals extends PlaidSubsystem {
                     drop();
                     if (!this.core._settings) return;
                     doRestore();
-                    if (this.core._settings.get_boolean('follow-focus') &&
-                        win.get_window_type() === Meta.WindowType.NORMAL)
-                        this.core.windows.cursorWarpDeferred(win);
                     this.core.windows.connectFloatHooks(win);
                     this.core.borders.updateBorders();
                 }));
@@ -352,9 +348,6 @@ export class Signals extends PlaidSubsystem {
                 this.addIdle(() => {
                     if (!this.core._settings) return false;
                     doRestore();
-                    if (this.core._settings.get_boolean('follow-focus') &&
-                        win.get_window_type() === Meta.WindowType.NORMAL)
-                        this.core.windows.cursorWarpDeferred(win);
                     this.core.windows.connectFloatHooks(win);
                     this.core.borders.updateBorders();
                     return false;

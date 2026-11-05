@@ -82,7 +82,7 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         this._addSwitchRow(group, settings, 'enabled', _('Enable Tiling'),
             _('Turn tiling on or off'));
         this._addSwitchRow(group, settings, 'follow-focus', _('Cursor Follows Focus'),
-            _('Warp cursor to focused window on keybind navigation and new windows'));
+            _('Warp cursor to focused window on keybind navigation and new tiled windows'));
         this._addSwitchRow(group, settings, 'pointer-focus', _('Focus on Hover'),
             _('Focus the window under the mouse (works across monitors)'));
         this._addSwitchRow(group, settings, 'mouse-resize', _('Mouse Resize and Swap'),

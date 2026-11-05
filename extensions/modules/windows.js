@@ -213,9 +213,8 @@ export class Windows extends PlaidSubsystem {
             return;
         }
         if (this.isFloating(win)) {
-            if (this.core._settings.get_boolean('follow-focus') &&
-                win.get_window_type() === Meta.WindowType.NORMAL)
-                this.cursorWarpDeferred(win);
+            // A new float opens where its app put it; the cursor stays put
+            // (popup-style windows of apps such as Zoom are plain new windows).
             // Size hints arrive with the first commit: a window hidden as a
             // tile may float now, and no retile places a float.
             if (this.core._newWindowSet?.has(win)) this.releaseSpawnHide(win);
