@@ -403,6 +403,20 @@ export class Bsp {
         return node;
     }
 
+    // The leaf of a tagged tree closest to (px, py), the first on a tie.
+    nearestLeaf(tree, px, py) {
+        return this.core.geometry.nearestTo(this.bspLeaves(tree)
+            .map(l => [l, { x: l._x, y: l._y, w: l._w, h: l._h }]), px, py);
+    }
+
+    // The side of a tagged leaf a window split in at (px, py) takes: along
+    // its longer side (side by side unless taller than wide), the half the
+    // point is in.
+    pointSide(leaf, px, py) {
+        if (leaf._w >= leaf._h) return px < leaf._x + Math.floor(leaf._w / 2) ? 'left' : 'right';
+        return py < leaf._y + Math.floor(leaf._h / 2) ? 'top' : 'bottom';
+    }
+
     // Spiral splits the focused tiled window (else the leaf under or closest
     // to the pointer) along its longer side; the new window takes the half
     // the pointer is in. The warp to each revealed window leaves the pointer
@@ -421,26 +435,17 @@ export class Bsp {
             by = 'pointer';
         }
         if (!target || target.type !== 'leaf') {
-            target = null;
             by = 'nearest';
-            let best = Infinity;
-            for (const leaf of this.bspLeaves(tree)) {
-                const d = this.core.geometry.pointRectDistSq(leaf._x, leaf._y, leaf._w, leaf._h, px, py);
-                if (d < best) {
-                    best = d;
-                    target = leaf;
-                }
-            }
+            target = this.nearestLeaf(tree, px, py);
         }
         if (!target) {
             this.recordFirstOpenBox(win, mon);
             return this.bspMakeLeaf(win);
         }
         this.recordOpenBox(win, target._w, target._h);
-        const dir = target._w >= target._h ? 'h' : 'v';
-        const newFirst = dir === 'h'
-            ? px < target._x + Math.floor(target._w / 2)
-            : py < target._y + Math.floor(target._h / 2);
+        const side = this.pointSide(target, px, py);
+        const dir = side === 'left' || side === 'right' ? 'h' : 'v';
+        const newFirst = side === 'left' || side === 'top';
         this.core.debugLog(`spiral: insert ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
             `ws=${this.core.geometry.wsIndex(ws)} at ${target.window?.get_wm_class_instance() || '?'} ` +
             `(${by}) ${dir}${newFirst ? ' first' : ' second'}`);
@@ -494,7 +499,9 @@ export class Bsp {
 
     // atPointer false: appended as dwindle's next leaf, wherever the pointer
     // is. Spiral always inserts by its own rule (spiralInsertNew).
-    bspInsertForWorkspace(ws, win, mon, atPointer = true) {
+    // at: [x, y], Spiral splits the leaf nearest that point instead
+    // (spiral.insertNear).
+    bspInsertForWorkspace(ws, win, mon, atPointer = true, at = null) {
         const gap = this.core._settings.get_int('inside-gap');
         const workArea = this.core.monitors.monitorWorkArea(ws, mon);
         if (!workArea) return;
@@ -516,7 +523,7 @@ export class Bsp {
         const ratio = this.bspSplitRatio(ws, mon);
         if (tree && spiral) {
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);
-            tree = this.spiralInsertNew(ws, tree, win, area, mon);
+            tree = at ? this.core.spiral.insertNear(tree, win, ...at) : this.spiralInsertNew(ws, tree, win, area, mon);
         } else if (tree) {
             const [px, py] = global.get_pointer();
             this.bspTagGeometry(tree, areaX, areaY, areaW, areaH, gap);

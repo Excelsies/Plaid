@@ -656,6 +656,17 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         this._addShortcutRow(swapGroup, settings, 'swap-up', _('Swap Up'));
         this._addShortcutRow(swapGroup, settings, 'swap-down', _('Swap Down'));
 
+        const moveGroup = new Adw.PreferencesGroup({
+            title: _('Window Moving'),
+            description: _('Spiral: beside the neighbour in that direction. Other windows: to the monitor in that direction'),
+        });
+        page.add(moveGroup);
+
+        this._addShortcutRow(moveGroup, settings, 'move-window-left', _('Move Left'));
+        this._addShortcutRow(moveGroup, settings, 'move-window-right', _('Move Right'));
+        this._addShortcutRow(moveGroup, settings, 'move-window-up', _('Move Up'));
+        this._addShortcutRow(moveGroup, settings, 'move-window-down', _('Move Down'));
+
         const splitGroup = new Adw.PreferencesGroup({
             title: _('Spiral Splits'),
             description: _('The focused window\'s parent split, in Spiral'),

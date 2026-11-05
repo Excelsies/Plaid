@@ -27,6 +27,7 @@ import { PlaidSubsystem } from './subsystem.js';
 const PLAID_KEYBIND_KEYS = [
     'move-focus-left', 'move-focus-right', 'move-focus-up', 'move-focus-down',
     'swap-left', 'swap-right', 'swap-up', 'swap-down', 'toggle-split', 'swap-split',
+    'move-window-left', 'move-window-right', 'move-window-up', 'move-window-down',
     'resize-shrink-width', 'resize-grow-width', 'resize-shrink-height', 'resize-grow-height',
     'toggle-float', 'toggle-tiling', 'toggle-maximize', 'center-window',
     'pick-float-window', 'cycle-layout',
@@ -133,6 +134,10 @@ export class Keybindings extends PlaidSubsystem {
             { key: 'swap-down', fn: () => this.core.actions.swapWindow('down') },
             { key: 'toggle-split', fn: () => this.core.actions.toggleSplit() },
             { key: 'swap-split', fn: () => this.core.actions.swapSplit() },
+            { key: 'move-window-left', fn: () => this.core.actions.moveWindow('left') },
+            { key: 'move-window-right', fn: () => this.core.actions.moveWindow('right') },
+            { key: 'move-window-up', fn: () => this.core.actions.moveWindow('up') },
+            { key: 'move-window-down', fn: () => this.core.actions.moveWindow('down') },
             { key: 'resize-shrink-width', fn: () => this.core.actions.resizeWindow('shrink', 'width') },
             { key: 'resize-grow-width', fn: () => this.core.actions.resizeWindow('grow', 'width') },
             { key: 'resize-shrink-height', fn: () => this.core.actions.resizeWindow('shrink', 'height') },

@@ -141,6 +141,26 @@ export class Actions extends PlaidSubsystem {
         return false;
     }
 
+    // Super+Shift+arrows. A tile of a Spiral group: Hyprland's movewindow
+    // (spiral.moveWindow). Any other window, and every window with tiling
+    // off, moves to the monitor in that direction as GNOME's move-to-monitor
+    // does (monitors.moveToMonitor); its group follows as after GNOME's move.
+    moveWindow(direction) {
+        const win = this.getActiveWindow();
+        if (!win || this.core._grabOp) return;
+        const monitors = this.core.monitors;
+        const ws = win.get_workspace();
+        const mon = monitors.windowMon(win);
+        if (ws && this.core._settings.get_boolean('enabled') && this.core.bsp.spiralSlots(ws, mon).has(win)) {
+            if (this.core.spiral.moveWindow(win, ws, mon, direction) &&
+                this.core._settings.get_boolean('follow-focus'))
+                this.core.windows.cursorWarpDeferred(win);
+            return;
+        }
+        const to = monitors.neighbor(win.get_monitor(), direction);
+        if (to >= 0) monitors.moveToMonitor(win, to);
+    }
+
     swapWindow(direction) {
         const focused = this.getActiveWindow();
         if (!focused) return;

@@ -57,6 +57,13 @@ Full docs live on the [wiki](https://github.com/Plyply99/Plaid/wiki).
   
 - **Keybinds**: Focus movement, swaps, resizing, floats, workspaces, scratchpad,
   layout cycling, and more.
+  Super+Shift+arrows move the focused window: in Spiral beside its neighbour in that
+  direction (Hyprland's movewindow), any other window to the monitor in that direction.
+  GNOME binds the same keys to its Move to Monitor shortcuts, and Plaid never changes
+  GNOME's settings: clear those four (Settings, Keyboard, View and Customize Shortcuts,
+  Windows) or run
+  `gsettings set org.gnome.desktop.wm.keybindings move-to-monitor-left "[]"`
+  and the same for `-right`, `-up` and `-down`.
 
 
 - **Float rules**: Per-app and per-title floating.

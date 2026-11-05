@@ -8,9 +8,11 @@
 // per-group key object.
 //
 // A window changes group only through moveWindowToGroup (monitor change, drop,
-// grab end, hotplug, resume) or swapAcrossGroups; both write the record
+// grab end, hotplug, resume, movewindow) or swapAcrossGroups; both write the record
 // through setWindowGroup. Naming an index stand-in ("#0" -> "DP-1") renames
 // the record in place (syncKeyedPrimary).
+
+import Meta from 'gi://Meta';
 
 import { PlaidSubsystem } from './subsystem.js';
 import { isBspLayout } from './helpers.js';
@@ -231,6 +233,46 @@ export class Monitors extends PlaidSubsystem {
                 return i;
         }
         return -1;
+    }
+
+    // The monitor next to `mon` in direction 'left'|'right'|'up'|'down', as
+    // GNOME's move-to-monitor finds it; -1: none.
+    neighbor(mon, dir) {
+        const d = { left: Meta.DisplayDirection.LEFT, right: Meta.DisplayDirection.RIGHT,
+            up: Meta.DisplayDirection.UP, down: Meta.DisplayDirection.DOWN }[dir];
+        if (mon < 0 || d === undefined) return -1;
+        return global.display.get_monitor_neighbor_index(mon, d);
+    }
+
+    // GNOME's move-to-monitor: mutter's move_to_monitor_internal with the
+    // user-action flag, which spares a monitor-sized frame the constraints
+    // that keep a plain move_to_monitor on its monitor. The frame keeps its
+    // size and its relative place in the work area, or its centre's when it
+    // does not fit (move_rect_between_rects: every product and sum rounded
+    // to float, as mutter's C). A fullscreen or
+    // maximized window is fitted to the new monitor by mutter itself.
+    moveToMonitor(win, to) {
+        if (win.is_fullscreen() || win.get_maximize_flags() !== 0) {
+            win.move_to_monitor(to);
+            return;
+        }
+        const r = win.get_frame_rect();
+        const o = win.get_work_area_for_monitor(win.get_monitor());
+        const n = win.get_work_area_for_monitor(to);
+        const f = Math.fround;
+        let x, y;
+        if (r.x >= o.x && r.y >= o.y && r.x + r.width <= o.x + o.width && r.y + r.height <= o.y + o.height &&
+            o.width > r.width && o.height > r.height && n.width >= r.width && n.height >= r.height) {
+            x = Math.trunc(f(n.x + f(f((r.x - o.x) / (o.width - r.width)) * (n.width - r.width))));
+            y = Math.trunc(f(n.y + f(f((r.y - o.y) / (o.height - r.height)) * (n.height - r.height))));
+        } else {
+            const eps = 2 ** -23;
+            const rel = (v, len) => Math.min(Math.max(f(v / len), eps), 1 - eps);
+            const hw = Math.trunc(r.width / 2), hh = Math.trunc(r.height / 2);
+            x = Math.trunc(f(n.x - hw + f(rel(r.x - o.x + hw, o.width) * n.width)));
+            y = Math.trunc(f(n.y - hh + f(rel(r.y - o.y + hh, o.height) * n.height)));
+        }
+        win.move_resize_frame(true, x, y, r.width, r.height);
     }
 
     monitorWorkArea(ws, mon) {
@@ -466,11 +508,11 @@ export class Monitors extends PlaidSubsystem {
     }
 
     // The one way a window changes group (monitor change, drop, grab end,
-    // hotplug): it leaves the old group's tree, goes last in the order, joins
-    // the new tree (at the pointer only for a drag, which ended there; a drop
-    // then places it) and the workspace retiles. A window is in exactly one
-    // group.
-    moveWindowToGroup(win, conn, cause) {
+    // hotplug, movewindow): it leaves the old group's tree, goes last in the
+    // order, joins the new tree (at the pointer only for a drag, which ended
+    // there; a drop then places it; at `at` for movewindow) and the workspace
+    // retiles. A window is in exactly one group.
+    moveWindowToGroup(win, conn, cause, at = null) {
         if (!this.core._windowMonitors?.has(win)) return false;
         const from = this.windowConn(win);
         if (from === conn) return false;
@@ -487,7 +529,7 @@ export class Monitors extends PlaidSubsystem {
         const mon = this.connMon(conn);
         if (this.groupPlaces(ws, mon) && !this.core.windows.isFloating(win) &&
             isBspLayout(this.core.windows.getWorkspaceLayout(ws, mon)))
-            this.core.bsp.bspInsertForWorkspace(ws, win, mon, cause === 'drop' || cause === 'grab-end');
+            this.core.bsp.bspInsertForWorkspace(ws, win, mon, cause === 'drop' || cause === 'grab-end', at);
         this.core.layouts.retileWorkspace(ws);
         return true;
     }

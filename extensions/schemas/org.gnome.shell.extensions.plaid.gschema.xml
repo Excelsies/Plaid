@@ -314,6 +314,31 @@
       <description>Number of pixels to resize per keypress</description>
     </key>
 
+    <!-- Keybindings: Moving windows -->
+    <key name="move-window-left" type="as">
+      <default><![CDATA[['<Super><Shift>Left']]]></default>
+      <summary>Move window left</summary>
+      <description>Spiral: the focused tile moves beside its left neighbour, or to the monitor on the left at the edge. Any other window moves to the monitor on the left</description>
+    </key>
+
+    <key name="move-window-right" type="as">
+      <default><![CDATA[['<Super><Shift>Right']]]></default>
+      <summary>Move window right</summary>
+      <description>Spiral: the focused tile moves beside its right neighbour, or to the monitor on the right at the edge. Any other window moves to the monitor on the right</description>
+    </key>
+
+    <key name="move-window-up" type="as">
+      <default><![CDATA[['<Super><Shift>Up']]]></default>
+      <summary>Move window up</summary>
+      <description>Spiral: the focused tile moves beside its upper neighbour, or to the monitor above at the edge. Any other window moves to the monitor above</description>
+    </key>
+
+    <key name="move-window-down" type="as">
+      <default><![CDATA[['<Super><Shift>Down']]]></default>
+      <summary>Move window down</summary>
+      <description>Spiral: the focused tile moves beside its lower neighbour, or to the monitor below at the edge. Any other window moves to the monitor below</description>
+    </key>
+
     <!-- Keybindings: Spiral splits -->
     <key name="toggle-split" type="as">
       <default><![CDATA[['<Super>g']]]></default>

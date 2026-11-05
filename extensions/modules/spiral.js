@@ -13,6 +13,18 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { PlaidSubsystem } from './subsystem.js';
 
+// movewindow: the point a pixel inside the neighbour past each edge of a
+// slot, as Hyprland's focal point (gap: the inside gap; a rect's far edge
+// counts as on it), and the side a window moved toward a lone partner lands
+// on (Hyprland's direction override).
+const FOCAL = {
+    left: (s, gap) => [s.x - gap - 1, s.y + s.h / 2],
+    right: (s, gap) => [s.x + s.w + gap + 1, s.y + s.h / 2],
+    up: (s, gap) => [s.x + s.w / 2, s.y - gap - 1],
+    down: (s, gap) => [s.x + s.w / 2, s.y + s.h + gap + 1],
+};
+const PAST_PARTNER = { left: 'left', right: 'right', up: 'top', down: 'bottom' };
+
 const DRAG_SCALE = 0.85;
 const DRAG_SHRINK_MS = 150;
 // Once the pointer has left home, home is only its slot's core.
@@ -167,6 +179,65 @@ export class Spiral extends PlaidSubsystem {
         }
         const rect = g.zones.get(key);
         return rect ? { target, side, rect } : null;
+    }
+
+    // Hyprland's movewindow of a tile of Spiral group (ws, mon): it leaves its
+    // leaf and splits the leaf nearest the point just past its slot's edge
+    // (FOCAL) on the side that point picks; toward a lone partner across
+    // its parent split, past that partner. Past the tiling area it joins the
+    // group of the monitor in that direction, if any, at that point when it
+    // is Spiral; a monitor that does not tile gets GNOME's move.
+    moveWindow(win, ws, mon, dir) {
+        const bsp = this.core.bsp;
+        const monitors = this.core.monitors;
+        const slot = bsp.spiralSlots(ws, mon).get(win);
+        const area = this.core.geometry.outsideArea(monitors.monitorWorkArea(ws, mon));
+        if (!slot || !area) return false;
+        const gap = this.core._settings.get_int('inside-gap');
+        const [px, py] = FOCAL[dir](slot, gap);
+        const name = `${win.get_wm_class_instance() || '?'} id=${win.get_id()}`;
+        if (px < area.x || px >= area.x + area.w || py < area.y || py >= area.y + area.h) {
+            const to = monitors.neighbor(mon, dir);
+            if (to < 0) return false;
+            this.core.debugLog(`spiral: move ${name} ${dir} to monitor ${to}`);
+            // Another layout takes it by its own rule. A monitor that places
+            // nothing, or a window on every workspace (its record may name
+            // another one), gets GNOME's move; its group follows.
+            if (monitors.groupPlaces(ws, to) && !win.is_on_all_workspaces())
+                monitors.moveWindowToGroup(win, monitors.monConn(to), 'move', bsp.isSpiral(ws, to) ? [px, py] : null);
+            else
+                monitors.moveToMonitor(win, to);
+            return true;
+        }
+        const tree = bsp.bspGetTree(ws, mon);
+        const path = [];
+        if (!bsp.bspFindPath(tree, win, path) || path.length === 0) return false;
+        const parent = path[path.length - 1];
+        const back = dir === 'left' || dir === 'up';
+        const partner = back ? parent.first : parent.second;
+        const across = parent.direction === (dir === 'left' || dir === 'right' ? 'h' : 'v');
+        const side = across && partner.type === 'leaf' && partner.window !== win ? PAST_PARTNER[dir] : null;
+        const rest = bsp.bspRemove(bsp.bspClone(tree), win);
+        // The layout the window leaves behind, as the next retile orients it
+        // (a move is structural: bsp.orientLive runs on the result).
+        bsp.orientSpiral(rest, area, gap, ws, mon);
+        bsp.bspTagGeometry(rest, area.x, area.y, area.w, area.h, gap);
+        const next = this.insertNear(rest, win, px, py, side);
+        bsp.bspSetTree(ws, mon, next);
+        bsp.markStructural(ws, mon);
+        this.core.debugLog(`spiral: move ${name} ${dir} -> ${bsp.dwindleShapeToString(next)}`);
+        this.core.layouts.refreshSavedShape(ws, next, mon);
+        this.core.layouts.retileWorkspace(ws);
+        return true;
+    }
+
+    // movewindow's reinsertion into a tagged tree: `win` splits the leaf
+    // nearest (px, py), on `side` or the one the point picks (bsp.pointSide).
+    insertNear(tree, win, px, py, side = null) {
+        const bsp = this.core.bsp;
+        const target = bsp.nearestLeaf(tree, px, py);
+        if (!target) return bsp.bspMakeLeaf(win);
+        return this.dropTree(tree, target.window, win, side ?? bsp.pointSide(target, px, py));
     }
 
     // A drop's side is pinned where the box rule would turn it (the target's
