@@ -69,14 +69,8 @@ export class Placement {
         if (this.core._newWindowSet) {
             for (const win of this.core._newWindowSet) {
                 // A window can be disposed mid-animation; cleanup must continue.
-                {
-                    const a = win.get_compositor_private();
-                    if (a) {
-                        a.visible = true;
-                        a.set_opacity(255);
-                        a.remove_all_transitions();
-                    }
-                }
+                win.get_compositor_private()?.remove_all_transitions();
+                this.core.windows.showSpawnHidden(win);
             }
         }
         // New X11 windows can be held hidden while the settle poll fixes their
@@ -85,17 +79,8 @@ export class Placement {
             for (const win of this.core._windowWorkspaces.keys()) {
                 if (!win._plaidHoldReveal) continue;
                 win._plaidHoldReveal = false;
-                {
-                    const a = win.get_compositor_private();
-                    if (a) {
-                        a.visible = true;
-                        a.set_opacity(255);
-                        a.remove_all_transitions();
-                    }
-                    const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-                    if (effect && effect.setOpacityUniform)
-                        effect.setOpacityUniform(1);
-                }
+                win.get_compositor_private()?.remove_all_transitions();
+                this.core.windows.showSpawnHidden(win);
             }
         }
         this.core._animating = false;
@@ -741,18 +726,7 @@ export class Placement {
             // content, no border) until a title/wm-class notify or close.
             // Mirror the backstop-reveal block.
             if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
-            {
-                const a = win.get_compositor_private();
-                if (a) {
-                    a.visible = true;
-                    a.set_opacity(255);
-                }
-            }
-            {
-                const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-                if (effect && effect.setOpacityUniform)
-                    effect.setOpacityUniform(1);
-            }
+            this.core.windows.showSpawnHidden(win);
             this.core.signals.scheduleBorders();
             const f = win.get_frame_rect();
             this.core.debugLog(`anim: landing accepted after retries for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
@@ -799,11 +773,8 @@ export class Placement {
         this.core.debugLog(`float: ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ws=${this.core.geometry.wsIndex(ws)} ` +
             `max ${max.w}x${max.h} is below its open box ${box.w}x${box.h}`);
         this.core._toggleFloatWindows.add(win);
-        this.core._newWindowSet.delete(win);
         if (ws) this.core.monitors.removeFromGroupTree(win, ws, this.core.monitors.windowConn(win));
-        const actor = win.get_compositor_private();
-        if (actor) actor.set_opacity(255);
-        this.revealPlacedWindow(win);
+        this.core.windows.releaseSpawnHide(win);
     }
 
     // groups: [{mon, tiled, layout, places}] (layouts.doRetileWorkspace),

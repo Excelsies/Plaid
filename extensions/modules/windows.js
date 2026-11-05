@@ -285,6 +285,8 @@ export class Windows extends PlaidSubsystem {
                 const ws = win.get_workspace();
                 if (ws) this.core.layouts.retileWorkspace(ws);
             }
+            // A float is not placed: out of the choreography too.
+            this.core._newWindowSet?.delete(win);
             this.showSpawnHidden(win);
             // The blur/flair skipped during the pending-warp window must
             // attach once the reveal fires.
@@ -294,24 +296,36 @@ export class Windows extends PlaidSubsystem {
         });
     }
 
-    // A spawn-hidden window that will not be placed (it floats): out of the
-    // new-window choreography and shown where it is.
+    // Hidden by the new-window choreography and not shown since: pending
+    // placement, the reveal backstop armed, or held by the settle poll.
+    isSpawnHidden(win) {
+        return !!(this.core._newWindowSet?.has(win) || this.core._pendingWarp?.has(win) ||
+            win._plaidInvisibleTimer || win._plaidHoldReveal);
+    }
+
+    // A spawn-hidden window that will not be placed (it floats, or leaves the
+    // tiler alive): out of the new-window choreography and shown where it is.
+    // Nothing for a window Plaid does not hide.
     releaseSpawnHide(win) {
+        if (!this.isSpawnHidden(win)) return;
         this.core._newWindowSet?.delete(win);
         if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
         if (win._plaidInvisibleTimer) {
             GLib.source_remove(win._plaidInvisibleTimer);
             win._plaidInvisibleTimer = 0;
         }
+        win._plaidHoldReveal = false;
         this.showSpawnHidden(win);
         this.core.signals.scheduleBorders();
     }
 
-    // The offscreen mask's opacity uniform multiplies its whole output.
+    // The offscreen mask's opacity uniform multiplies its whole output. The
+    // map effect was skipped, so nothing else restores the opacity. A
+    // minimized window, or one on another workspace, is shown by mutter.
     showSpawnHidden(win) {
         const a = win.get_compositor_private();
         if (a) {
-            a.visible = true;
+            if (!win.minimized && !win.is_hidden()) a.visible = true;
             a.set_opacity(255);
         }
         const effect = this.core._windowMasks && this.core._windowMasks.get(win);
@@ -435,8 +449,11 @@ export class Windows extends PlaidSubsystem {
             // 2) place the window at its slot now that it is registered in
             //    the order (the retile later finds it already landed).
             {
+                // Only a hidden window: one floating at add (fullscreen) is
+                // not, and nothing would drive its mask back to 1.
                 const actorNow = win.get_compositor_private();
-                if (actorNow && this.core._settings.get_boolean('rounded-corners') &&
+                if (actorNow && this.core._pendingWarp?.has(win) &&
+                    this.core._settings.get_boolean('rounded-corners') &&
                     this.core._settings.get_int('border-radius') > 0) {
                     this.core.masks.ensureWindowMask(win, actorNow,
                         this.core._settings.get_int('border-radius') + 1);
@@ -949,6 +966,8 @@ export class Windows extends PlaidSubsystem {
             if (this.core._windowWorkspaces.has(win)) {
                 this.core.debugLog('extensions app: un-tiling settings window (late identity)');
                 const ws = win.get_workspace();
+                // Nothing places it now: show it before its state goes.
+                this.releaseSpawnHide(win);
                 this.removeWindow(win);
                 if (ws) this.core.layouts.retileWorkspace(ws);
             }
@@ -993,18 +1012,9 @@ export class Windows extends PlaidSubsystem {
             this.core.debugLog(`float reveal skipped (minimized): ${win.get_wm_class_instance() || '?'}`);
             return;
         }
-        this.core.debugLog(`float reveal: ${win.get_wm_class_instance() || '?'}`);
-        {
-            if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
-            const a = win.get_compositor_private();
-            if (a) {
-                a.visible = true;
-                a.set_opacity(255);
-            }
-            const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-            if (effect && effect.setOpacityUniform)
-                effect.setOpacityUniform(1);
-        }
+        // Only a window Plaid hides: any other float is left as it is.
+        if (this.isSpawnHidden(win)) this.core.debugLog(`float reveal: ${win.get_wm_class_instance() || '?'}`);
+        this.releaseSpawnHide(win);
     }
 
     restoreFloatNaturalRect(win, force = false) {
@@ -1184,6 +1194,9 @@ export class Windows extends PlaidSubsystem {
                 this.disconnectWindowSignals(win);
                 win._plaidTickSent = null;
                 win._plaidOpenBox = null;
+                // Nothing reveals it once Plaid is off.
+                if (!this.core._shuttingDown && this.isSpawnHidden(win))
+                    this.showSpawnHidden(win);
                 if (win._plaidInvisibleTimer) {
                     GLib.source_remove(win._plaidInvisibleTimer);
                     win._plaidInvisibleTimer = 0;
