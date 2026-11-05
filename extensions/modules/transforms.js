@@ -324,13 +324,24 @@ export class Transforms extends PlaidSubsystem {
     // stale size.
     handOffLiveStretch(grabbed) {
         const live = this.core._liveStretched;
+        const sent = this.core._liveSent;
         this.core._liveStretched = null;
         this.core._liveSent = null;
-        if (!live || live.size === 0 || !grabbed) return;
+        if (!grabbed) return;
         // Until now the grabbed window's size was mutter's.
-        const g = live.get(grabbed);
+        const g = live?.get(grabbed);
         if (g && grabbed.get_compositor_private())
             grabbed.move_resize_frame(true, g.x, g.y, g.w, g.h);
+        // A neighbour last sent another rect than its slot is still owed it,
+        // also one drawn flush at the slot with that rect still in flight
+        // (the grabbed window was never sent one).
+        for (const [win, e] of sent ?? []) {
+            const r = e.slot;
+            if (!r || win.get_workspace() !== grabbed.get_workspace() || !win.get_compositor_private()) continue;
+            if (e.x !== r.x || e.y !== r.y || e.w !== r.w || e.h !== r.h)
+                win.move_resize_frame(true, r.x, r.y, r.w, r.h);
+        }
+        if (!live || live.size === 0) return;
         const now = GLib.get_monotonic_time();
         const conn = this.core.monitors.windowConn(grabbed);
         const carry = this.takeOver(grabbed.get_workspace(), w => this.core.monitors.windowConn(w) === conn);

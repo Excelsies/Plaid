@@ -14,6 +14,16 @@ import { isBspLayout, isSpiralLayout } from './helpers.js';
 // after each cursor-shape change (pressAnchor).
 const PRESS_TRACK_MS = 3000;
 
+// Spiral live resize sends a neighbour its next slot once it answers the last
+// configure; a client that answers with an unchanged frame, or not at all,
+// gets it this long after the last send.
+const LIVE_CONFIGURE_WAIT_MS = 500;
+
+const rectOf = f => ({ x: f.x, y: f.y, w: f.width, h: f.height });
+const sameRect = (a, b) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+const nearRect = (a, b) => Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 &&
+    Math.abs(a.w - b.w) <= 1 && Math.abs(a.h - b.h) <= 1;
+
 // --- Pick Mode ---
 
 export class Grab extends PlaidSubsystem {
@@ -637,7 +647,8 @@ export class Grab extends PlaidSubsystem {
         c.transforms.stretchActorToSlot(grabbed, slot, draw);
     }
 
-    // Spiral live resize: re-send changed slots only and stretch every actor
+    // Spiral live resize: one configure in flight per neighbour, the latest
+    // changed slot sent once it answers (liveSend); every actor is stretched
     // over its slot until its client commits, keeping edges flush with the
     // cursor. The tree is tagged (updateGrabSplits).
     spiralLiveResize(grabbed) {
@@ -648,6 +659,7 @@ export class Grab extends PlaidSubsystem {
         if (!tree || !this.core.bsp.bspFindLeaf(tree, grabbed)) return;
         if (!this.core._liveSent) this.core._liveSent = new Map();
         if (!this.core._liveStretched) this.core._liveStretched = new Map();
+        const now = GLib.get_monotonic_time() / 1000;
         for (const leaf of this.core.bsp.bspLeaves(tree)) {
             const win = leaf.window;
             if (!win || win.is_fullscreen() || !win.get_workspace()) continue;
@@ -655,11 +667,7 @@ export class Grab extends PlaidSubsystem {
             const slot = this.core.bsp.tileRect(win, { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h }, ws, mon);
             // mutter owns the grabbed window's geometry until the grab ends.
             if (win !== grabbed) {
-                const last = this.core._liveSent.get(win);
-                if (!last || last.x !== slot.x || last.y !== slot.y || last.w !== slot.w || last.h !== slot.h) {
-                    this.core._liveSent.set(win, slot);
-                    win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
-                }
+                this.liveSend(win, slot, now);
                 this.core.transforms.stretchActorToSlot(win, slot);
                 continue;
             }
@@ -681,6 +689,33 @@ export class Grab extends PlaidSubsystem {
             }
             this.core.transforms.stretchActorToSlot(win, slot, draw);
         }
+    }
+
+    // A neighbour's _liveSent entry: the rect last sent, `slot` the latest
+    // one (the hand-off sends it if they differ), `pending` the configures
+    // not yet answered (counted to 2). The next goes once none is pending,
+    // or the wait ran out since the last send: a silent client is re-sent
+    // the latest slot every wait.
+    liveSend(win, slot, now) {
+        const sent = this.core._liveSent;
+        const e = sent.get(win);
+        const f = rectOf(win.get_frame_rect());
+        if (e) {
+            e.slot = slot;
+            // At the last rect sent: every configure is answered (a client
+            // acks only the latest). Another size answers the oldest.
+            if (e.pending > 0 && !sameRect(f, e.seen)) e.pending = nearRect(f, e) ? 0 : e.pending - 1;
+            e.seen = f;
+            if (sameRect(e, slot)) return;
+            if (e.pending > 0 && now - e.t < LIVE_CONFIGURE_WAIT_MS) return;
+        }
+        win.move_resize_frame(true, slot.x, slot.y, slot.w, slot.h);
+        // Not in flight: a move mutter applies at once, or an X11 frame (set
+        // at once, the client's size hints applied).
+        const g = rectOf(win.get_frame_rect());
+        const applied = nearRect(g, slot) || this.core.bsp.isX11Client(win);
+        sent.set(win, { ...slot, slot, t: now, seen: g,
+            pending: applied ? 0 : Math.min((e?.pending ?? 0) + 1, 2) });
     }
 
     stopLiveResizeLoop() {
