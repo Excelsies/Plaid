@@ -13,6 +13,7 @@ import Cogl from 'gi://Cogl';
 import GObject from 'gi://GObject';
 import GLib from 'gi://GLib';
 import graphene from 'gi://Graphene';
+import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { PlaidSubsystem } from './subsystem.js';
@@ -22,14 +23,91 @@ const SNIPPET_HOOK_FRAGMENT = Cogl.SnippetHook.FRAGMENT;
 
 const BLUR_EFFECT_NAME = 'plaid-window-blur';
 
-// Monitor-geometry cache, invalidated on monitors-changed so the effect's
-// per-frame dimension lookup stays cheap.
-let _monitorDimsVersion = 0;
-let _monitorDimsCache = null;
+// Framebuffer pixels per logical pixel of the views the actor is on (1.25 on
+// a 1.25 monitor). Neither the UI scale nor the resource scale is it: both
+// are whole numbers (1 and 2 there).
+export function blurViewScale(actor) {
+    let scale = 0;
+    for (const view of actor.peek_stage_views?.() ?? []) {
+        const s = view.get_scale();
+        if (s > scale && Number.isFinite(s)) scale = s;
+    }
+    return scale > 0 ? scale : 1;
+}
 
-// Invalidate the monitor-dims cache (called on monitors-changed).
-export function bumpMonitorDims() {
-    _monitorDimsVersion++;
+// The monitor holding the actor's transformed origin (logical geometry), or
+// null off every monitor.
+function blurMonitorOf(actor) {
+    const [px, py] = actor.get_transformed_position();
+    const n = global.display.get_n_monitors();
+    for (let i = 0; i < n; i++) {
+        const g = global.display.get_monitor_geometry(i);
+        if (px >= g.x && px < g.x + g.width && py >= g.y && py < g.y + g.height)
+            return g;
+    }
+    return null;
+}
+
+// A stage view's logical rect and scale.
+function blurViewRect(view) {
+    const r = new Mtk.Rectangle();
+    view.get_layout(r);
+    return { x: r.x, y: r.y, w: r.width, h: r.height, scale: view.get_scale() };
+}
+
+// The view being painted: the one whose framebuffer the paint draws into (the
+// paint context names no view on 50). Null for any other target (an
+// offscreen copy).
+export function blurPaintView(paintContext) {
+    const fb = paintContext.get_framebuffer();
+    for (const view of global.stage.peek_stage_views()) {
+        if (view.get_framebuffer() === fb)
+            return blurViewRect(view);
+    }
+    return null;
+}
+
+// The largest view the actor is on (else the primary monitor) in framebuffer
+// pixels: the FBOs hold one view's blit, so a window on a small monitor never
+// pays for the largest one, and one across two views keeps one size (the
+// FBOs are rebuilt when the actor's views change, not at each view's paint).
+export function blurMonitorDims(actor) {
+    let monW = 0, monH = 0;
+    for (const view of actor.peek_stage_views?.() ?? []) {
+        const v = blurViewRect(view);
+        if (!(v.scale > 0) || !Number.isFinite(v.scale)) continue;
+        monW = Math.max(monW, Math.round(v.w * v.scale));
+        monH = Math.max(monH, Math.round(v.h * v.scale));
+    }
+    if (!monW || !monH) {
+        const g = global.display.get_monitor_geometry(global.display.get_primary_monitor());
+        monW = g.width;
+        monH = g.height;
+    }
+    return { monW: Math.max(monW, 640), monH: Math.max(monH, 480) };
+}
+
+// A blur pass's rect in a downscaled FBO, and the content's share of every
+// FBO (its texture coords). Both in framebuffer pixels: each pass reads back
+// exactly what the last one drew (a logical rect would shrink the content by
+// the scale at every pass).
+export function blurPassRect(physW, physH, monW, monH, ds) {
+    return { bw: physW / ds, bh: physH / ds, fx: physW / monW, fy: physH / monH };
+}
+
+// The stage read beneath the actor, in the painted view's framebuffer pixels:
+// the transformed position relative to that view, times its scale. Without
+// the view, the actor's monitor and the largest scale it is drawn at.
+export function blurBlitRect(actor, w, h, view = null) {
+    const scale = view?.scale > 0 && Number.isFinite(view.scale) ? view.scale : blurViewScale(actor);
+    let [px, py] = actor.get_transformed_position();
+    const origin = view ?? blurMonitorOf(actor);
+    if (origin) {
+        px -= origin.x;
+        py -= origin.y;
+    }
+    return { px: px * scale, py: py * scale,
+        physW: Math.max(1, Math.round(w * scale)), physH: Math.max(1, Math.round(h * scale)) };
 }
 
 // Corner SDF + brightness: rounds the blurred backdrop and applies brightness.
@@ -297,24 +375,11 @@ function getBlurEffectClass() {
             fb.set_projection_matrix(m);
         }
 
+        // Framebuffer pixel dims: the stage framebuffer and blit are
+        // physical, so FBOs must match. A move to another monitor or scale
+        // changes them, and the next paint rebuilds.
         _monitorDims() {
-            // Physical pixel dims (logical geometry × UI scale) — the
-            // stage framebuffer and blit are physical, so FBOs must match.
-            if (_monitorDimsCache && _monitorDimsCache.v === _monitorDimsVersion)
-                return _monitorDimsCache.d;
-            let monW = 0, monH = 0;
-
-            const n = global.display.get_n_monitors();
-            for (let i = 0; i < n; i++) {
-                const g = global.display.get_monitor_geometry(i);
-                monW = Math.max(monW, g.width);
-                monH = Math.max(monH, g.height);
-            }
-
-            const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-            const d = { monW: Math.max(Math.round(monW * scale), 640), monH: Math.max(Math.round(monH * scale), 480) };
-            _monitorDimsCache = { v: _monitorDimsVersion, d };
-            return d;
+            return blurMonitorDims(this.get_actor());
         }
 
         _rebuildTargets(ds) {
@@ -359,18 +424,17 @@ function getBlurEffectClass() {
         _buildChain(w, h, ds, px, py, physW, physH, paintContext) {
             // Per-frame render chain — only cached FBOs/pipelines, no
             // per-frame allocation. The layer node copies the pipeline
-            // at creation, so uniforms must be set first. The blit reads
-            // the stage framebuffer in physical view pixels; composites
-            // use logical rects; the SDF maps texcoords back to logical
+            // at creation, so uniforms must be set first. The blit and the
+            // passes are in framebuffer pixels, the final composite in the
+            // actor's logical rect; the SDF maps texcoords back to logical
             // pixels via pixelStep.
-            const bw = w / ds;
-            const bh = h / ds;
             if (!this._bgFb || !this._brightFb || !this._hFb || !this._vFb) return null;
             this._syncKernel(ds, this._radius);
             const monW = this._bgTex.get_width();
             const monH = this._bgTex.get_height();
             const dbw = monW / ds;
             const dbh = monH / ds;
+            const { bw, bh, fx, fy } = blurPassRect(physW, physH, monW, monH, ds);
             const scale = physW / w;
             this._brightPipeline.set_uniform_float(this._brightUniform, 1, 1, [this._brightness]);
             this._brightPipeline.set_uniform_float(this._boundsUniform, 4, 1, [1, 1, w, h]);
@@ -384,8 +448,6 @@ function getBlurEffectClass() {
             this._vPipeline.set_uniform_float(this._vDirUniform, 2, 1, [0, 1]);
             // Each FBO is monitor-sized; map only the content region
             // (fx, fy) onto the composite rect.
-            const fx = physW / monW;
-            const fy = physH / monH;
             const brightLayer = new Clutter.LayerNode(this._brightFb, this._brightPipeline);
             brightLayer.add_texture_rectangle(new Clutter.ActorBox({ x1: 0, y1: 0, x2: w, y2: h }),
                 0, 0, fx, fy);
@@ -429,39 +491,10 @@ function getBlurEffectClass() {
                         this._lastRebuildTime = now;
                     }
                 }
-                let px = 0, py = 0;
-                const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-
-                const pos = actor.get_transformed_position();
-                px = pos[0];
-                py = pos[1];
-                // View-relative blit. On 51 get_stage_view() works;
-                // on 50 it isn't introspectable, so subtract the
-                // actor's monitor origin instead.
-                if (typeof paintContext.get_stage_view === 'function') {
-                    const stageView = paintContext.get_stage_view();
-                    if (stageView && stageView.get_layout) {
-                        const layout = stageView.get_layout();
-                        if (layout) {
-                            px -= layout.x;
-                            py -= layout.y;
-                        }
-                    }
-                } else {
-                    const n = global.display.get_n_monitors();
-                    for (let i = 0; i < n; i++) {
-                        const g = global.display.get_monitor_geometry(i);
-                        if (px >= g.x && px < g.x + g.width &&
-                            py >= g.y && py < g.y + g.height) {
-                            px -= g.x;
-                            py -= g.y;
-                            break;
-                        }
-                    }
-                }
-
-                px *= scale;
-                py *= scale;
+                // A window across two views is painted once per view, each
+                // at its own scale and origin.
+                const blit = blurBlitRect(actor, w, h, blurPaintView(paintContext));
+                let { px, py } = blit;
                 if (!Number.isFinite(px) || !Number.isFinite(py)) {
                     px = 0;
                     py = 0;
@@ -470,9 +503,7 @@ function getBlurEffectClass() {
                         this.core.debugLog('blur: blit position invalid — zeroed');
                     }
                 }
-                const physW = Math.max(1, Math.round(w * scale));
-                const physH = Math.max(1, Math.round(h * scale));
-                const chain = this._buildChain(w, h, ds, px, py, physW, physH, paintContext);
+                const chain = this._buildChain(w, h, ds, px, py, blit.physW, blit.physH, paintContext);
                 if (!chain) return true;
                 node.add_child(chain);
                 // Count consecutive failures only — a good frame resets
@@ -522,9 +553,23 @@ export class Blur extends PlaidSubsystem {
         }
     }
 
-    ensureWindowBlur(win, actor) {
+    // Blur on, and none of the window's class names on blur-exclude. A
+    // borders pass hands in its settings memo.
+    blurs(win, s = this.core._settings) {
+        if (!s || !s.get_boolean('window-blur')) return false;
+        const exclude = s.get_strv('blur-exclude');
+        if (exclude.length === 0) return true;
+        const set = new Set(exclude.map(c => c.toLowerCase()));
+        return !this.core.winClassCandidates(win).some(c => set.has(c));
+    }
+
+    ensureWindowBlur(win, actor, settings = this.core._settings) {
         if (!this.core._windowBlurs || !actor || !actor.add_effect_with_name) return;
         if (!this.core._settings || !this.core._settings.get_boolean('window-blur')) return;
+        if (!this.blurs(win, settings)) {
+            this.removeBlur(win);
+            return;
+        }
         if (this.core._pendingWarp && this.core._pendingWarp.has(win)) return;
 
         let blur = this.core._windowBlurs.get(win);
@@ -543,6 +588,10 @@ export class Blur extends PlaidSubsystem {
                     this.unbindBlurSibling(blur);
                     blur._sibling.destroy();
                     blur._sibling = null;
+                }
+                if (blur._viewsToken) {
+                    this.disconnectToken(blur._viewsToken);
+                    blur._viewsToken = null;
                 }
                 this.core._windowBlurs.delete(win);
                 blur = null;
@@ -653,16 +702,25 @@ export class Blur extends PlaidSubsystem {
             if (blur.mode !== blurMode)
                 blur.mode = blurMode;
         }
-        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
-        const radius = Math.round(Math.min(this.core._settings.get_int('window-blur-radius') * scale, 100));
-        if (blur.radius !== radius)
-            blur.radius = radius;
+        this.syncBlurRadius(win, blur, actor);
+        // On another monitor the scale changes: the radius follows at once.
+        if (!blur._viewsToken)
+            blur._viewsToken = this.connectObject(actor, 'stage-views-changed',
+                () => this.syncBlurRadius(win, blur, actor));
         const brightness = this.core._settings.get_double('window-blur-brightness');
         if (blur.brightness !== brightness)
             blur.brightness = brightness;
         const cr = this.blurCornerRadius();
         if (blur.corner_radius !== cr)
             blur.corner_radius = cr;
+    }
+
+    // The setting (capped at 100) in framebuffer pixels of the window's view.
+    syncBlurRadius(win, blur, actor) {
+        if (!this.core._settings || this.core._windowBlurs?.get(win) !== blur) return;
+        const radius = Math.round(Math.min(this.core._settings.get_int('window-blur-radius'), 100) * blurViewScale(actor));
+        if (blur.radius !== radius)
+            blur.radius = radius;
     }
 
     unbindBlurSibling(blur) {
@@ -847,6 +905,10 @@ export class Blur extends PlaidSubsystem {
 
             const a = win.get_compositor_private();
             if (a) a.disconnectObject(id);
+        }
+        if (blur._viewsToken) {
+            this.disconnectToken(blur._viewsToken);
+            blur._viewsToken = null;
         }
         if (blur._settleNotifyIds && blur._settleNotifyIds.length) {
             const ids = blur._settleNotifyIds;

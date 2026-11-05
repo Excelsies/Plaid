@@ -546,8 +546,7 @@ export class Masks extends PlaidSubsystem {
                 mode = 2;
         }
 
-        const blurEnabled = settings.get_boolean('window-blur');
-        let opacity = blurEnabled
+        let opacity = this.core.blur.blurs(win, settings)
             ? settings.get_int('window-blur-opacity') / 100
             : 1;
         // A window hidden for its spawn choreography (actor opacity is ignored

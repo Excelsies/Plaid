@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { makeSelf, oneMonitor } from '../helpers.mjs';
+import { makeSelf, oneMonitor, fakeSettings } from '../helpers.mjs';
 
 // Border animation idle cost: colour-level gate, visibility gate, stop when
 // nothing animates, mask re-arm, per-pass settings memo, no-Flair return.
@@ -166,6 +166,8 @@ function maskWin() {
     get_buffer_rect: () => ({ ...frame }),
     get_frame_rect: () => ({ ...frame }),
     get_wm_class_instance: () => 'gjs',
+    get_wm_class: () => 'gjs',
+    get_gtk_application_id: () => null,
   };
 }
 function maskEffect() {
@@ -302,6 +304,60 @@ test('updateMaskBounds without settings (disable): the mask no longer keeps a ti
     self._settings = null;
     self._updateMaskBounds(maskWin(), { width: 400, height: 300 }, eff, 12);
     assert.equal(eff._plaidThetaStep, Infinity);
+  } finally {
+    globalThis.global.display = old;
+  }
+});
+
+test('mask opacity: window-blur-opacity only for a window that is blurred (not on blur-exclude)', () => {
+  const base = { 'window-blur': true, 'window-blur-opacity': 80 };
+  assert.equal(updateMask(base).eff.updates[0][10], 0.8);
+  assert.equal(updateMask({ ...base, 'blur-exclude': ['gjs'] }).eff.updates[0][10], 1);
+});
+
+test('_doUpdateBorders: blur gets the pass\'s settings memo, for tiled and floating windows', () => {
+  const self = makeSelf({ 'borders-enabled': false, 'rounded-corners': false, 'window-blur': true, 'blur-exclude': [] });
+  const got = [];
+  self.blur.ensureWindowBlur = (w, a, s) => got.push([w.t, s]);
+  self.masks.removeMask = () => {};
+  self.borders.syncBorderAnimation = () => {};
+  const mk = (t) => Object.assign(fakeWinLite(t), { t });
+  const tiled = mk('tiled'), fl = mk('float');
+  self.windows.getWindowsForWorkspace = () => [tiled];
+  self.windows.isFloating = (w) => w === fl;
+  const ws = { list_windows: () => [tiled, fl] };
+  const old = globalThis.global;
+  globalThis.global = { ...old, display: { ...oneMonitor(), focus_window: null },
+    workspace_manager: { get_active_workspace: () => ws } };
+  try {
+    self.borders.doUpdateBorders();
+  } finally {
+    globalThis.global = old;
+  }
+  assert.deepEqual(got.map(g => g[0]), ['tiled', 'float']);
+  for (const [, s] of got) {
+    assert.ok(s && s !== self._settings, 'the memo');
+    assert.deepEqual(s.get_strv('blur-exclude'), []);
+  }
+});
+
+function fakeWinLite() {
+  const frame = { x: 0, y: 0, width: 400, height: 300 };
+  return { is_fullscreen: () => false, get_compositor_private: () => ({}), get_frame_rect: () => ({ ...frame }),
+    get_window_type: () => 0, get_wm_class_instance: () => 'gjs' };
+}
+
+test('mask opacity: decided by the pass\'s settings memo when one is handed in', () => {
+  const old = globalThis.global.display;
+  globalThis.global.display = oneMonitor();
+  try {
+    const base = { ...ANIM, 'borders-enabled': true, 'active-border-width': 2, 'inactive-border-width': 2,
+      'inactive-border-color': ['#000000'], 'inactive-border-color-2': ['#0a0000'],
+      'window-blur': true, 'window-blur-opacity': 80 };
+    const self = makeSelf({ ...base, 'blur-exclude': [] });
+    const eff = maskEffect();
+    self._updateMaskBounds(maskWin(), { width: 400, height: 300 }, eff, 12, fakeSettings({ ...base, 'blur-exclude': ['gjs'] }));
+    assert.equal(eff.updates[0][10], 1);
   } finally {
     globalThis.global.display = old;
   }

@@ -8,7 +8,6 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import { bumpMonitorDims } from './blur.js';
 import { PlaidSubsystem } from './subsystem.js';
 
 
@@ -86,7 +85,6 @@ export class Signals extends PlaidSubsystem {
         });
         this.core.monitors.connectSignals();
         this.connectObject(Main.layoutManager, 'monitors-changed', () => {
-            bumpMonitorDims();
             this.core.monitors.invalidate();
             // Ghosts hold the old monitors' slots: rebuilt on the next tick.
             this.core.spiral.clearGhosts();
@@ -267,6 +265,7 @@ export class Signals extends PlaidSubsystem {
         this.connectObject(this.core._settings, 'changed::window-blur-radius', () => this.core.borders.updateBorders());
         this.connectObject(this.core._settings, 'changed::window-blur-brightness', () => this.core.borders.updateBorders());
         this.connectObject(this.core._settings, 'changed::window-blur-opacity', () => this.core.borders.updateBorders());
+        this.connectObject(this.core._settings, 'changed::blur-exclude', () => this.core.borders.updateBorders());
         this.connectObject(this.core._settings, 'changed::gradient-borders', () => {
             this.core.borders.updateBorders();
             this.core.borders.syncBorderAnimation();

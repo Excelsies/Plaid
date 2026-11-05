@@ -514,7 +514,7 @@ export class Borders extends PlaidSubsystem {
             if (frame.width === 0 || frame.height === 0) continue;
 
             if (blurEnabled && !(this.core._pendingWarp && this.core._pendingWarp.has(win)))
-                this.core.blur.ensureWindowBlur(win, actor);
+                this.core.blur.ensureWindowBlur(win, actor, settings);
 
             const isFocused = win === focusWindow;
             const scratch = !!(this.core._scratchpadWindows && this.core._scratchpadWindows.has(win));
@@ -576,7 +576,7 @@ export class Borders extends PlaidSubsystem {
             if (!actor) continue;
             const frame = win.get_frame_rect();
             if (frame.width === 0 || frame.height === 0) continue;
-            if (blurEnabled) this.core.blur.ensureWindowBlur(win, actor);
+            if (blurEnabled) this.core.blur.ensureWindowBlur(win, actor, settings);
             const isFocused = win === focusWindow;
             // Order matters: create the WIDGET border before the mask —
             // _updateMaskBounds zeroes the SDF border when a renderable

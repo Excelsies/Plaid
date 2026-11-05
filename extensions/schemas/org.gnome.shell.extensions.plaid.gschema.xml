@@ -166,6 +166,12 @@
       <description>Opacity of window content over the blurred layer (100 is fully opaque)</description>
     </key>
 
+    <key name="blur-exclude" type="as">
+      <default>[]</default>
+      <summary>Window classes that are never blurred</summary>
+      <description>Window class names (WM_CLASS instance or class, or app ID; any case) of windows that get no blur and keep full opacity</description>
+    </key>
+
     <key name="gradient-borders" type="b">
       <default>true</default>
       <summary>Use gradient borders</summary>

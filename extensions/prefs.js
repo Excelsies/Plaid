@@ -37,6 +37,7 @@ function conflictsForCombo(settings, key, combo) {
 const STRV_LIST_ROWS_PROP = {
     'float-windows': '_floatClassRows',
     'float-titles': '_floatTitleRows',
+    'blur-exclude': '_blurExcludeRows',
     'min-window-sizes': '_minSizeRows',
 };
 
@@ -434,11 +435,34 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         const blurOpacityRow = this._addSpinRow(blurGroup, settings, 'window-blur-opacity', _('Window Opacity'),
             _('Opacity of window content over the blurred layer (lower values soften the whole window, including text)'), 30, 100, 1, 10);
 
+        const blurExcludeGroup = new Adw.PreferencesGroup({
+            title: _('Windows Without Blur'),
+            description: _('Windows whose WM_CLASS instance or class, or app ID, is listed here are never blurred (any case)'),
+        });
+        page.add(blurExcludeGroup);
+        this._blurExcludeRows = [];
+        const addBlurExcludeRow = new Adw.ActionRow({
+            title: _('Add Window Class'),
+            activatable: true,
+        });
+        addBlurExcludeRow.add_suffix(new Gtk.Button({
+            icon_name: 'list-add-symbolic',
+            css_classes: ['suggested-action', 'circular'],
+            can_target: false,
+        }));
+        blurExcludeGroup.add(addBlurExcludeRow);
+        addBlurExcludeRow.connect('activated', () => {
+            this._showAddFloatDialog(window, settings, blurExcludeGroup, 'blur-exclude',
+                _('WM_CLASS instance name (e.g. firefox)'), _('Add Window Without Blur'));
+        });
+        this._rebuildStrvList(settings, blurExcludeGroup, 'blur-exclude');
+
         const updateBlurVisibility = () => {
             const blur = settings.get_boolean('window-blur');
             blurRadiusRow.set_visible(blur);
             blurBrightnessRow.set_visible(blur);
             blurOpacityRow.set_visible(blur);
+            blurExcludeGroup.set_visible(blur);
         };
         updateBlurVisibility();
         settings.connect('changed::window-blur', () => updateBlurVisibility());
@@ -1298,11 +1322,11 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         classEntry.grab_focus();
     }
 
-    _showAddFloatDialog(window, settings, group, settingsKey, placeholder) {
+    _showAddFloatDialog(window, settings, group, settingsKey, placeholder, title = _('Add Floating Window')) {
         const dialog = new Adw.Window({
             modal: true,
             transient_for: window,
-            title: _('Add Floating Window'),
+            title,
             default_width: 400,
             default_height: 150,
         });
@@ -1337,7 +1361,9 @@ export default class TilingWMPreferences extends ExtensionPreferences {
             css_classes: ['suggested-action'],
         });
         addBtn.connect('clicked', () => {
-            const text = entry.get_text().trim();
+            let text = entry.get_text().trim();
+            // Matched against lowercased class names.
+            if (settingsKey === 'blur-exclude') text = text.toLowerCase();
             if (text.length > 0) {
                 const current = new Set(settings.get_strv(settingsKey));
                 current.add(text);
