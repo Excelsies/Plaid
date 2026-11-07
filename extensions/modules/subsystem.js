@@ -7,25 +7,28 @@ export class PlaidSubsystem {
         this._tokens = [];
     }
 
+    // The token names its emitter and the subsystem that holds it, so any
+    // subsystem's disconnectToken releases it, and the list keeps no token
+    // (nor the window or actor it names) once disconnected.
     connectObject(emitter, ...args) {
-        const token = {};
+        const token = { emitter, owner: this };
         emitter.connectObject(...args, token);
-        this._tokens.push({ emitter, token });
+        this._tokens.push(token);
         return token;
     }
 
-    // One connectObject() group, before destroy().
+    // Disconnects a token from connectObject, whichever subsystem made it.
     disconnectToken(token) {
-        const i = this._tokens.findIndex(t => t.token === token);
+        const owner = token?.owner;
+        const i = owner?._tokens.indexOf(token) ?? -1;
         if (i < 0) return;
-        const { emitter } = this._tokens[i];
-        this._tokens.splice(i, 1);
-        emitter.disconnectObject(token);
+        owner._tokens.splice(i, 1);
+        token.emitter.disconnectObject(token);
     }
 
     disconnectAll() {
-        for (const { emitter, token } of this._tokens)
-            emitter.disconnectObject(token);
+        for (const token of this._tokens)
+            token.emitter.disconnectObject(token);
         this._tokens = [];
     }
 

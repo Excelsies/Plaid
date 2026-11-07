@@ -148,9 +148,9 @@ export class Scratchpad {
         this.core._toggleFloatWindows.delete(win);
         // It rejoins tiling with a fresh landing budget.
         this.core.placement.releaseLanding(win);
-        // Destroy the scratch RING here, where membership ends. The sig-gate
+        // Destroy the scratch RING here, where membership ends. The style gate
         // in _ensureWindowBorder destroys the BORDER widget on the
-        // scratch→normal signature flip but never the ring (it lives only in
+        // scratch→normal style flip but never the ring (it lives only in
         // _scratchpadRings) — on a shadowed X11 window (gate lets the widget
         // through) it was orphaned on the actor forever ("Fallout 76 QC:
         // yellow border won't go away"). Placement matters: an entry sweep in

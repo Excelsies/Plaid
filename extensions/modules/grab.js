@@ -4,6 +4,7 @@
 
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
 import { PlaidSubsystem } from './subsystem.js';
 import { isBspLayout, isSpiralLayout } from './helpers.js';
 
@@ -297,6 +298,8 @@ export class Grab extends PlaidSubsystem {
         this.core._grabInitialStackRatios = null;
         // Sync, not start: no 30fps tick when nothing animates.
         this.core.borders.syncBorderAnimation();
+        // The passes the resize loop stood in for (noteGeometry).
+        this.core.borders.updateBorders();
     }
 
     // Retiles deferred by the grab, active workspace first. Not the drop's
@@ -466,22 +469,44 @@ export class Grab extends PlaidSubsystem {
     // tick() once per painted frame, in before-update: after the clients
     // commit, before layout and paint. A 16 ms timer ran out of phase: a commit
     // was drawn with the previous tick's sizes, and the neighbours trailed the
-    // pointer. The pointer moving schedules a frame.
+    // pointer. The pointer moving schedules a frame. before-update comes once
+    // per stage view: the tick runs for the view showing the grabbed window's
+    // monitor (tickView).
     startGrabLoop(metaWindow, mode) {
         this.stopLiveResizeLoop();
+        this._loopMode = mode;
         const tick = mode === 'resize' ? () => this.resizeTick(metaWindow) : () => {
             const frame = metaWindow.get_frame_rect();
             if (frame.width === 0 || frame.height === 0) return;
             this.core.dragPreview.updateMoveDragPreview(metaWindow);
         };
-        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', () => {
+        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', (_stage, view) => {
             if (!this.core._settings || this.core._shuttingDown || !this.core._grabOp ||
-                !metaWindow.get_compositor_private()) return;
+                !metaWindow.get_compositor_private() || !this.tickView(view, metaWindow)) return;
             tick();
         });
         this._liveResizeCursor = this.connectObject(global.backend.get_cursor_tracker(), 'position-invalidated',
             () => global.stage.schedule_update());
         global.stage.schedule_update();
+    }
+
+    // Whether `view` is the one the grab loop ticks on: the view holding the
+    // centre of the grabbed window's monitor (views tile their monitors, so
+    // exactly one does). No view given, or no monitor: every view ticks.
+    tickView(view, metaWindow) {
+        const mon = metaWindow.get_monitor();
+        if (!view || mon < 0) return true;
+        const g = global.display.get_monitor_geometry(mon);
+        const cx = g.x + Math.floor(g.width / 2), cy = g.y + Math.floor(g.height / 2);
+        const r = new Mtk.Rectangle();
+        view.get_layout(r);
+        return cx >= r.x && cx < r.x + r.width && cy >= r.y && cy < r.y + r.height;
+    }
+
+    // A live resize is running: its tick lays out every border
+    // (updateBordersDuringGrab).
+    resizeLoopRunning() {
+        return !!this.core._liveResizeId && this._loopMode === 'resize';
     }
 
     // One step of a live resize: the splits (or the master-stack ratios) from
@@ -721,6 +746,7 @@ export class Grab extends PlaidSubsystem {
     stopLiveResizeLoop() {
         if (this.core._liveResizeId) this.disconnectToken(this.core._liveResizeId);
         this.core._liveResizeId = 0;
+        this._loopMode = null;
         if (this._liveResizeCursor) this.disconnectToken(this._liveResizeCursor);
         this._liveResizeCursor = null;
     }
@@ -889,18 +915,15 @@ export class Grab extends PlaidSubsystem {
         }
     }
 
+    // Released through their tokens, whichever window they were on (the grab
+    // window can already be another one, or none).
     disconnectGrabBoundaryHooks() {
-        const win = this.core._grabWindow;
         if (this.core._grabSizeChangedId) {
-            if (win) {
-                win.disconnectObject(this.core._grabSizeChangedId);
-            }
+            this.disconnectToken(this.core._grabSizeChangedId);
             this.core._grabSizeChangedId = 0;
         }
         if (this.core._grabPositionChangedId) {
-            if (win) {
-                win.disconnectObject(this.core._grabPositionChangedId);
-            }
+            this.disconnectToken(this.core._grabPositionChangedId);
             this.core._grabPositionChangedId = 0;
         }
     }

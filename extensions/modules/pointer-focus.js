@@ -178,7 +178,7 @@ export class PointerFocus extends PlaidSubsystem {
     destroy() {
         this.teardownPointerFocus();
         if (this.core._pointerFocusEnabledId) {
-            this.core._settings.disconnectObject(this.core._pointerFocusEnabledId);
+            this.disconnectToken(this.core._pointerFocusEnabledId);
             this.core._pointerFocusEnabledId = 0;
         }
         super.destroy();

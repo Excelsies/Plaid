@@ -272,6 +272,7 @@ export class Signals extends PlaidSubsystem {
         });
         this.connectObject(this.core._settings, 'changed::gradient-direction', () => this.core.borders.updateBorders());
         this.connectObject(this.core._settings, 'changed::border-animation-speed', () => {
+            this.core.borders.forgetRotation();
             this.core.borders.syncBorderAnimation();
             this.core.borders.updateBorders();
         });
@@ -477,8 +478,8 @@ export class Signals extends PlaidSubsystem {
 
     disconnectSignals() {
         for (const [win, sigIds] of this.core._windowSignals || []) {
-            for (const { emitter, id } of sigIds) {
-                emitter.disconnectObject(id);
+            for (const { id } of sigIds) {
+                this.disconnectToken(id);
             }
             // Re-enables are resumes: the maps come back with the same window
             // objects, so the flag must be cleared here or _connectWindowSignals

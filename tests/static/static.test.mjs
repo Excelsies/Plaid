@@ -479,7 +479,7 @@ test('every onShellShutdown sourceFields entry is only ever assigned a GLib sour
   const cal = [
     ['placement.js', '            this.core._animTickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {', '_animTickId', 0],
     ['placement.js', '        win._plaidSettlePollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {', '_plaidSettlePollId', 0],
-    ['grab.js', "        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', () => {", '_liveResizeId', 1],
+    ['grab.js', "        this.core._liveResizeId = this.connectObject(global.stage, 'before-update', (_stage, view) => {", '_liveResizeId', 1],
     ['bsp.js', '                    const sent = this.core._liveSent ??= new Map();', '_liveSent', 1],
   ];
   for (const [file, line, name, n] of cal) {
@@ -487,5 +487,34 @@ test('every onShellShutdown sourceFields entry is only ever assigned a GLib sour
     assert.equal(bad(line, file, [name]).length, n, `${file}: ${line.trim()}`);
   }
   const found = Object.entries(src).flatMap(([f, s]) => bad(s, f, [...fields, ...perWindow]));
+  assert.deepEqual(found, []);
+});
+
+// A connectObject token is released through disconnectToken: a direct
+// emitter.disconnectObject(token) left it in the subsystem's list, holding the
+// closed window or destroyed actor it names for the session.
+test('connectObject tokens are released through disconnectToken only', () => {
+  // Owners GNOME's own signal tracker keys on, not Plaid tokens.
+  const allowed = new Map([
+    ['core.js', ['            Main.sessionMode.disconnectObject(this);', '        Main.sessionMode.disconnectObject(this);']],
+    ['workspace-pill.js', ['                        child._workspacesAdjustment.disconnectObject(child);']],
+  ]);
+  const found = [];
+  let seen = 0;
+  for (const f of moduleFiles) {
+    const name = basename(f);
+    if (name === 'subsystem.js') continue;
+    readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+      if (!/\.disconnectObject\s*(\?\.\s*)?\(|\.disconnectObject\.(call|apply)\(|\['disconnectObject'\]/.test(line)) return;
+      seen++;
+      if (!(allowed.get(name) ?? []).includes(line)) found.push(`${name}:${i + 1} ${line.trim()}`);
+    });
+  }
+  // Calibrated on the allowed lines, copied from the modules: each is matched.
+  for (const [name, lines] of allowed) {
+    const src = readFileSync(join(modulesDir, name), 'utf8').split('\n');
+    for (const l of lines) assert.ok(src.includes(l), `calibration line gone from ${name}: ${l.trim()}`);
+  }
+  assert.equal(seen, 3, 'the three allowed lines were seen');
   assert.deepEqual(found, []);
 });

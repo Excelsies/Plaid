@@ -168,7 +168,7 @@ export class Workspaces extends PlaidSubsystem {
             if (!this.core._pendingWarningOverviewId) {
                 this.core._pendingWarningOverviewId = this.connectObject(Main.overview, 'hidden', () => {
                     if (this.core._pendingWarningOverviewId) {
-                        Main.overview.disconnectObject(this.core._pendingWarningOverviewId);
+                        this.disconnectToken(this.core._pendingWarningOverviewId);
                         this.core._pendingWarningOverviewId = 0;
                     }
                     if (this.core._pendingWarning) {
@@ -289,7 +289,7 @@ export class Workspaces extends PlaidSubsystem {
             this.core._warningPopup = null;
         }
         if (this.core._pendingWarningOverviewId) {
-            Main.overview.disconnectObject(this.core._pendingWarningOverviewId);
+            this.disconnectToken(this.core._pendingWarningOverviewId);
             this.core._pendingWarningOverviewId = 0;
         }
         this.core._pendingWarning = null;

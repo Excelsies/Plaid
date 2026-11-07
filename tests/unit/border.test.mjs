@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { makeSelf, oneMonitor, fakeSettings } from '../helpers.mjs';
@@ -64,7 +65,9 @@ function withTick(fn) {
 }
 const at = (theta) => (theta / (Math.PI * 2)) * PERIOD;
 function border(step, mapped = true) {
-  return { _plaidBorder: { thetaStep: step }, mapped, repaints: 0, queue_repaint() { this.repaints++; } };
+  const b = { _plaidBorder: { thetaStep: step }, mapped, repaints: 0 };
+  b._plaidStrips = [{ visible: true, queue_repaint() { b.repaints++; } }];
+  return b;
 }
 function mask(step, mapped = true) {
   const actor = { mapped };
@@ -217,6 +220,8 @@ test('_handleGrabEnd syncs the border animation instead of starting it', () => {
     _startBorderAnimation: () => calls.push('start'),
     _syncBorderAnimation: () => calls.push('sync'),
   });
+  // The passes a live resize stood in for: one at the end.
+  self.signals.scheduleBorders = () => calls.push('pass');
   self._grabOp = 1;
   const ws = { id: 0 };
   const old = globalThis.global;
@@ -230,7 +235,30 @@ test('_handleGrabEnd syncs the border animation instead of starting it', () => {
   } finally {
     globalThis.global = old;
   }
-  assert.deepEqual(calls, ['sync']);
+  assert.deepEqual(calls, ['sync', 'pass']);
+});
+
+test('border-animation-speed changed: the cached rotation period is dropped before the resync', () => {
+  // connectSignals needs the whole shell; the handler is read from the source.
+  const src = readFileSync(new URL('../../extensions/modules/signals.js', import.meta.url), 'utf8');
+  const m = src.match(/'changed::border-animation-speed', \(\) => \{([\s\S]*?)\n {8}\}\);/);
+  assert.ok(m, 'handler found');
+  const calls = [...m[1].matchAll(/this\.core\.borders\.(\w+)\(/g)].map(x => x[1]);
+  assert.deepEqual(calls, ['forgetRotation', 'syncBorderAnimation', 'updateBorders']);
+});
+
+test('syncBlurStackingNow: no blurs, no work', () => {
+  const self = makeSelf({ enabled: true });
+  self._windowBlurs = new Map();
+  const old = globalThis.global;
+  let reads = 0;
+  globalThis.global = { ...old, display: { get_n_monitors: () => { reads++; return 1; }, get_monitor_geometry: () => { reads++; return {}; } } };
+  try {
+    assert.equal(self.blur.syncBlurStackingNow(), false);
+  } finally {
+    globalThis.global = old;
+  }
+  assert.equal(reads, 0);
 });
 
 test('_doUpdateBorders: with no Flair on it removes every border, mask and blur and walks no window', () => {
@@ -344,6 +372,7 @@ test('_doUpdateBorders: blur gets the pass\'s settings memo, for tiled and float
 function fakeWinLite() {
   const frame = { x: 0, y: 0, width: 400, height: 300 };
   return { is_fullscreen: () => false, get_compositor_private: () => ({}), get_frame_rect: () => ({ ...frame }),
+    get_buffer_rect: () => ({ ...frame }),
     get_window_type: () => 0, get_wm_class_instance: () => 'gjs' };
 }
 

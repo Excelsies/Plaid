@@ -185,7 +185,7 @@ export class Keybindings extends PlaidSubsystem {
         // replaces the handlers instead of stacking duplicates.
         if (this.core._keybindChangeIds) {
             for (const id of this.core._keybindChangeIds) {
-                this.core._settings.disconnectObject(id);
+                this.disconnectToken(id);
             }
         }
         this.core._keybindChangeIds = [];
@@ -429,7 +429,7 @@ export class Keybindings extends PlaidSubsystem {
         // leave stale ids for _disconnectSignals to trip over.
         if (this.core._keybindChangeIds) {
             for (const id of this.core._keybindChangeIds) {
-                this.core._settings.disconnectObject(id);
+                this.disconnectToken(id);
             }
             this.core._keybindChangeIds = [];
         }

@@ -295,7 +295,7 @@ export function makeSelf(settings = {}, overrides = {}) {
 
 // The grab loop's frame clock on the current `global`: the stage's
 // before-update and the cursor tracker's position-invalidated. frame() runs
-// one tick; restore() puts the old stage and backend back.
+// one tick (once per view on several monitors); restore() puts the old stage and backend back.
 export function frameClock() {
   const g = globalThis.global;
   const old = { stage: g.stage, backend: g.backend };
@@ -314,10 +314,11 @@ export function frameClock() {
   const tracker = emitter();
   g.stage = stage;
   g.backend = { ...(g.backend ?? {}), get_cursor_tracker: () => tracker };
-  const emit = (e, sig) => { for (const [o, , s, fn] of [...handlers]) if (o === e && s === sig) fn(e); };
+  const emit = (e, sig, ...args) => { for (const [o, , s, fn] of [...handlers]) if (o === e && s === sig) fn(e, ...args); };
   return {
     stage, tracker, handlers,
-    frame: () => emit(stage, 'before-update'),
+    // A view (with get_layout) as before-update passes it; none by default.
+    frame: (view) => emit(stage, 'before-update', view),
     move: () => emit(tracker, 'position-invalidated'),
     restore: () => { g.stage = old.stage; g.backend = old.backend; },
   };

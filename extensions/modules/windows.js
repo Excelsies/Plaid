@@ -529,13 +529,13 @@ export class Windows extends PlaidSubsystem {
             this.core._windowSignals = new Map();
         const sigIds = [];
         sigIds.push({ emitter: win, id: this.connectObject(win, 'position-changed', () => {
-            this.core.borders.updateBorders();
+            this.core.borders.noteGeometry(win);
             this.convertMaximizedToGaps(win);
             this.releaseSideTile(win);
             this.trackFloatGeometry(win);
         }) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'size-changed', () => {
-            this.core.borders.updateBorders();
+            this.core.borders.noteGeometry(win);
             this.convertMaximizedToGaps(win);
             this.releaseSideTile(win);
             this.trackFloatGeometry(win);
@@ -628,8 +628,8 @@ export class Windows extends PlaidSubsystem {
         if (!this.core._windowSignals) return;
         const sigIds = this.core._windowSignals.get(win);
         if (sigIds) {
-            for (const { emitter, id } of sigIds) {
-                emitter.disconnectObject(id);
+            for (const { id } of sigIds) {
+                this.disconnectToken(id);
             }
             this.core._windowSignals.delete(win);
         }
@@ -661,12 +661,12 @@ export class Windows extends PlaidSubsystem {
         if (!this.core._settings || !this.core._floatHooks || this.core._floatHooks.has(win)) return;
         const ids = [
             this.connectObject(win, 'position-changed', () => {
-                this.core.borders.updateBorders();
+                this.core.borders.noteGeometry(win);
                 this.convertMaximizedToGaps(win);
                 this.trackFloatGeometry(win);
             }),
             this.connectObject(win, 'size-changed', () => {
-                this.core.borders.updateBorders();
+                this.core.borders.noteGeometry(win);
                 this.convertMaximizedToGaps(win);
                 this.trackFloatGeometry(win);
             }),
@@ -694,7 +694,7 @@ export class Windows extends PlaidSubsystem {
         const ids = this.core._floatHooks.get(win);
         if (!ids) return;
         for (const id of ids) {
-            win.disconnectObject(id);
+            this.disconnectToken(id);
         }
         this.core._floatHooks.delete(win);
     }

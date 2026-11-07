@@ -503,14 +503,14 @@ export class Actions extends PlaidSubsystem {
 
     startPickMode() {
         if (this.core._pickFocusId) {
-            global.display.disconnectObject(this.core._pickFocusId);
+            this.disconnectToken(this.core._pickFocusId);
             this.core._pickFocusId = null;
         }
         this.core._pickFocusId = this.connectObject(global.display, 'notify::focus-window', () => {
             const win = global.display.focus_window;
             if (!win) return;
             if (this.core._pickFocusId) {
-                global.display.disconnectObject(this.core._pickFocusId);
+                this.disconnectToken(this.core._pickFocusId);
                 this.core._pickFocusId = null;
             }
             const cls = this.core.winClassCandidates(win)[0] || '';
@@ -619,7 +619,7 @@ export class Actions extends PlaidSubsystem {
     destroy() {
         this.destroyFloatPickDialog();
         if (this.core._pickFocusId) {
-            global.display.disconnectObject(this.core._pickFocusId);
+            this.disconnectToken(this.core._pickFocusId);
             this.core._pickFocusId = null;
         }
         super.destroy();
