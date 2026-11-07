@@ -77,9 +77,8 @@ const REBUILT = {
   _chromiumProcessCache: '/proc lookup cache, refilled on demand',
   _windowBorders: 'Flair actor, destroyed at disable; the resume pass runs updateBorders()',
   _scratchpadRings: 'Flair actor, destroyed at disable; the resume pass runs updateBorders()',
-  _windowMasks: 'Flair effect, destroyed at disable; the resume pass runs updateBorders()',
+  _windowMasks: 'window masks, cleared at disable; the resume pass runs updateBorders()',
   _windowBlurs: 'Flair effect, destroyed at disable; the resume pass runs updateBorders()',
-  _maskQuarantined: 'a failed mask is retried once and quarantined again',
   _sourceIds: 'GLib sources, removed at disable',
   _pendingRetileIds: 'GLib sources, removed at disable',
   _keybindChangeIds: 'signal ids, reconnected by registerKeybindings',
@@ -127,7 +126,6 @@ const REBUILT = {
   'proc-info.js:_procEnvironWaiters': 'reads in flight, cleared at disable',
   'grab.js:_pressTrail': 'pointer trail of the current press',
   'blur.js:_retired': 'GL resources waiting to be freed',
-  'mask.js:_uniformLocations': 'shader uniforms, looked up again',
   'subsystem.js:_tokens': 'connectObject tokens, disconnected at disable',
 };
 
@@ -178,7 +176,7 @@ test('every core container is carried by the lock stash or rebuilt with a reason
   assert.ok(fromEnable.size >= 50, `only ${fromEnable.size} enable() fields: the scan lost its population`);
   assert.ok(fromModules.size >= 40, `only ${fromModules.size} module fields: the scan lost its population`);
   assert.ok(fromCore.size >= 5, `only ${fromCore.size} core.js uses: the scan lost its population`);
-  assert.ok(own.length >= 8, `only ${own.length} subsystem-owned containers: the scan lost its population`);
+  assert.ok(own.length >= 7, `only ${own.length} subsystem-owned containers: the scan lost its population`);
 
   // Every stash entry is a field enable() sets, and the restore reads and assigns it.
   const enableText = body(core, 'enable').join('\n');

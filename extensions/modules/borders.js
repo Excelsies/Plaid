@@ -17,51 +17,29 @@ export class Borders extends PlaidSubsystem {
 
     ensureWindowBorder(win, actor, frame, isFocused, settings = this.core._settings) {
         if (!frame || frame.width === 0 || frame.height === 0) return false;
-        // Exactly-one-border (client-type rule). Wayland: the mask attaches to the
-        // actor, so this widget is captured/clipped and can never render — the SDF is
-        // the sole border. X11: the mask attaches to the surface child, so the widget
-        // (on the actor) escapes the capture — use it as the border only when its
-        // stroke fits the allocation (shadowed windows), refuse it for zero-shadow
-        // electron windows (stroke outside → double SDF), and use a placeholder for a
-        // childless window until the surface arrives. Teardown is border-only
-        // (_removeWidgetBorder), never destroying the mask.
-        if (settings.get_boolean('rounded-corners') &&
-            settings.get_int('border-radius') > 0) {
-            if (win.get_client_type() !== Meta.WindowClientType.X11) {
-                this.removeWidgetBorder(win);
-                return false;
-            }
-            if (this.core.masks.unwrapMaskActor(actor, win)) {
-                const effWidth = isFocused
-                    ? settings.get_int('active-border-width')
-                    : settings.get_int('inactive-border-width');
-                const buffer = win.get_buffer_rect();
-                if ((frame.x - buffer.x) < effWidth ||
-                    (frame.y - buffer.y) < effWidth) {
-                    this.removeWidgetBorder(win);
-                    return false;
-                }
-            }
-            // childless → fall through: create the placeholder widget
-        }
         const activeWidth = settings.get_int('active-border-width');
         const activeColor = (settings.get_strv('active-border-color') || [])[0] || '#bd93f9';
         const activeColor2 = (settings.get_strv('active-border-color-2') || [])[0] || '#50fa7b';
         const inactiveWidth = settings.get_int('inactive-border-width');
         const inactiveColor = (settings.get_strv('inactive-border-color') || [])[0] || '#1e1f29';
         const inactiveColor2 = (settings.get_strv('inactive-border-color-2') || [])[0] || '#282a36';
-        const borderRadius = settings.get_int('border-radius');
+        // With rounded corners the stroke's inner edge hugs the masked corner
+        // (mask.js): the path runs half a stroke outside it.
+        const cornerRadius = settings.get_int('border-radius');
+        const rounded = settings.get_boolean('rounded-corners') && cornerRadius > 0;
         const gradient = settings.get_boolean('gradient-borders');
         const gradientDir = settings.get_string('gradient-direction');
 
         let borderWidth = isFocused ? activeWidth : inactiveWidth;
+        const borderRadius = rounded ? cornerRadius + borderWidth / 2 : cornerRadius;
+        const outerRadius = rounded ? cornerRadius + borderWidth : cornerRadius;
         let color1 = isFocused ? activeColor : inactiveColor;
         let color2 = isFocused ? activeColor2 : inactiveColor2;
 
         if (borderWidth === 0) {
             // Border-only teardown (never touches the mask) so a 0 width actually
             // removes the widget border. The scratch ring shares this lifecycle by
-            // design; the rounded Wayland SDF ring is independent and unaffected.
+            // design.
             this.removeWidgetBorder(win);
             return false;
         }
@@ -69,7 +47,8 @@ export class Borders extends PlaidSubsystem {
         // Border on the window ACTOR (frame-level): appended last, it always paints
         // above the frame and the client surface. The client child is replaced on
         // workspace round-trips for some clients (Steam), so attaching there nested
-        // and sank borders. The mask cuts the corners; the border stays square.
+        // and sank borders. With rounded corners its path follows the masked
+        // corner (mask.js).
         const buffer = win.get_buffer_rect();
         const borderX = (frame.x - buffer.x) - borderWidth;
         const borderY = (frame.y - buffer.y) - borderWidth;
@@ -100,7 +79,7 @@ export class Borders extends PlaidSubsystem {
                 return true;
             }
             if (alive && !scratch && !old._plaidScratch && !!old._plaidStrips === gradient) {
-                this.restyleBorder(old, style, borderWidth, borderRadius, gradientDir, color1, color2);
+                this.restyleBorder(old, style, borderWidth, borderRadius, gradientDir, color1, color2, outerRadius);
                 this.placeBorder(old, borderX, borderY, borderW, borderH, true);
                 this.keepBorderOnTop(actor, old, win);
                 return true;
@@ -128,9 +107,9 @@ export class Borders extends PlaidSubsystem {
             border = new St.Widget({ name: 'tiling-border', reactive: false, visible: true });
         }
         // Plaid's own child of the window actor, never the client surface
-        // (unwrapMaskActor).
+        // (mask.js surfaceActor).
         border._plaidOwned = true;
-        this.restyleBorder(border, style, borderWidth, borderRadius, gradientDir, color1, color2);
+        this.restyleBorder(border, style, borderWidth, borderRadius, gradientDir, color1, color2, outerRadius);
         border._plaidScratch = scratch;
         this.placeBorder(border, borderX, borderY, borderW, borderH, true);
         actor.add_child(border);
@@ -152,7 +131,7 @@ export class Borders extends PlaidSubsystem {
                     width: borderW + ringWidth * 2,
                     height: borderH + ringWidth * 2,
                     style: `border: ${ringWidth}px solid ${scratchColor}; ` +
-                        `border-radius: ${borderRadius + borderWidth + ringWidth}px; box-sizing: border-box;`,
+                        `border-radius: ${cornerRadius + borderWidth + ringWidth}px; box-sizing: border-box;`,
                     reactive: false,
                     visible: true,
                 });
@@ -188,13 +167,14 @@ export class Borders extends PlaidSubsystem {
         border.destroy();
     }
 
-    // A border's look: the gradient's colours, stroke and direction, or a
-    // solid border's style. The caller lays it out again (placeBorder).
-    restyleBorder(border, style, width, radius, direction, color1, color2) {
+    // A border's look: the gradient's colours, stroke and direction (radius:
+    // the stroke's path), or a solid border's style (outerRadius: its CSS box).
+    // The caller lays it out again (placeBorder).
+    restyleBorder(border, style, width, radius, direction, color1, color2, outerRadius = radius) {
         border._plaidStyle = style;
         border._plaidWidth = width;
         if (!border._plaidStrips) {
-            border.set_style(`border: ${width}px solid ${color1}; border-radius: ${radius}px; box-sizing: border-box;`);
+            border.set_style(`border: ${width}px solid ${color1}; border-radius: ${outerRadius}px; box-sizing: border-box;`);
             return;
         }
         const c1 = this.core.borderMath.hexToRgb(color1);
@@ -331,7 +311,7 @@ export class Borders extends PlaidSubsystem {
             this.core.blur.ensureWindowBlur(win, actor);
 
         if (roundedCorners && borderRadius > 0) {
-            this.core.masks.ensureWindowMask(win, actor, borderRadius + 1);
+            this.core.masks.ensureWindowMask(win, actor, borderRadius);
         } else {
             this.core.masks.removeMask(win);
         }
@@ -479,7 +459,7 @@ export class Borders extends PlaidSubsystem {
         if (!this.core._settings.get_boolean('gradient-borders')) return;
         if (this.core._settings.get_int('border-animation-speed') <= 0) return;
 
-        this.core.debugLog(`border animation: start (borders=${this.core._windowBorders.size} masks=${this.core._windowMasks.size})`);
+        this.core.debugLog(`border animation: start (borders=${this.core._windowBorders.size})`);
         this.core._borderAnimId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 33, () => {
             if (!this.core._settings ||
                 !this.core._settings.get_boolean('gradient-borders') ||
@@ -492,7 +472,7 @@ export class Borders extends PlaidSubsystem {
                 return GLib.SOURCE_CONTINUE;
             }
             if (!this.borderAnimationNeeded()) {
-                this.core.debugLog(`border animation: stop (idle) (borders=${this.core._windowBorders.size} masks=${this.core._windowMasks.size})`);
+                this.core.debugLog(`border animation: stop (idle) (borders=${this.core._windowBorders.size})`);
                 this.stopBorderAnimation();
                 return GLib.SOURCE_REMOVE;
             }
@@ -504,13 +484,6 @@ export class Borders extends PlaidSubsystem {
             // colour moved a level (gradientThetaStep).
             const math = this.core.borderMath;
             const overview = Main.overview.visible;
-            for (const effect of this.core._windowMasks.values()) {
-                if (!math.gradientStale(effect._plaidTheta, theta, effect._plaidThetaStep)) continue;
-                const target = effect.get_actor();
-                if (!target || !(overview || target.mapped)) continue;
-                effect._plaidTheta = theta;
-                effect.setTheta(theta);
-            }
             for (const border of this.core._windowBorders.values()) {
                 const info = border._plaidBorder;
                 if (!info || !(overview || border.mapped)) continue;
@@ -526,14 +499,10 @@ export class Borders extends PlaidSubsystem {
         });
     }
 
-    // A gradient whose rotation is visible: a two-colour cairo border, or a mask
-    // drawing its SDF border (borderless masks only round corners).
+    // A gradient whose rotation is visible: a two-colour cairo border.
     borderAnimationNeeded() {
         for (const border of this.core._windowBorders.values()) {
             if (border._plaidBorder && border._plaidBorder.thetaStep < Infinity) return true;
-        }
-        for (const effect of this.core._windowMasks.values()) {
-            if (effect._plaidThetaStep < Infinity) return true;
         }
         return false;
     }
@@ -613,8 +582,7 @@ export class Borders extends PlaidSubsystem {
 
     removeWidgetBorder(win) {
         // Border-only teardown (widget + scratch ring), without touching the mask —
-        // unlike _removeBorder, which also destroys the mask (correct for
-        // fullscreen/clear, wrong when the SDF border should take over).
+        // unlike _removeBorder, which also drops the mask (fullscreen, clear).
         if (this.core._windowBorders.has(win)) {
             this.destroyBorderWidget(this.core._windowBorders.get(win));
             this.core._windowBorders.delete(win);
@@ -693,9 +661,8 @@ export class Borders extends PlaidSubsystem {
                 continue;
             }
             // The grab skip must compare against the GRABBED window — the focus
-            // window can differ mid-grab (hover-focus during a drag), and
-            // the grabbed-but-unfocused window then got stale mask uniforms
-            // for the whole grab.
+            // window can differ mid-grab (hover-focus during a drag). Its
+            // border follows the grab loop, its mask its texture's size.
             if (this.core._grabOp && this.core._grabWindow && win === this.core._grabWindow) continue;
             const actor = win.get_compositor_private();
             if (!actor) continue;
@@ -707,48 +674,9 @@ export class Borders extends PlaidSubsystem {
                 this.core.blur.ensureWindowBlur(win, actor, settings);
 
             const isFocused = win === focusWindow;
-            const scratch = !!(this.core._scratchpadWindows && this.core._scratchpadWindows.has(win));
-
-            if (roundedCorners && borderRadius > 0) {
-                // Stale-widget purge FIRST (was after the mask): updateMask
-                // zeroes the SDF border while a widget still exists, so the
-                // old order left a borderless gap between the mask pass and
-                // the purge — now the widget is gone before the mask draws.
-                // Mask-only WINDOWS (not floats) must not keep a widget
-                // border from an earlier floating state — this path never
-                // re-creates or updates it, so it freezes stale (double
-                // border at the old geometry) until a full rebuild.
-                // FLOATS are excluded: their widget border is LIVE (made
-                // by the floating flair loop) — purging it every pass
-                // churned widgets + logged unconditionally, and
-                // _removeBorder → _removeMask cleared the mask quarantine
-                // — re-opening the empty-capture hole the self-heal
-                // exists to prevent for registered-then-floated X11
-                // windows. Border-only teardown: keep the mask alive.
-                if (!scratch && !this.core.windows.isFloating(win) && this.core._windowBorders.has(win)) {
-                    this.core.debugLog(`border: removed stale widget border on mask-only window ${win.get_wm_class_instance() || '?'}`);
-                    this.destroyBorderWidget(this.core._windowBorders.get(win));
-                    this.core._windowBorders.delete(win);
-                    if (this.core._scratchpadRings) {
-                        const ring = this.core._scratchpadRings.get(win);
-                        if (ring) {
-                            ring.destroy();
-                            this.core._scratchpadRings.delete(win);
-                        }
-                    }
-                }
-                // Widget before mask (same ordering rule as the floating
-                // loop) for the scratch fall-through.
-                if (scratch && bordersEnabled)
-                    this.ensureWindowBorder(win, actor, frame, isFocused, settings);
-                this.core.masks.ensureWindowMask(win, actor, borderRadius + 1, settings);
-                // Scratch windows fall through to their special border even
-                // with rounded corners (normal windows stay mask-only).
-                if (!scratch)
-                    continue;
-            }
-
             if (bordersEnabled) this.ensureWindowBorder(win, actor, frame, isFocused, settings);
+            if (roundedCorners && borderRadius > 0)
+                this.core.masks.ensureWindowMask(win, actor, borderRadius, settings);
         }
 
         // Floating windows are not in _windowWSIndices (they skip _addWindow),
@@ -770,13 +698,9 @@ export class Borders extends PlaidSubsystem {
             this.notePass(win);
             if (blurEnabled) this.core.blur.ensureWindowBlur(win, actor, settings);
             const isFocused = win === focusWindow;
-            // Order matters: create the WIDGET border before the mask —
-            // _updateMaskBounds zeroes the SDF border when a renderable
-            // widget exists, so creating the widget first avoids a
-            // first-pass (or transition-pass) transient double border.
             if (bordersEnabled) this.ensureWindowBorder(win, actor, frame, isFocused, settings);
             if (roundedCorners && borderRadius > 0)
-                this.core.masks.ensureWindowMask(win, actor, borderRadius + 1, settings);
+                this.core.masks.ensureWindowMask(win, actor, borderRadius, settings);
         }
 
         // The border animation is armed by _syncBorderAnimation() below with the

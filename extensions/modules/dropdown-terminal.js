@@ -327,21 +327,13 @@ export class DropdownTerminal extends PlaidSubsystem {
     revealDropdownWindow(win) {
         if (!this.core._settings || !win) return;
         win._plaidDdtRevealed = true;
-        // The spawn choreography may have left the actor hidden and/or the
-        // corner mask's opacity uniform at 0. Restore both together: the mask
-        // multiplies the whole output in the shader, so actor opacity alone
-        // still paints nothing.
+        // The spawn choreography may have left the actor hidden.
         {
             const a = win.get_compositor_private();
             if (a) {
                 a.visible = true;
                 a.set_opacity(255);
             }
-        }
-        {
-            const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-            if (effect && effect.setOpacityUniform)
-                effect.setOpacityUniform(1);
         }
         // Now that the window is at the drop rect, attaching Flair (blur
         // sibling, border, mask) paints it at the correct geometry.

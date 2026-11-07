@@ -131,7 +131,6 @@ export class PlaidCore {
         this._windowBorders = new Map();
         this._scratchpadRings = new Map();
         this._windowMasks = new Map();
-        this._maskQuarantined = new Set();
         this._windowBlurs = new Map();
         this._sourceIds = new Set();
         this.signals.addIdle(() => {

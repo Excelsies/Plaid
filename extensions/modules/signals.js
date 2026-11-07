@@ -182,8 +182,7 @@ export class Signals extends PlaidSubsystem {
                 if (!this.core._settings || ++settleTicks > 30) {
                     this.core._stackSettleId = 0;
                     // Borders refresh ONLY when the poll corrected something:
-                    // an unconditional pass re-uploads mask uniforms +
-                    // stage queue_redraw — a visible flash on calm switches
+                    // an unconditional pass is a redraw on calm switches
                     // where nothing needed fixing.
                     if (this.core._settings && settleChanged)
                         this.core.borders.updateBorders();

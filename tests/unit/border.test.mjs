@@ -69,65 +69,38 @@ function border(step, mapped = true) {
   b._plaidStrips = [{ visible: true, queue_repaint() { b.repaints++; } }];
   return b;
 }
-function mask(step, mapped = true) {
-  const actor = { mapped };
-  return { _plaidThetaStep: step, thetas: [], get_actor: () => actor, setTheta(t) { this.thetas.push(t); } };
-}
 
-test('border tick: an unmapped border or mask is skipped, unless the overview is shown', () => {
+test('border tick: an unmapped border is skipped, unless the overview is shown', () => {
   withTick((t) => {
     const self = makeSelf(ANIM);
     const on = border(0.01), off = border(0.01, false);
-    const mOn = mask(0.01), mOff = mask(0.01, false);
     self._windowBorders.set({}, on).set({}, off);
-    self._windowMasks.set({}, mOn).set({}, mOff);
     self._startBorderAnimation();
     t.clock = at(1);
     assert.equal(t.fn(), GLib.SOURCE_CONTINUE);
     assert.equal(on.repaints, 1);
     assert.equal(off.repaints, 0);
-    assert.equal(mOn.thetas.length, 1);
-    assert.equal(mOff.thetas.length, 0);
     Main.overview.visible = true;
     t.clock = at(2);
     t.fn();
     assert.equal(off.repaints, 1);
-    assert.equal(mOff.thetas.length, 1);
   });
 });
 
 test('border tick: re-rendered only once the colour moved a full level', () => {
   withTick((t) => {
     const self = makeSelf(ANIM);
-    const b = border(0.1), m = mask(0.1);
+    const b = border(0.1);
     self._windowBorders.set({}, b);
-    self._windowMasks.set({}, m);
     self._startBorderAnimation();
     t.clock = at(1);
     t.fn();
     t.clock = at(1.05);
     t.fn();
     assert.equal(b.repaints, 1);
-    assert.equal(m.thetas.length, 1);
     t.clock = at(1.1);
     t.fn();
     assert.equal(b.repaints, 2);
-    assert.deepEqual(m.thetas.length, 2);
-  });
-});
-
-test('border tick: a mask whose actor is gone is skipped, the others still rotate', () => {
-  withTick((t) => {
-    const self = makeSelf(ANIM);
-    const gone = mask(0.01);
-    gone.get_actor = () => null;
-    const live = mask(0.01);
-    self._windowMasks.set({}, gone).set({}, live);
-    self._startBorderAnimation();
-    t.clock = at(1);
-    assert.equal(t.fn(), GLib.SOURCE_CONTINUE);
-    assert.equal(gone.thetas.length, 0);
-    assert.equal(live.thetas.length, 1);
   });
 });
 
@@ -135,7 +108,6 @@ test('border tick: stops when nothing draws a two-colour gradient', () => {
   withTick((t) => {
     const self = makeSelf(ANIM);
     self._windowBorders.set({}, border(Infinity));
-    self._windowMasks.set({}, mask(Infinity));
     self._windowBorders.set({ id: 2 }, border(0.01));
     self._startBorderAnimation();
     t.clock = at(1);
@@ -146,68 +118,18 @@ test('border tick: stops when nothing draws a two-colour gradient', () => {
   });
 });
 
-test('_syncBorderAnimation: borders and masks without a two-colour gradient arm no tick', () => {
+test('_syncBorderAnimation: borders without a two-colour gradient arm no tick', () => {
   withTick((t) => {
     const self = makeSelf(ANIM);
     self._windowBorders.set({}, border(Infinity));
     self._windowBorders.set({ plain: 1 }, { mapped: true });
-    self._windowMasks.set({}, mask(Infinity));
     self._syncBorderAnimation();
     assert.equal(t.starts, 0);
-    self._windowMasks.set({ id: 2 }, mask(0.02));
+    self._windowBorders.set({ id: 2 }, border(0.02));
     self._syncBorderAnimation();
     assert.equal(t.starts, 1);
     assert.equal(self._borderAnimId, 7);
   });
-});
-
-// updateMaskBounds against a Wayland window and an attached effect.
-function maskWin() {
-  const frame = { x: 0, y: 0, width: 400, height: 300 };
-  return {
-    get_client_type: () => 0,
-    get_buffer_rect: () => ({ ...frame }),
-    get_frame_rect: () => ({ ...frame }),
-    get_wm_class_instance: () => 'gjs',
-    get_wm_class: () => 'gjs',
-    get_gtk_application_id: () => null,
-  };
-}
-function maskEffect() {
-  return { updates: [], updateMask(...a) { this.updates.push(a); }, get_actor: () => ({ mapped: true }) };
-}
-function updateMask(settings) {
-  return withTick((t) => {
-    const old = globalThis.global.display;
-    globalThis.global.display = oneMonitor();
-    try {
-      const self = makeSelf({ ...ANIM, 'borders-enabled': true, 'active-border-width': 2,
-        'inactive-border-width': 2, 'inactive-border-color': ['#000000'], 'inactive-border-color-2': ['#0a0000'],
-        ...settings });
-      const eff = maskEffect();
-      self._updateMaskBounds(maskWin(), { width: 400, height: 300 }, eff, 12);
-      return { eff, t, self };
-    } finally {
-      globalThis.global.display = old;
-    }
-  });
-}
-
-test('mask thetaStep: finite only for a rotating gradient with a drawn border, which re-arms the tick', () => {
-  const { eff, t, self } = updateMask({});
-  assert.equal(eff._plaidThetaStep, Math.PI / 10);
-  assert.equal(typeof eff._plaidTheta, 'number');
-  assert.equal(t.starts, 1);
-  assert.equal(self._borderAnimId, 7);
-});
-
-test('mask thetaStep: Infinity at border width 0 and outside the rotating mode', () => {
-  for (const s of [{ 'borders-enabled': false }, { 'inactive-border-width': 0 },
-    { 'gradient-borders': false }, { 'border-animation-speed': 0 }]) {
-    const { eff, t } = updateMask(s);
-    assert.equal(eff._plaidThetaStep, Infinity, JSON.stringify(s));
-    assert.equal(t.starts, 0, JSON.stringify(s));
-  }
 });
 
 test('_handleGrabEnd syncs the border animation instead of starting it', () => {
@@ -282,10 +204,10 @@ test('_doUpdateBorders: with no Flair on it removes every border, mask and blur 
   assert.equal(walked, false);
 });
 
-test('_startBorderAnimation: no tick once shutdown has begun (a mask re-arm after the stop)', () => {
+test('_startBorderAnimation: no tick once shutdown has begun (a re-arm after the stop)', () => {
   withTick((t) => {
     const self = makeSelf(ANIM, { _shuttingDown: true });
-    self._windowMasks.set({}, mask(0.02));
+    self._windowBorders.set({}, border(0.02));
     self._startBorderAnimation();
     assert.equal(t.starts, 0);
     assert.equal(self._borderAnimId, 0);
@@ -322,25 +244,17 @@ test('border tick: a plain (non-gradient) border widget in the map is skipped, n
   });
 });
 
-test('updateMaskBounds without settings (disable): the mask no longer keeps a tick wanted', () => {
-  const old = globalThis.global.display;
-  globalThis.global.display = oneMonitor();
-  try {
-    const self = makeSelf(ANIM);
-    const eff = maskEffect();
-    eff._plaidThetaStep = 0.02;
-    self._settings = null;
-    self._updateMaskBounds(maskWin(), { width: 400, height: 300 }, eff, 12);
-    assert.equal(eff._plaidThetaStep, Infinity);
-  } finally {
-    globalThis.global.display = old;
-  }
-});
+function maskWin() {
+  return { get_wm_class_instance: () => 'gjs', get_wm_class: () => 'gjs', get_gtk_application_id: () => null };
+}
 
-test('mask opacity: window-blur-opacity only for a window that is blurred (not on blur-exclude)', () => {
+test('mask opacity: window-blur-opacity only for a window that is blurred (not on blur-exclude), else one below opaque', () => {
   const base = { 'window-blur': true, 'window-blur-opacity': 80 };
-  assert.equal(updateMask(base).eff.updates[0][10], 0.8);
-  assert.equal(updateMask({ ...base, 'blur-exclude': ['gjs'] }).eff.updates[0][10], 1);
+  const self = makeSelf(base);
+  assert.equal(self.masks.maskedOpacity(maskWin(), fakeSettings(base)), 204);
+  assert.equal(self.masks.maskedOpacity(maskWin(), fakeSettings({ ...base, 'blur-exclude': ['gjs'] })), 254);
+  assert.equal(self.masks.maskedOpacity(maskWin(), fakeSettings({ ...base, 'window-blur': false })), 254);
+  assert.equal(self.masks.maskedOpacity(maskWin(), fakeSettings({ ...base, 'window-blur-opacity': 100 })), 254, 'never fully opaque');
 });
 
 test('_doUpdateBorders: blur gets the pass\'s settings memo, for tiled and floating windows', () => {
@@ -376,18 +290,3 @@ function fakeWinLite() {
     get_window_type: () => 0, get_wm_class_instance: () => 'gjs' };
 }
 
-test('mask opacity: decided by the pass\'s settings memo when one is handed in', () => {
-  const old = globalThis.global.display;
-  globalThis.global.display = oneMonitor();
-  try {
-    const base = { ...ANIM, 'borders-enabled': true, 'active-border-width': 2, 'inactive-border-width': 2,
-      'inactive-border-color': ['#000000'], 'inactive-border-color-2': ['#0a0000'],
-      'window-blur': true, 'window-blur-opacity': 80 };
-    const self = makeSelf({ ...base, 'blur-exclude': [] });
-    const eff = maskEffect();
-    self._updateMaskBounds(maskWin(), { width: 400, height: 300 }, eff, 12, fakeSettings({ ...base, 'blur-exclude': ['gjs'] }));
-    assert.equal(eff.updates[0][10], 1);
-  } finally {
-    globalThis.global.display = old;
-  }
-});

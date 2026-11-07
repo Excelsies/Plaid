@@ -5,7 +5,7 @@
 import { PlaidCore } from '../extensions/modules/core.js';
 import { LEGACY_METHODS } from './legacy-methods.mjs';
 
-export { normalizeAccel, maskSdfRect } from '../extensions/modules/helpers.js';
+export { normalizeAccel } from '../extensions/modules/helpers.js';
 
 // One monitor, index 0, no connector lookup: what the single-monitor tests
 // assume. Tests that replace `global` take `display: oneMonitor()`.

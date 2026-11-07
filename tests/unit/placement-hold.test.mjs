@@ -28,12 +28,10 @@ function holdSelf(win) {
   return self;
 }
 
-test('_revealHeldNewWindow: shows the held actor, resets the mask, clears the hold', () => {
+test('_revealHeldNewWindow: shows the held actor and clears the hold', () => {
   const win = fakeWin();
   const actor = actorFor(win);
   const self = holdSelf(win);
-  const mask = { setOpacityUniform: (v) => { mask.value = v; }, value: 0 };
-  self._windowMasks.set(win, mask);
   win._plaidHoldReveal = true;
 
   self._revealHeldNewWindow(win, 80);
@@ -41,7 +39,6 @@ test('_revealHeldNewWindow: shows the held actor, resets the mask, clears the ho
   assert.equal(win._plaidHoldReveal, false);
   assert.equal(actor.visible, true);
   assert.equal(actor.opacity, 255);
-  assert.equal(mask.value, 1);
 });
 
 test('_revealHeldNewWindow: is a no-op for a window that is not held', () => {

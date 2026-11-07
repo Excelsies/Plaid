@@ -142,17 +142,13 @@ export class Placement {
                     },
                 });
             }
-            const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-            if (effect && effect.setOpacityUniform)
-                effect.setOpacityUniform(1);
         }
         this.core.signals.scheduleBorders();
         this.core.debugLog(`place: held reveal at slot for ${win.get_wm_class_instance() || '?'}`);
     }
 
     // A placed new window: no backstop reveal, out of the pending-warp
-    // state, mask uniform 1 (see fadeIn). show: the actor too (a held X11
-    // window stays hidden).
+    // state. show: the actor too (a held X11 window stays hidden).
     revealPlacedWindow(win, show = true) {
         if (show) {
             const actor = win.get_compositor_private();
@@ -163,9 +159,6 @@ export class Placement {
             win._plaidInvisibleTimer = 0;
         }
         if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
-        const effect = this.core._windowMasks && this.core._windowMasks.get(win);
-        if (effect && effect.setOpacityUniform)
-            effect.setOpacityUniform(1);
         if (show) this.core.signals.scheduleBorders();
     }
 
@@ -239,10 +232,8 @@ export class Placement {
             // The window has landed — cancel the 2.5s backstop reveal so it
             // can't force-reveal a window that later moves to an inactive
             // workspace.
-            // Revealing = leaving the pending-warp state NOW: the offscreen
-            // mask multiplies the whole output (content AND border) by its
-            // opacity uniform, so a window still in _pendingWarp paints
-            // invisible even though the actor is visible. The frozen-frame
+            // Revealing = leaving the pending-warp state NOW (its cursor warp
+            // and blur wait on it). The frozen-frame
             // / give-up paths reach fadeIn WITHOUT the verified-landing
             // success branch (the only other place _pendingWarp is cleared),
             // so clear it here — the same block the backstop reveal uses.
@@ -275,9 +266,6 @@ export class Placement {
                             a.visible = true;
                             a.set_opacity(255);
                         }
-                        const effect = this.core._windowMasks && this.core._windowMasks.get(s.win);
-                        if (effect && effect.setOpacityUniform)
-                            effect.setOpacityUniform(1);
                     }
                     done();
                 }
@@ -718,13 +706,10 @@ export class Placement {
             // Never floated: the window keeps its leaf, and its slot is not
             // re-requested until the layout gives it another.
             this.landingAccept(win, key);
-            // Clear the pending-warp state so a masked window is never left
-            // invisible: an accepted slot makes every later
+            // Clear the pending-warp state: an accepted slot makes every later
             // verifyAnimationLanding return false, so the success branch
-            // that clears _pendingWarp does not run for it, and the mask
-            // uniform stays at 0 (the whole output multiplied by it — no
-            // content, no border) until a title/wm-class notify or close.
-            // Mirror the backstop-reveal block.
+            // that clears _pendingWarp does not run for it. Mirror the
+            // backstop-reveal block.
             if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
             this.core.windows.showSpawnHidden(win);
             this.core.signals.scheduleBorders();

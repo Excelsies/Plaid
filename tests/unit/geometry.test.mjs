@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin, maskSdfRect } from '../helpers.mjs';
+import { makeSelf, fakeWin } from '../helpers.mjs';
 
 test('_isValidWorkArea rejects degenerate / non-finite rects (login race guard)', () => {
   const self = makeSelf();
@@ -98,30 +98,3 @@ test('_bgAppRealToDisplay shifts indices after a parking slot (regression: bare 
   assert.equal(self._bgAppRealToDisplay(5), 4);
 });
 
-test('maskSdfRect: healthy Wayland window (frame == buffer) keeps a full-actor rect', () => {
-  const win = fakeWin({
-    frame: { x: 0, y: 0, width: 200, height: 100 },
-    buffer: { x: 0, y: 0, width: 200, height: 100 },
-  });
-  assert.deepEqual(maskSdfRect(win, { width: 200, height: 100 }), [1, 1, 200, 100]);
-});
-
-test('maskSdfRect: CSD shadow (frame inset in buffer) yields an inset rect', () => {
-  const win = fakeWin({
-    frame: { x: 10, y: 10, width: 180, height: 80 },
-    buffer: { x: 0, y: 0, width: 200, height: 100 },
-  });
-  assert.deepEqual(maskSdfRect(win, { width: 200, height: 100 }), [11, 11, 190, 90]);
-});
-
-test('maskSdfRect: pascube-style divergence is clamped inside the actor (regression)', () => {
-  const win = fakeWin({
-    frame: { x: 960, y: 545, width: 1920, height: 1117 },
-    buffer: { x: 960, y: 582, width: 1920, height: 1080 },
-  });
-  const [x1, y1, x2, y2] = maskSdfRect(win, { width: 1920, height: 1080 });
-  assert.equal(x1, 1);
-  assert.equal(y1, 1);
-  assert.equal(x2, 1920);
-  assert.equal(y2, 1080);
-});

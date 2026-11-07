@@ -174,9 +174,6 @@ export class Grab extends PlaidSubsystem {
 
         if (this.isResizeGrab(grabOp)) {
             this.core._grabWindow = metaWindow;
-            const effect = this.core._windowMasks.get(metaWindow);
-            if (effect)
-                effect.setBorderWidth(0);
         }
 
         const wmClass = metaWindow.get_wm_class_instance() || '?';

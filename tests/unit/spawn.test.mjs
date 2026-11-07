@@ -403,31 +403,24 @@ test('onWindowCreated: a floating window\'s first frame drops its hooks', () => 
 });
 
 // A spawn-hidden window that Plaid stops placing while it lives is shown again.
-function maskFake() {
-  return { op: 1, setOpacityUniform(v) { this.op = v; } };
-}
-
 function hiddenNew(self, id = 1) {
   const w = newWin(id);
   self._newWindowSet.add(w);
   self._windowWorkspaces.set(w, WS);
   self.windows.markPendingWindowInvisible(w, w._actor);
-  const mask = maskFake();
-  mask.setOpacityUniform(0);
-  self._windowMasks.set(w, mask);
-  return { w, mask };
+  return { w };
 }
 
 test('onWindowIdentityChanged: an Extensions app window un-tiled before its placement is shown', () => {
   withTimers(() => {
     const self = hideSelf();
     self.layouts.retileWorkspace = () => {};
-    const { w, mask } = hiddenNew(self);
+    const { w } = hiddenNew(self);
     assert.deepEqual([w._actor.visible, w._actor.opacity, self._pendingWarp.has(w)], [false, 0, true]);
     self.bgApp.isExtensionsAppWindow = () => true;
     self.windows.onWindowIdentityChanged(w);
     assert.equal(self._windowWorkspaces.has(w), false, 'un-tiled');
-    assert.deepEqual([w._actor.visible, w._actor.opacity, mask.op], [true, 255, 1]);
+    assert.deepEqual([w._actor.visible, w._actor.opacity], [true, 255]);
     assert.deepEqual([self._newWindowSet.has(w), self._pendingWarp.has(w), w._plaidInvisibleTimer], [false, false, 0]);
   });
 });
@@ -472,7 +465,7 @@ test('showSpawnHidden: a minimized or hidden window gets its opacity back, its v
   }
 });
 
-test('addWindow: the mask is driven to 0 only for a window that is spawn-hidden', () => {
+test('addWindow: no mask is attached ahead of placement (the hidden actor paints nothing)', () => {
   withTimers(() => {
     for (const floating of [false, true]) {
       const self = makeSelf({ enabled: true, 'rounded-corners': true, 'border-radius': 15 });
@@ -485,16 +478,15 @@ test('addWindow: the mask is driven to 0 only for a window that is spawn-hidden'
       self.monitors.groupPlaces = () => false;
       self.monitors.monConn = () => 'c0';
       self.monitors.primaryMon = () => 0;
-      const mask = maskFake();
-      self.masks.ensureWindowMask = (win) => self._windowMasks.set(win, mask);
+      let attached = 0;
+      self.masks.ensureWindowMask = () => attached++;
       const w = newWin(1);
       w.get_monitor = () => 0;
       self.windows.addWindow(w);
-      assert.equal(mask.op, floating ? 1 : 0, floating ? 'floating at add (fullscreen): never hidden' : 'hidden');
+      assert.equal(attached, 0, `floating=${floating}`);
     }
   });
 });
-
 test('windows.destroy: a window still spawn-hidden is shown', () => {
   withTimers(() => {
     const self = hideSelf();
@@ -516,7 +508,7 @@ test('onWindowIdentityChanged: a spawn-hidden window whose late identity floats 
     for (const minimized of [false, true]) {
       const self = hideSelf();
       self.layouts.retileWorkspace = () => {};
-      const { w, mask } = hiddenNew(self);
+      const { w } = hiddenNew(self);
       w.minimized = minimized;
       w.is_maximized = () => false;
       self.bgApp.isExtensionsAppWindow = () => false;
@@ -524,7 +516,7 @@ test('onWindowIdentityChanged: a spawn-hidden window whose late identity floats 
       self.windows.isFullscreenTile = () => true;
       self.windows.restoreFloatNaturalRect = () => {};
       self.windows.onWindowIdentityChanged(w);
-      assert.deepEqual([w._actor.visible, w._actor.opacity, mask.op], minimized ? [false, 0, 0] : [true, 255, 1], `minimized=${minimized}`);
+      assert.deepEqual([w._actor.visible, w._actor.opacity], minimized ? [false, 0] : [true, 255], `minimized=${minimized}`);
     }
   });
 });
@@ -608,10 +600,10 @@ test('floatAtOpen: a new window floated at open is shown and out of the choreogr
     const self = hideSelf();
     self.monitors.removeFromGroupTree = () => {};
     self.monitors.windowConn = () => 'c0';
-    const { w, mask } = hiddenNew(self);
+    const { w } = hiddenNew(self);
     self.placement.floatAtOpen(w, { max: { w: 300, h: 300 }, box: { w: 1000, h: 1000 } });
     assert.equal(self._toggleFloatWindows.has(w), true);
-    assert.deepEqual([w._actor.visible, w._actor.opacity, mask.op, self.windows.isSpawnHidden(w)], [true, 255, 1, false]);
+    assert.deepEqual([w._actor.visible, w._actor.opacity, self.windows.isSpawnHidden(w)], [true, 255, false]);
   });
 });
 

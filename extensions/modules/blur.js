@@ -16,12 +16,16 @@ import graphene from 'gi://Graphene';
 import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { PlaidSubsystem } from './subsystem.js';
 
 // Snippet hook used by the corner SDF; the shell provides it at runtime.
 const SNIPPET_HOOK_FRAGMENT = Cogl.SnippetHook.FRAGMENT;
 
 const BLUR_EFFECT_NAME = 'plaid-window-blur';
+// A blur hidden this long gives its GL targets back; swept this often.
+const BLUR_HIDDEN_RELEASE_US = 3000000;
+const BLUR_HIDDEN_SWEEP_MS = 2000;
 
 // Framebuffer pixels per logical pixel of the views the actor is on (1.25 on
 // a 1.25 monitor). Neither the UI scale nor the resource scale is it: both
@@ -382,6 +386,20 @@ function getBlurEffectClass() {
             return blurMonitorDims(this.get_actor());
         }
 
+        // Gives the GL targets back (rebuilt on the next paint), with the
+        // retired generations: a hidden window's blur holds nothing.
+        releaseTargets() {
+            if (!this._bgTex) return false;
+            this._retireResources();
+            this._retired = [];
+            // The pipelines hold their layer textures: unbound, or the
+            // textures outlive the release (rebound by the rebuild).
+            for (const p of [this._basePipeline, this._brightPipeline, this._hPipeline, this._vPipeline])
+                p?.set_layer_null_texture(0);
+            this._monitorKey = null;
+            return true;
+        }
+
         _rebuildTargets(ds) {
             // FBOs track the monitor size, not the window, so a window
             // resize never reallocates GL textures.
@@ -476,6 +494,7 @@ function getBlurEffectClass() {
                 const w = Math.round(actor.width);
                 const h = Math.round(actor.height);
                 if (w <= 1 || h <= 1) return true;
+                this._lastPaint = GLib.get_monotonic_time();
                 if (!this._ready) {
                     this._probeAndBuild(paintContext);
                     if (this._fatalFail || !this._ready) return true;
@@ -484,7 +503,7 @@ function getBlurEffectClass() {
                 const ds = this._downscaleFor(monW, monH, this._radius);
                 const monKey = `${monW}x${monH}:${ds}`;
                 if (monKey !== this._monitorKey) {
-                    const now = Date.now();
+                    const now = GLib.get_monotonic_time() / 1000;
                     if (!this._lastRebuildTime || now - this._lastRebuildTime >= 100) {
                         this._rebuildTargets(ds);
                         if (this._fatalFail) return true;
@@ -533,11 +552,12 @@ function getBlurEffectClass() {
 export class Blur extends PlaidSubsystem {
     constructor(core) {
         super(core);
+        this._hiddenSweep = 0;
     }
 
     blurCornerRadius() {
         return (this.core._settings && this.core._settings.get_boolean('rounded-corners'))
-            ? this.core._settings.get_int('border-radius') + 1
+            ? this.core._settings.get_int('border-radius')
             : 0;
     }
 
@@ -643,6 +663,7 @@ export class Blur extends PlaidSubsystem {
                 blur._sibling = sibling;
                 blur._sourceActor = actor;
                 this.core._windowBlurs.set(win, blur);
+                this.scheduleHiddenSweep();
                 blur._actorDestroyId = this.connectObject(actor, 'destroy', () => this.removeBlur(win));
                 blur._actorParentSetId = this.connectObject(actor, 'parent-set',
                     () => this.syncBlurStacking());
@@ -901,6 +922,41 @@ export class Blur extends PlaidSubsystem {
         }
         for (const token of blur._settleNotifyIds ?? []) this.disconnectToken(token);
         blur._settleNotifyIds = [];
+    }
+
+    // A blurred window that stays hidden (another workspace, minimized) gives
+    // its blur's GL targets back: monitor-sized (about 40 MB a window at
+    // 2560x1440). Swept every 2 s while any blur exists, so a blur is released
+    // 4-6 s after its window hid; a shown window's next paint rebuilds them.
+    scheduleHiddenSweep() {
+        if (this._hiddenSweep || !this.core._settings) return;
+        this._hiddenSweep = this.core.signals.addTimeout(BLUR_HIDDEN_SWEEP_MS, () => {
+            if (!this.core._windowBlurs || this.core._windowBlurs.size === 0) {
+                this._hiddenSweep = 0;
+                return GLib.SOURCE_REMOVE;
+            }
+            this.releaseHiddenTargets(GLib.get_monotonic_time());
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    // Hidden: unmapped at every sweep and not painted since the first. The
+    // overview hides the window group (every blur would let go, and all
+    // rebuild in the frame it closes), so it counts as shown.
+    releaseHiddenTargets(now) {
+        let released = 0;
+        for (const blur of this.core._windowBlurs?.values() ?? []) {
+            if (!blur.releaseTargets) continue;
+            const actor = blur.get_actor();
+            if (actor?.mapped || Main.overview.visible || (blur._lastPaint ?? 0) > (blur._hiddenSince || Infinity)) {
+                blur._hiddenSince = 0;
+                continue;
+            }
+            blur._hiddenSince ||= now;
+            if (now - blur._hiddenSince >= BLUR_HIDDEN_RELEASE_US && blur.releaseTargets()) released++;
+        }
+        if (released) this.core.debugLog(`blur: released the targets of ${released} hidden window(s)`);
+        return released;
     }
 
     removeAllBlurs() {

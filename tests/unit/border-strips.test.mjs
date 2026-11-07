@@ -324,25 +324,23 @@ test('repaintBorder: a strip\'s segments on both sides of a gap are separate run
   }
 }));
 
-test('unwrapMaskActor: a border or ring of either kind is never the X11 client surface', () => withSt(() => {
+test('surfaceActor: a border or ring of either kind is never the window\'s surface', () => withSt(() => {
   const { self, actor, win } = setup({ 'gradient-borders': false });
-  win.get_client_type = () => 1;
   self.borders.ensureWindowBorder(win, actor, win.get_frame_rect(), true);
-  assert.equal(self.masks.unwrapMaskActor(actor, win), null, 'only Plaid children: no surface yet');
+  assert.equal(self.masks.surfaceActor(actor), null, 'only Plaid children: no surface yet');
   const surface = new FakeActor();
   actor.add_child(surface);
-  assert.equal(self.masks.unwrapMaskActor(actor, win), surface, 'a solid border is skipped');
+  assert.equal(self.masks.surfaceActor(actor), surface, 'a solid border is skipped');
   self._settings.set_boolean('gradient-borders', true);
   self.borders.ensureWindowBorder(win, actor, win.get_frame_rect(), true);
   actor.children = [self._windowBorders.get(win), surface];
-  assert.equal(self.masks.unwrapMaskActor(actor, win), surface, 'a gradient border is skipped');
+  assert.equal(self.masks.surfaceActor(actor), surface, 'a gradient border is skipped');
   self._scratchpadWindows = new Set([win]);
   self._scratchpadRings = new Map();
   self.borders.ensureWindowBorder(win, actor, win.get_frame_rect(), true);
   actor.children = [self._scratchpadRings.get(win), self._windowBorders.get(win), surface];
-  assert.equal(self.masks.unwrapMaskActor(actor, win), surface, 'the ring is skipped');
+  assert.equal(self.masks.surfaceActor(actor), surface, 'the ring is skipped');
 }));
-
 test('ensureWindowBorder: a border kept in place goes back above a replaced client surface', () => withSt(() => {
   const { self, actor, win } = setup();
   const surface = new FakeActor();

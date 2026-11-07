@@ -53,22 +53,3 @@ export function normalizeTypedAccel(text) {
     return text.replace(/\babove_tab\b/gi, 'grave');
 }
 
-// SDF border/clip rect for the corner mask, in ACTOR-local coordinates.
-// SHARED by the mask bounds upload and the GNOME 50 GLSLEffect's
-// vfunc_paint_target — that vfunc RE-DERIVES `bounds` on EVERY paint, so it
-// is the authoritative source on GNOME 50. Clamp to the actor bounds so a
-// client surface smaller than its frame cannot draw the border outside the
-// captured texture.
-export function maskSdfRect(win, actor) {
-    const buffer = win.get_buffer_rect();
-    const frame = win.get_frame_rect();
-    const offsetX = frame.x - buffer.x;
-    const offsetY = frame.y - buffer.y;
-    const bw = frame.width - buffer.width;
-    const bh = frame.height - buffer.height;
-    const x1 = Math.max(1, offsetX + 1);
-    const y1 = Math.max(1, offsetY + 1);
-    const x2 = Math.max(x1, Math.min(actor.width, offsetX + actor.width + bw));
-    const y2 = Math.max(y1, Math.min(actor.height, offsetY + actor.height + bh));
-    return [x1, y1, x2, y2];
-}
