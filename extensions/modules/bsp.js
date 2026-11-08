@@ -912,12 +912,8 @@ export class Bsp {
             if (c !== dir) node.pinned = true;
             return node;
         };
-        try {
-            const node = parseNode();
-            return node && i === str.length ? node : null;
-        } catch (_e) {
-            return null;
-        }
+        const node = parseNode();
+        return node && i === str.length ? node : null;
     }
 
     // anyDirection: the group orients its splits from the boxes, so a

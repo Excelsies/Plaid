@@ -12,6 +12,18 @@ Releases older than v50.43 predate this changelog; see the git history and the
 
 ---
 
+## Unreleased
+
+- **A failed Background App command no longer exposes an empty workspace.** If the
+  command is missing, crashes, or never opens a window, Plaid keeps the reserved
+  workspace hidden instead of showing an empty "Workspace 1" after 20 seconds.
+- **Background App failures now show a popup.** A transient "Background App Failed"
+  message reports whether the command could not start or started without opening a
+  window; it appears once per launch attempt.
+- **Animated borders use less idle CPU.** Gradient borders and masks redraw only
+  while visible and only once the rotation visibly changes colour; the animation
+  timer stops entirely when nothing can animate.
+
 ## v51.27 — 2026-11-04
 
 - **New default look.** Window blur, rounded corners (15px), gradient borders, and a

@@ -138,7 +138,7 @@ test('every core container is carried by the lock stash or rebuilt with a reason
     ['core.js', '                bspTrees: this._bspTrees,', stashEntries, [['bspTrees', '_bspTrees']]],
     ['core.js', '                monitorSig: this.monitors.signature(),', stashEntries, []],
     ['keybindings.js', '        this.core._failedKeybindCombos = new Map();', moduleFields, ['_failedKeybindCombos']],
-    ['persistence.js', '            this.core._persistedDwindleRaw = raw;', moduleFields, []],
+    ['persistence.js', '        this.core._persistedDwindleRaw = raw;', moduleFields, []],
     ['windows.js', '        this.core._savedRects.delete(win);', moduleFields, ['_savedRects']],
     ['placement.js', '            this.core._animTickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {', moduleFields, []],
     ['proc-info.js', '        this._procCmdlineCache = new Map();', ownFields, ['_procCmdlineCache']],

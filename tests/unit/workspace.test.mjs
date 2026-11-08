@@ -214,6 +214,9 @@ test('workspace-removed during teardown schedules no layout save (regression: le
   });
   self._workspaceLayouts = new Map([[1, 'dwindle'], [3, 'master-stack']]);
   self._workspaceOrders = new Map([[order[2], []]]);
+  // The final save writes the settings (GSettings has the setters).
+  self._settings.set_strv = () => {};
+  self._settings.set_string = () => {};
   withOrder(order, () => {
     self.persistence.destroy(); // the final save of core.destroy
     order.splice(2, 1); // the BGAPP releases its trailing parking
