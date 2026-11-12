@@ -29,7 +29,7 @@ function fakeWorld({ texW = 420, texH = 330, buffer = { x: 90, y: 40, width: 420
   const actor = { get_texture: () => world.stex, get_first_child: () => surface };
   const win = { get_buffer_rect: () => ({ ...world.buffer }), get_frame_rect: () => ({ ...world.frame }),
     get_compositor_private: () => actor, get_wm_class_instance: () => 'gjs', get_wm_class: () => 'gjs',
-    get_gtk_application_id: () => null };
+    get_gtk_application_id: () => null, get_client_type: () => 0 };
   const world = { stex, tex, surface, actor, win, buffer, frame };
   return world;
 }
@@ -170,7 +170,7 @@ test('border radius: with rounded corners the stroke hugs the masked corner; wit
         'active-border-color': ['#ff0000'], 'active-border-color-2': ['#0000ff'] });
       const actor = new A();
       const frame = { x: 0, y: 0, width: 400, height: 300 };
-      const win = { get_frame_rect: () => ({ ...frame }), get_buffer_rect: () => ({ ...frame }), get_compositor_private: () => actor };
+      const win = { get_frame_rect: () => ({ ...frame }), get_buffer_rect: () => ({ ...frame }), get_compositor_private: () => actor, get_client_type: () => 0 };
       self.borders.ensureWindowBorder(win, actor, frame, true);
       const b = self._windowBorders.get(win);
       if (gradient) assert.equal(b._plaidBorder.radius, want, `rounded=${rounded}`);
@@ -181,7 +181,7 @@ test('border radius: with rounded corners the stroke hugs the masked corner; wit
       'border-radius': 15, 'active-border-width': 4, 'inactive-border-width': 4, 'active-border-color': ['#ff0000'] });
     const actor = new A();
     const frame = { x: 0, y: 0, width: 400, height: 300 };
-    const win = { get_frame_rect: () => ({ ...frame }), get_buffer_rect: () => ({ ...frame }), get_compositor_private: () => actor };
+    const win = { get_frame_rect: () => ({ ...frame }), get_buffer_rect: () => ({ ...frame }), get_compositor_private: () => actor, get_client_type: () => 0 };
     self._scratchpadWindows = new Set([win]);
     self._scratchpadRings = new Map();
     self.borders.ensureWindowBorder(win, actor, frame, true);

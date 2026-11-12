@@ -49,11 +49,7 @@ export class Borders extends PlaidSubsystem {
         // workspace round-trips for some clients (Steam), so attaching there nested
         // and sank borders. With rounded corners its path follows the masked
         // corner (mask.js).
-        const buffer = win.get_buffer_rect();
-        const borderX = (frame.x - buffer.x) - borderWidth;
-        const borderY = (frame.y - buffer.y) - borderWidth;
-        const borderW = frame.width + borderWidth * 2;
-        const borderH = frame.height + borderWidth * 2;
+        const [borderX, borderY, borderW, borderH] = this.borderBox(win, frame, win.get_buffer_rect(), borderWidth);
 
         const old = this.core._windowBorders.get(win);
         // Scratch membership is part of the style: the outer ring lives on
@@ -124,12 +120,13 @@ export class Borders extends PlaidSubsystem {
                 const ringWidth = Math.max(2, activeWidth);
                 const scratchColor =
                     (settings.get_strv('scratchpad-border-color') || [])[0] || '#f5c211';
+                const [ringX, ringY, ringW, ringH] = this.borderBox(win, frame, win.get_buffer_rect(), borderWidth + ringWidth);
                 const ring = new St.Widget({
                     name: 'tiling-border',
-                    x: borderX - ringWidth,
-                    y: borderY - ringWidth,
-                    width: borderW + ringWidth * 2,
-                    height: borderH + ringWidth * 2,
+                    x: ringX,
+                    y: ringY,
+                    width: ringW,
+                    height: ringH,
                     style: `border: ${ringWidth}px solid ${scratchColor}; ` +
                         `border-radius: ${cornerRadius + borderWidth + ringWidth}px; box-sizing: border-box;`,
                     reactive: false,
@@ -194,6 +191,23 @@ export class Borders extends PlaidSubsystem {
     // gradient's strips are laid out when the size changes, or on `force` (a
     // new look), and each is drawn once: St redraws a resized DrawingArea at
     // the next frame by itself, and queue_repaint draws at once, every call.
+    // The border's box in the window actor: `width` around the frame. An X11
+    // window actor repaints only its surface and shadow (mutter's paint volume
+    // leaves Plaid's children out), so on X11 the box stays inside the buffer:
+    // past its edge (a frameless window with no shadow) the border would leave
+    // trails as the window moves.
+    borderBox(win, frame, buffer, width) {
+        let x = frame.x - buffer.x - width, y = frame.y - buffer.y - width;
+        let x2 = x + frame.width + width * 2, y2 = y + frame.height + width * 2;
+        if (win.get_client_type() === Meta.WindowClientType.X11) {
+            x = Math.max(0, x);
+            y = Math.max(0, y);
+            x2 = Math.min(buffer.width, x2);
+            y2 = Math.min(buffer.height, y2);
+        }
+        return [x, y, x2 - x, y2 - y];
+    }
+
     placeBorder(border, x, y, w, h, force = false) {
         const g = border._plaidGeom;
         const resized = force || !g || g[2] !== w || g[3] !== h;
@@ -561,9 +575,7 @@ export class Borders extends PlaidSubsystem {
             const buffer = win.get_buffer_rect();
             // A scratch border is laid out with its ring, on the pass after.
             if (border._plaidScratch) continue;
-            const bw = border._plaidWidth ?? 0;
-            this.placeBorder(border, (frame.x - buffer.x) - bw, (frame.y - buffer.y) - bw,
-                frame.width + bw * 2, frame.height + bw * 2);
+            this.placeBorder(border, ...this.borderBox(win, frame, buffer, border._plaidWidth ?? 0));
         }
     }
 
