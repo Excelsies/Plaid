@@ -65,6 +65,7 @@ const stashEntries = (lines) => lines.flatMap((l) => {
 const REBUILT = {
   _settings: 'opened again by enable()',
   _floatingClasses: 'parsed from float-windows at enable',
+  _popupWindowApps: 'parsed from popup-window-apps at enable',
   _floatingTitles: 'parsed from float-titles at enable',
   _floatingTitlePatterns: 'compiled from float-titles at enable',
   _minSizeOverrides: 'parsed from min-window-sizes at enable',

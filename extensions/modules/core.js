@@ -122,6 +122,7 @@ export class PlaidCore {
 
         this._settings = this.ext.getSettings();
         this._floatingClasses = new Set(this._settings.get_strv('float-windows'));
+        this._popupWindowApps = new Set(this._settings.get_strv('popup-window-apps'));
         this._floatingTitles = new Set(this._settings.get_strv('float-titles'));
         this._floatingTitlePatterns = this.compileTitlePatterns(this._floatingTitles);
         this._floatProcessCache = new Map();
@@ -630,6 +631,7 @@ export class PlaidCore {
         this._settings = null;
         this._mutterSettings = null;
         this._floatingClasses = null;
+        this._popupWindowApps = null;
         this._floatingTitles = null;
         this._floatingTitlePatterns = null;
         this._floatProcessCache = null;

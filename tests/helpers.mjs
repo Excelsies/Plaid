@@ -77,6 +77,7 @@ function landingViews(core) {
 function resetCoreState(core, settings) {
   core._settings = fakeSettings(settings);
   core._floatingClasses = new Set(settings['float-windows'] ?? []);
+  core._popupWindowApps = new Set(settings['popup-window-apps'] ?? []);
   core._floatingTitles = new Set(settings['float-titles'] ?? []);
   core._floatingTitlePatterns = [];
   core._floatProcessCache = new Map();

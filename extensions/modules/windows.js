@@ -8,6 +8,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { PlaidSubsystem } from './subsystem.js';
 import { isBspLayout, isSpiralLayout } from './helpers.js';
 
+// The smallest minimum size (each side, client pixels) that makes a window of a
+// popup-window-apps app a real window: Zoom's main, meeting and chat windows
+// declare 932x400, 1000x750 and 870x800; its menus and toolbars none or 2x2.
+const POPUP_APP_TILE_MIN = 200;
+
 export class Windows extends PlaidSubsystem {
     constructor(core) {
         super(core);
@@ -44,6 +49,7 @@ export class Windows extends PlaidSubsystem {
         if (this.core.floatClassMatches(win)) return false;
         if (this.core.floatingTitleMatches(title)) return false;
         if (this.isFixedSizeWindow(win)) return false;
+        if (this.isPopupAppWidget(win)) return false;
         return true;
     }
 
@@ -111,6 +117,7 @@ export class Windows extends PlaidSubsystem {
         if (win.is_skip_taskbar()) return true;
         if (win.get_transient_for()) return true;
         if (this.isFixedSizeWindow(win)) return true;
+        if (this.isPopupAppWidget(win)) return true;
         return false;
     }
 
@@ -162,6 +169,16 @@ export class Windows extends PlaidSubsystem {
         // read lands (a flatpak float rule has class/app-id fallbacks too).
         this.core.procInfo.getProcCmdline(pid, evaluate);
         return false;
+    }
+
+    // A window of an app that opens its menus and toolbars as plain windows
+    // (popup-window-apps: Zoom's "More" menu, its meeting toolbar): only the
+    // app's windows that declare a real minimum size tile, the rest float.
+    isPopupAppWidget(win) {
+        if (!this.core._popupWindowApps?.size) return false;
+        if (!this.core.winClassCandidates(win).some(c => this.core._popupWindowApps.has(c))) return false;
+        const [ok, w, h] = this.core.bsp.unpackSizeHint(win.get_min_size());
+        return !(ok && w >= POPUP_APP_TILE_MIN && h >= POPUP_APP_TILE_MIN);
     }
 
     isFixedSizeWindow(win) {

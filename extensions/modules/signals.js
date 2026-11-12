@@ -216,6 +216,11 @@ export class Signals extends PlaidSubsystem {
             this.core.windows.reapplyFloatRules();
             this.core.layouts.retileAll();
         });
+        this.connectObject(this.core._settings, 'changed::popup-window-apps', () => {
+            this.core._popupWindowApps = new Set(this.core._settings.get_strv('popup-window-apps'));
+            this.core.windows.reapplyFloatRules();
+            this.core.layouts.retileAll();
+        });
         this.connectObject(this.core._settings, 'changed::float-titles', () => {
             this.core._floatingTitles = new Set(this.core._settings.get_strv('float-titles'));
             this.core._floatingTitlePatterns = this.core.compileTitlePatterns(this.core._floatingTitles);

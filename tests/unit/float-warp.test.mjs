@@ -85,13 +85,14 @@ test('markPendingWindowInvisible: a floating window is not warped to, and a tile
   assert.equal(self._pendingWarp.has(t), true, 'a tiled new window still gets its warp after landing');
 });
 
-test('float-windows: Zoom and its helper float by default', () => {
+test('float-windows: the Zoom helper floats by default; Zoom itself is a popup-window app', () => {
   const block = schema.match(/<key name="float-windows"[\s\S]*?<\/key>/)[0];
   const list = JSON.parse(block.match(/<default><!\[CDATA\[(.*?)\]\]><\/default>/)[1].replace(/'/g, '"'));
-  for (const c of ['zoom', 'zoomwebviewhost']) assert.ok(list.includes(c), c);
+  assert.ok(list.includes('zoomwebviewhost'));
+  assert.ok(!list.includes('zoom'), 'zoom tiles its real windows (popup-window-apps)');
   const self = makeSelf({ enabled: true, 'float-windows': list });
   self._floatingClasses = new Set(list);
-  assert.equal(self.floatClassMatches(floatWin('zoom')), true);
+  assert.equal(self.floatClassMatches(floatWin('zoom')), false);
   assert.equal(self.floatClassMatches(floatWin('zoomwebviewhost')), true);
   assert.equal(self.floatClassMatches(floatWin('gedit')), false);
 });

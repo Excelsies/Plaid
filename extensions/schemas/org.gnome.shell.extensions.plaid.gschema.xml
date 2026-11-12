@@ -199,9 +199,16 @@
 
     <!-- Float window patterns (WM_CLASS instance names) -->
     <key name="float-windows" type="as">
-      <default><![CDATA[['gimp', 'vlc', 'io.github.bugaevc.wl-clipboard', 'zoom', 'zoomwebviewhost']]]></default>
+      <default><![CDATA[['gimp', 'vlc', 'io.github.bugaevc.wl-clipboard', 'zoomwebviewhost']]]></default>
       <summary>Window class instances that should float</summary>
       <description>Lowercase WM_CLASS instance names that should not be tiled</description>
+    </key>
+
+    <!-- Apps whose menus and toolbars are plain windows -->
+    <key name="popup-window-apps" type="as">
+      <default><![CDATA[['zoom']]]></default>
+      <summary>Apps whose menus and toolbars are plain windows</summary>
+      <description>Lowercase WM_CLASS instance names. Only the windows of these apps that declare a minimum size of at least 200x200 are tiled; their other windows (menus, toolbars) float.</description>
     </key>
 
     <!-- Float by window title (exact, case-sensitive match) -->
