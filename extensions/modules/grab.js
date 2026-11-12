@@ -21,6 +21,21 @@ const PRESS_TRACK_MS = 3000;
 const LIVE_CONFIGURE_WAIT_MS = 500;
 
 const rectOf = f => ({ x: f.x, y: f.y, w: f.width, h: f.height });
+
+// An edge grab pressed within `zone` (a share of that edge, 0..0.45) of either
+// end resizes the other axis too, as that corner would. [wSign, hSign] are the
+// grab op's (one of them 0 for an edge), press the pointer at the press, frame
+// the window's frame. Returns the signs to resize with and the axis added
+// ('w', 'h' or null).
+export function cornerSigns(wSign, hSign, press, frame, zone) {
+    if (!press || !(zone > 0) || (wSign !== 0) === (hSign !== 0) ||
+        !(frame.width > 0) || !(frame.height > 0))
+        return [wSign, hSign, null];
+    const along = wSign !== 0 ? (press[1] - frame.y) / frame.height : (press[0] - frame.x) / frame.width;
+    const end = along < zone ? -1 : along > 1 - zone ? 1 : 0;
+    if (end === 0) return [wSign, hSign, null];
+    return wSign !== 0 ? [wSign, end, 'h'] : [end, hSign, 'w'];
+}
 const sameRect = (a, b) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 const nearRect = (a, b) => Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 &&
     Math.abs(a.w - b.w) <= 1 && Math.abs(a.h - b.h) <= 1;
@@ -118,6 +133,27 @@ export class Grab extends PlaidSubsystem {
         return null;
     }
 
+    // The corner zone as a share of an edge (0: edge grabs stay edge grabs).
+    cornerZone() {
+        const s = this.core._settings;
+        if (!s?.get_boolean('corner-resize')) return 0;
+        return Math.max(0, Math.min(45, s.get_int('corner-resize-zone'))) / 100;
+    }
+
+    // The axis cornerSigns added: mutter resizes the grabbed window on the grab
+    // op's axis only, so on the added one it is drawn stretched over its slot;
+    // the grab end sizes it there (handOffLiveStretch).
+    stretchCornerAxis(grabbed, slot) {
+        const axis = this.core._grabCornerAxis;
+        if (!axis || !slot) return;
+        const f = grabbed.get_frame_rect();
+        const draw = axis === 'h'
+            ? { x: f.x, w: f.width, y: slot.y, h: slot.h }
+            : { x: slot.x, w: slot.w, y: f.y, h: f.height };
+        if (!this.core._liveStretched) this.core._liveStretched = new Map();
+        this.core.transforms.stretchActorToSlot(grabbed, slot, draw);
+    }
+
     computeGrabGraceThreshold() {
         const [px, py] = global.get_pointer();
         // get_monitor_at_point() does not exist on Meta.Display in
@@ -165,7 +201,8 @@ export class Grab extends PlaidSubsystem {
         const grabMon = this.core.monitors.windowMon(metaWindow);
         const tiledResize = this.isResizeGrab(grabOp) && !keyboard && !this.core.windows.isFloating(metaWindow) &&
             this.core.monitors.groupPlaces(ws, grabMon);
-        const [startX, startY] = (tiledResize && this.pressAnchor(metaWindow)) || global.get_pointer();
+        const press = tiledResize ? this.pressAnchor(metaWindow) : null;
+        const [startX, startY] = press || global.get_pointer();
         this.core._grabStartX = startX;
         this.core._grabStartY = startY;
         this.core._grabStartFrame = { x: frame.x, y: frame.y };
@@ -182,8 +219,12 @@ export class Grab extends PlaidSubsystem {
 
         if (this.isResizeGrab(grabOp) && !this.core.windows.isFloating(metaWindow)) {
             const direction = (grabOp >> 12) & 0xF;
-            this.core._grabWidthSign = (direction & 1) ? -1 : (direction & 2) ? 1 : 0;
-            this.core._grabHeightSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
+            const wSign = (direction & 1) ? -1 : (direction & 2) ? 1 : 0;
+            const hSign = (direction & 8) ? -1 : (direction & 4) ? 1 : 0;
+            // `press` is taken for a tiled pointer resize only (Plaid moves the
+            // dividers itself): any other grab keeps its edge.
+            [this.core._grabWidthSign, this.core._grabHeightSign, this.core._grabCornerAxis] =
+                cornerSigns(wSign, hSign, press, frame, this.cornerZone());
             const mon = this.core.monitors.windowMon(metaWindow);
             const places = this.core.monitors.groupPlaces(ws, mon);
             const layout = places ? this.core.windows.getWorkspaceLayout(ws, mon) : null;
@@ -289,6 +330,7 @@ export class Grab extends PlaidSubsystem {
         this.core._grabInnerW = this.core._grabInnerH = null;
         this.core._grabFollowW = this.core._grabFollowH = 1;
         this.core._grabClampedW = this.core._grabClampedH = false;
+        this.core._grabCornerAxis = null;
         this.core._grabLowered = false;
         // Also the workspace a carried window left (drag-scroll).
         this.drainRetilesAfterGrab(dropWs);
@@ -635,6 +677,8 @@ export class Grab extends PlaidSubsystem {
         if (!bsp) {
             this.moveTiledExcept(metaWindow);
             this.enforceGrabBoundary(metaWindow);
+            if (this.core._grabCornerAxis && places)
+                this.stretchCornerAxis(metaWindow, this.windowSlotRect(metaWindow, ws, layout, workArea, gap));
         }
         this.core.borders.updateBordersDuringGrab();
     }
@@ -647,7 +691,10 @@ export class Grab extends PlaidSubsystem {
         if (c._grabLowered || !(c._grabClampedW || c._grabClampedH)) return;
         const leaf = c.bsp.bspFindLeaf(tree, win);
         if (!leaf) return;
-        if ((c._grabClampedW && f.width > leaf._w + 1) || (c._grabClampedH && f.height > leaf._h + 1)) {
+        // Not on an axis cornerSigns added: mutter never grows the frame there.
+        const overW = c._grabClampedW && c._grabCornerAxis !== 'w' && f.width > leaf._w + 1;
+        const overH = c._grabClampedH && c._grabCornerAxis !== 'h' && f.height > leaf._h + 1;
+        if (overW || overH) {
             c._grabLowered = true;
             win.lower();
         }
@@ -656,15 +703,18 @@ export class Grab extends PlaidSubsystem {
     // On a monitor-edge axis (mirrored follow) mutter moves the frame's dragged
     // edge while the dwindle slot keeps the monitor edge: the grabbed window is
     // translated back onto its slot there, never scaled.
+    // An axis cornerSigns added (a divider picked for it) is drawn over the slot.
     anchorGrabbed(grabbed, tree) {
         const c = this.core;
-        if (c._grabFollowW > 0 && c._grabFollowH > 0) return;
+        const addW = c._grabCornerAxis === 'w' && !!c._grabResizeNodeW;
+        const addH = c._grabCornerAxis === 'h' && !!c._grabResizeNodeH;
+        if (c._grabFollowW > 0 && c._grabFollowH > 0 && !addW && !addH) return;
         const leaf = c.bsp.bspFindLeaf(tree, grabbed);
         if (!leaf || !(leaf._w > 0) || !(leaf._h > 0)) return;
         const f = grabbed.get_frame_rect();
         const slot = { x: leaf._x, y: leaf._y, w: leaf._w, h: leaf._h };
-        const draw = { x: c._grabFollowW < 0 ? slot.x : f.x, y: c._grabFollowH < 0 ? slot.y : f.y,
-            w: f.width, h: f.height };
+        const draw = { x: addW || c._grabFollowW < 0 ? slot.x : f.x, y: addH || c._grabFollowH < 0 ? slot.y : f.y,
+            w: addW ? slot.w : f.width, h: addH ? slot.h : f.height };
         if (!c._liveStretched) c._liveStretched = new Map();
         c.transforms.stretchActorToSlot(grabbed, slot, draw);
     }
@@ -895,14 +945,18 @@ export class Grab extends PlaidSubsystem {
             const f = win.get_frame_rect();
             if (f.width === 0 || f.height === 0) return;
             let nx = f.x, ny = f.y, nw = f.width, nh = f.height;
-            const wOut = this.core._grabWidthSign > 0
+            // The axis cornerSigns added is drawn by a stretch, never configured:
+            // mutter's drag would undo a size it did not make.
+            const wSign = this.core._grabCornerAxis === 'w' ? 0 : this.core._grabWidthSign;
+            const hSign = this.core._grabCornerAxis === 'h' ? 0 : this.core._grabHeightSign;
+            const wOut = wSign > 0
                 ? (f.x + f.width > boundary.x + boundary.w + 1)
-                : this.core._grabWidthSign < 0
+                : wSign < 0
                     ? (f.x < boundary.x - 1 || f.x + f.width > boundary.x + boundary.w + 1)
                     : false;
-            const hOut = this.core._grabHeightSign > 0
+            const hOut = hSign > 0
                 ? (f.y + f.height > boundary.y + boundary.h + 1)
-                : this.core._grabHeightSign < 0
+                : hSign < 0
                     ? (f.y < boundary.y - 1 || f.y + f.height > boundary.y + boundary.h + 1)
                     : false;
             if (wOut) { nx = boundary.x; nw = boundary.w; }

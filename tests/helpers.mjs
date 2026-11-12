@@ -155,6 +155,7 @@ function resetCoreState(core, settings) {
   core._grabCarried = null;
   core._grabWidthSign = 0;
   core._grabHeightSign = 0;
+  core._grabCornerAxis = null;
   core._grabResizeNodeW = null;
   core._grabResizeNodeH = null;
   core._grabInnerW = null;

@@ -208,6 +208,7 @@ export class PlaidCore {
         this._grabCarried = null;
         this._grabWidthSign = 0;
         this._grabHeightSign = 0;
+        this._grabCornerAxis = null;
         this._grabResizeNodeW = null;
         this._grabResizeNodeH = null;
         this._grabInnerW = null;

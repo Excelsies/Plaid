@@ -91,6 +91,12 @@ export default class TilingWMPreferences extends ExtensionPreferences {
         const dragScrollRow = this._addSwitchRow(group, settings, 'drag-scroll-workspace', _('Scroll to Move Dragged Window'),
             _('Super + scroll while dragging moves the window to another workspace'));
         settings.bind('mouse-resize', dragScrollRow, 'sensitive', Gio.SettingsBindFlags.GET);
+        const cornerRow = this._addSwitchRow(group, settings, 'corner-resize', _('Resize From Edge Corners'),
+            _('Dragging a tiled window edge near its end resizes both directions'));
+        settings.bind('mouse-resize', cornerRow, 'sensitive', Gio.SettingsBindFlags.GET);
+        const zoneRow = this._addSpinRow(group, settings, 'corner-resize-zone', _('Corner Zone'),
+            _('Share of each edge end that resizes both directions (percent)'), 0, 45, 1, 5);
+        settings.bind('corner-resize', zoneRow, 'sensitive', Gio.SettingsBindFlags.GET);
         this._addSwitchRow(group, settings, 'workspace-popup', _('Show Popups'),
             _('Show popups when switching workspaces and when tiling is toggled on or off'));
         this._addSwitchRow(group, settings, 'release-check-enabled', _('Auto Update'),
