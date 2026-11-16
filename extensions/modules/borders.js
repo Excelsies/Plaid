@@ -1,5 +1,7 @@
-// Border widgets — the per-window cairo border (gradient, animated) and its
-// teardown. The gradient geometry + rotation math lives in border-math.js.
+// Border widgets — the per-window border and its teardown: a solid St
+// border; a static gradient in four cairo strips; a rotating gradient as the
+// ring of border-ring.js (the strips when its pipeline fails). The gradient
+// geometry + rotation math lives in border-math.js.
 //
 // Methods live on this subsystem class.
 
@@ -8,11 +10,15 @@ import Meta from 'gi://Meta';
 import St from 'gi://St';
 import cairo from 'gi://cairo';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { blurViewScale } from './blur.js';
+import { buildRingTemplate } from './border-ring.js';
 import { PlaidSubsystem } from './subsystem.js';
 
 export class Borders extends PlaidSubsystem {
     constructor(core) {
         super(core);
+        this._ringTemplate = null;
+        this._ringFailed = false;
     }
 
     ensureWindowBorder(win, actor, frame, isFocused, settings = this.core._settings) {
@@ -52,12 +58,20 @@ export class Borders extends PlaidSubsystem {
         const [borderX, borderY, borderW, borderH] = this.borderBox(win, frame, win.get_buffer_rect(), borderWidth);
 
         const old = this.core._windowBorders.get(win);
+        // A rotating gradient is the ring's: its turn is a uniform. A static
+        // one is the strips' (the ring's paint runs in JS on every frame its
+        // window paints, the strips' only when redrawn), and so is a rotating
+        // one whose ring pipeline failed.
+        const rotating = this.core.borderMath.borderRotationMs(settings.get_int('border-animation-speed')) > 0;
+        const ring = gradient && rotating ? this.ringTemplate() : null;
+        const kind = !gradient ? 'solid' : ring ? 'ring' : 'strips';
         // Scratch membership is part of the style: the outer ring lives on
         // the create path, so entering/leaving the scratchpad rebuilds. So is
-        // whether the gradient rotates: stopping it redraws the static one.
+        // the renderer, and whether the gradient rotates: starting or
+        // stopping it swaps the ring and the strips.
         const scratch = !!(this.core._scratchpadWindows && this.core._scratchpadWindows.has(win));
-        const style = [borderWidth, borderRadius, gradient ? 1 : 0, gradientDir, color1, color2,
-            scratch ? 1 : 0, this.core.borderMath.borderRotationMs(settings.get_int('border-animation-speed')) > 0 ? 1 : 0].join('|');
+        const style = [borderWidth, borderRadius, kind, gradientDir, color1, color2,
+            scratch ? 1 : 0, rotating ? 1 : 0].join('|');
         if (old) {
             // The window's actor can be REPLACED (X11 surface round-trips)
             // while the style stays identical — the border would linger on the
@@ -74,7 +88,7 @@ export class Borders extends PlaidSubsystem {
                 this.keepBorderOnTop(actor, old, win);
                 return true;
             }
-            if (alive && !scratch && !old._plaidScratch && !!old._plaidStrips === gradient) {
+            if (alive && !scratch && !old._plaidScratch && this.borderKind(old) === kind) {
                 this.restyleBorder(old, style, borderWidth, borderRadius, gradientDir, color1, color2, outerRadius);
                 this.placeBorder(old, borderX, borderY, borderW, borderH, true);
                 this.keepBorderOnTop(actor, old, win);
@@ -85,7 +99,15 @@ export class Borders extends PlaidSubsystem {
         }
 
         let border;
-        if (gradient) {
+        if (kind === 'ring') {
+            // One actor drawn by a fragment snippet: a look or an angle is a
+            // uniform. Its edge is one framebuffer pixel wide, so it follows
+            // the scale of the views it is on.
+            border = new ring.cls(ring, e => this.ringFailed(e), { reactive: false, visible: true });
+            border._plaidGradient = true;
+            border._plaidTokens = [this.connectObject(border, 'stage-views-changed', () => border.setScale(blurViewScale(border)))];
+            border.setScale(blurViewScale(border));
+        } else if (kind === 'strips') {
             // Four edge strips under a plain container: a window-sized cairo
             // surface was reallocated and uploaded on every size change, for
             // a stroke a few pixels wide. Each strip draws the same path,
@@ -157,7 +179,13 @@ export class Borders extends PlaidSubsystem {
         }
     }
 
-    // A border widget and the strip handlers it holds.
+    // A border's renderer: the ring, the strips, or a solid St border.
+    borderKind(border) {
+        if (border._plaidGradient) return 'ring';
+        return border._plaidStrips ? 'strips' : 'solid';
+    }
+
+    // A border widget and the handlers it holds.
     destroyBorderWidget(border) {
         for (const token of border._plaidTokens ?? []) this.disconnectToken(token);
         border._plaidTokens = null;
@@ -166,11 +194,11 @@ export class Borders extends PlaidSubsystem {
 
     // A border's look: the gradient's colours, stroke and direction (radius:
     // the stroke's path), or a solid border's style (outerRadius: its CSS box).
-    // The caller lays it out again (placeBorder).
+    // The caller lays it out again (placeBorder), which sends a ring its look.
     restyleBorder(border, style, width, radius, direction, color1, color2, outerRadius = radius) {
         border._plaidStyle = style;
         border._plaidWidth = width;
-        if (!border._plaidStrips) {
+        if (this.borderKind(border) === 'solid') {
             border.set_style(`border: ${width}px solid ${color1}; border-radius: ${outerRadius}px; box-sizing: border-box;`);
             return;
         }
@@ -205,8 +233,9 @@ export class Borders extends PlaidSubsystem {
 
     // Moves and sizes a border to its window; a border already there is left
     // alone (the grab loop calls this for every border on every frame). A
-    // gradient's strips are laid out when the size changes, or on `force` (a
-    // new look), and each is drawn once: St redraws a resized DrawingArea at
+    // ring gets its shape and look, and a gradient's strips are laid out,
+    // when the size changes or on `force` (a new look); a move only moves
+    // either. Each strip is drawn once: St redraws a resized DrawingArea at
     // the next frame by itself, and queue_repaint draws at once, every call.
     placeBorder(border, x, y, w, h, force = false) {
         const g = border._plaidGeom;
@@ -216,7 +245,8 @@ export class Borders extends PlaidSubsystem {
         border.set_position(x, y);
         if (!resized) return true;
         border.set_size(w, h);
-        if (border._plaidStrips) {
+        if (border._plaidGradient) this.syncRing(border, w, h);
+        else if (border._plaidStrips) {
             border._plaidPaintTheta = this.borderAngle()[1];
             const rects = this.core.borderMath.borderStripRects(border._plaidBorder, w, h);
             for (const [i, strip] of border._plaidStrips.entries()) {
@@ -235,6 +265,47 @@ export class Borders extends PlaidSubsystem {
             }
         }
         return true;
+    }
+
+    // A ring's strips and uniforms for a w x h box, at the gradient's angle
+    // now. A stroke that fills the box draws nothing.
+    syncRing(border, w, h) {
+        const info = border._plaidBorder;
+        const u = this.core.borderMath.ringUniforms(info, w, h);
+        border.setShape(u ? this.core.borderMath.borderStripRects(info, w, h) : [], w, h);
+        border.setUniforms({ ...u, theta: this.ringTheta(border) });
+    }
+
+    // The ring's angle uniform: the gradient's angle now, recorded for the
+    // tick's staleness check.
+    ringTheta(border) {
+        border._plaidTheta = this.borderAngle()[1];
+        return [border._plaidTheta];
+    }
+
+    // The ring's pipeline, built once; null once it failed (rotating
+    // gradients are then drawn in strips).
+    ringTemplate() {
+        if (this._ringFailed) return null;
+        if (this._ringTemplate) return this._ringTemplate;
+        try {
+            this._ringTemplate = buildRingTemplate(this.core.masks.coglContext());
+        } catch (e) {
+            this._ringFailed = true;
+            this.core.debugLog(`border ring: pipeline unavailable (${e.message}), gradients drawn in strips`);
+            return null;
+        }
+        return this._ringTemplate;
+    }
+
+    // A ring's paint threw: it paints nothing more, and the next pass draws
+    // every gradient in strips.
+    ringFailed(e) {
+        if (this._ringFailed) return;
+        this._ringFailed = true;
+        this._ringTemplate = null;
+        this.core.debugLog(`border ring: paint failed (${e.message}), gradients drawn in strips`);
+        this.updateBorders();
     }
 
     // Whether the gradient rotates, and its angle now. Rotation speed comes
@@ -295,9 +366,14 @@ export class Borders extends PlaidSubsystem {
         this.updateBorders();
     }
 
-    // Redraws a gradient border (every strip, at one angle); a solid border
-    // has nothing to redraw.
+    // Turns a gradient to its angle now: a ring by a uniform and a redraw of
+    // its band, strips by a redraw of each (at one angle). A solid border has
+    // nothing to redraw.
     queueBorderRepaint(border) {
+        if (border._plaidGradient) {
+            border.setUniforms({ theta: this.ringTheta(border) });
+            return;
+        }
         border._plaidPaintTheta = this.borderAngle()[1];
         for (const strip of border._plaidStrips ?? []) {
             if (strip.visible) strip.queue_repaint();
@@ -491,7 +567,7 @@ export class Borders extends PlaidSubsystem {
                 return GLib.SOURCE_REMOVE;
             }
 
-            // Rotation follows border-animation-speed alone (see _repaintBorder).
+            // Rotation follows border-animation-speed alone (borderAngle).
             const period = this.core.borderMath.borderRotationMs(this.core._settings.get_int('border-animation-speed'));
             const theta = period > 0 ? ((Date.now() / period) % 1) * Math.PI * 2 : 0;
             // Re-render only while visible (mapped or in the overview) and once the
@@ -502,10 +578,10 @@ export class Borders extends PlaidSubsystem {
                 const info = border._plaidBorder;
                 if (!info || !(overview || border.mapped)) continue;
                 if (!math.gradientStale(border._plaidTheta, theta, info.thetaStep)) continue;
-                // St.DrawingArea only runs the cairo handler on ITS queue_repaint
-                // (Clutter's queue_redraw repaints the cached texture), so the gradient
-                // only rotates via queue_repaint. Plain St.Widgets (no _plaidBorder)
-                // have nothing to animate.
+                // A ring turns by a uniform; St.DrawingArea only runs the
+                // cairo handler on ITS queue_repaint (Clutter's queue_redraw
+                // repaints the cached texture). A solid border (no
+                // _plaidBorder) has nothing to turn.
                 border._plaidTheta = theta;
                 this.queueBorderRepaint(border);
             }
@@ -513,7 +589,7 @@ export class Borders extends PlaidSubsystem {
         });
     }
 
-    // A gradient whose rotation is visible: a two-colour cairo border.
+    // A gradient whose rotation is visible: a two-colour ring or strips.
     borderAnimationNeeded() {
         for (const border of this.core._windowBorders.values()) {
             if (border._plaidBorder && border._plaidBorder.thetaStep < Infinity) return true;
@@ -736,6 +812,7 @@ export class Borders extends PlaidSubsystem {
     destroy() {
         this.stopBorderAnimation();
         this.removeAllBorders();
+        this._ringTemplate = null;
         super.destroy();
     }
 }

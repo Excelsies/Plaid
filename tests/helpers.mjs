@@ -4,6 +4,9 @@
 
 import { PlaidCore } from '../extensions/modules/core.js';
 import { LEGACY_METHODS } from './legacy-methods.mjs';
+import Clutter from 'gi://Clutter';
+import Cogl from 'gi://Cogl';
+import GObject from 'gi://GObject';
 
 export { normalizeAccel } from '../extensions/modules/helpers.js';
 
@@ -265,9 +268,125 @@ function applyOverride(core, key, value) {
     core[prop][name] = value;
 }
 
+// The GI the gradient ring needs (border-ring.js), recording what it is
+// given. Clutter.Actor is the ring's base, with the parent/child protocol the
+// border tests' fake actors use; `emit` runs its handlers. A pipeline records
+// its uniforms by name; a pipeline node keeps the uniforms it was made with
+// (mutter copies the pipeline) and its rectangles. Installed at run time
+// (makeSelf): a registerClass at import time still throws, as does any other
+// class's. `cogl.news` counts Pipeline.new.
+export class FakeClutterActor {
+  constructor(p = {}) {
+    Object.assign(this, { x: 0, y: 0, width: 0, height: 0, visible: true, mapped: true }, p);
+    this.children = [];
+    this.parent = null;
+    this.calls = { pos: 0, size: 0 };
+    this.clips = [];
+    this.handlers = [];
+    this.destroyed = false;
+    this.views = [];
+    this.paintOpacity = 255;
+  }
+  add_child(c) { this.children.push(c); c.parent = this; }
+  get_parent() { return this.parent; }
+  get_first_child() { return this.children[0] ?? null; }
+  get_last_child() { return this.children.at(-1) ?? null; }
+  get_previous_sibling() { const k = this.parent?.children ?? []; return k[k.indexOf(this) - 1] ?? null; }
+  get_next_sibling() { const k = this.parent?.children ?? []; const i = k.indexOf(this); return i < 0 ? null : k[i + 1] ?? null; }
+  set_child_above_sibling(c) { this.children = this.children.filter(k => k !== c); this.children.push(c); this.raises = (this.raises ?? 0) + 1; }
+  set_position(x, y) { this.calls.pos++; this.x = x; this.y = y; }
+  set_size(w, h) { this.calls.size++; this.width = w; this.height = h; }
+  destroy() { this.destroyed = true; if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; }
+  connectObject(...a) { const obj = a.pop(); for (let i = 0; i + 1 < a.length; i += 2) this.handlers.push([obj, a[i], a[i + 1]]); }
+  disconnectObject(obj) { this.handlers = this.handlers.filter(h => h[0] !== obj); }
+  emit(sig) { for (const [, s, fn] of [...this.handlers]) if (s === sig) fn(this); }
+  queue_redraw_with_clip(clip) { this.clips.push(clip); }
+  get_paint_opacity() { return this.paintOpacity; }
+  peek_stage_views() { return this.views; }
+}
+
+// Blending as Cogl derives it (cogl-pipeline.c
+// _cogl_pipeline_update_real_blend_enable): a pipeline keeps the blend flag
+// it was copied with until a setter marks it dirty (set_color, set_blend, a
+// layer texture that changes; not add_snippet, not a null texture on a new
+// layer, not a uniform); a dirty one looks at what it and its dirty
+// ancestors changed, and a fragment snippet there means blending.
+export class FakePipeline {
+  constructor(from = null) {
+    this.uniforms = new Map(from?.uniforms ?? []);
+    this.snippets = [...(from?.snippets ?? [])];
+    this.names = from?.names ?? [];
+    this.nullLayer = from?.nullLayer;
+    this.copiedFrom = from;
+    this.sets = 0;
+    this.changed = new Set();
+    this.blendDirty = from?.blendDirty ?? false;
+    this.realBlend = from?.realBlend ?? false;
+  }
+  copy() { return new FakePipeline(this); }
+  set_layer_null_texture(layer) { this.nullLayer = layer; this.changed.add('layers'); }
+  add_snippet(s) { this.snippets.push(s); this.changed.add('snippets'); }
+  set_blend(s) {
+    if (s !== 'RGBA = ADD (SRC_COLOR, DST_COLOR*(1-SRC_COLOR[A]))') throw new Error(`blend string ${s}`);
+    this.blend = s;
+    this.blendDirty = true;
+    return true;
+  }
+  blends() {
+    if (!this.blendDirty) return this.realBlend;
+    for (let p = this; p?.blendDirty; p = p.copiedFrom)
+      if (p.changed.has('snippets')) return true;
+    return this.realBlend;
+  }
+  get_uniform_location(name) {
+    if (!this.names.includes(name)) this.names.push(name);
+    return this.names.indexOf(name);
+  }
+  set_uniform_float(loc, n, count, v) {
+    if (v.length !== n * count) throw new Error(`uniform ${this.names[loc]}: ${v.length} values for ${n} x ${count}`);
+    this.sets++;
+    this.uniforms.set(this.names[loc].replace(/^ring_/, ''), [...v]);
+  }
+}
+
+export const cogl = { news: 0, fail: null, failNode: null };
+
+export function installRingGi() {
+  if (installRingGi.done) return;
+  installRingGi.done = true;
+  Clutter.Actor ??= FakeClutterActor;
+  Clutter.ActorBox ??= class ActorBox { constructor(p = {}) { Object.assign(this, p); } };
+  Clutter.PipelineNode ??= class PipelineNode {
+    constructor(pipeline) {
+      if (cogl.failNode) throw new Error(cogl.failNode);
+      this.uniforms = new Map(pipeline.uniforms);
+      this.blends = pipeline.copy().blends();
+      this.rects = [];
+    }
+    add_texture_rectangle(box, ...tex) { this.rects.push([box, ...tex]); }
+  };
+  Cogl.Pipeline ??= { new: () => {
+    cogl.news++;
+    if (cogl.fail) throw new Error(cogl.fail);
+    return new FakePipeline();
+  } };
+  Cogl.Snippet ??= { new: (hook, decl, code) => ({ hook, decl, code }) };
+  const register = GObject.registerClass;
+  GObject.registerClass = (meta, cls) => (meta?.GTypeName === 'PlaidBorderRing' ? cls : register(meta, cls));
+}
+
+// The Cogl context masks.coglContext() reads, on a `global.stage` that has
+// none; restore() puts the old stage back.
+export function coglStage() {
+  const old = globalThis.global.stage;
+  globalThis.global.stage = { get_context: () => ({ get_backend: () => ({ get_cogl_context: () => ({}) }) }) };
+  return { restore: () => { globalThis.global.stage = old; } };
+}
+
 // Real PlaidCore + subsystem instances; the Proxy keeps the old `_method`
 // call sites used by the existing unit tests.
 export function makeSelf(settings = {}, overrides = {}) {
+  installRingGi();
   const core = new PlaidCore({
     getSettings: () => fakeSettings(settings),
     metadata: {},

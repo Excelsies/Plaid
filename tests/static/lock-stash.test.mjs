@@ -127,6 +127,8 @@ const REBUILT = {
   'proc-info.js:_procEnvironWaiters': 'reads in flight, cleared at disable',
   'grab.js:_pressTrail': 'pointer trail of the current press',
   'blur.js:_retired': 'GL resources waiting to be freed',
+  'border-ring.js:_sent': 'per ring actor: the uniforms it sent, gone with it',
+  'border-ring.js:_rects': 'per ring actor: the strips it draws, gone with it',
   'subsystem.js:_tokens': 'connectObject tokens, disconnected at disable',
 };
 

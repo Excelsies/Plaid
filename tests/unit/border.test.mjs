@@ -64,9 +64,12 @@ function withTick(fn) {
   }
 }
 const at = (theta) => (theta / (Math.PI * 2)) * PERIOD;
-function border(step, mapped = true) {
+// A rotating gradient as the tick sees it: a ring (the angle uniforms it was
+// sent) or, with `strips`, the strips' redraws.
+function border(step, mapped = true, strips = false) {
   const b = { _plaidBorder: { thetaStep: step }, mapped, repaints: 0 };
-  b._plaidStrips = [{ visible: true, queue_repaint() { b.repaints++; } }];
+  if (strips) b._plaidStrips = [{ visible: true, queue_repaint() { b.repaints++; } }];
+  else Object.assign(b, { _plaidGradient: true, setUniforms(u) { if (u.theta) b.repaints++; } });
   return b;
 }
 
@@ -90,17 +93,17 @@ test('border tick: an unmapped border is skipped, unless the overview is shown',
 test('border tick: re-rendered only once the colour moved a full level', () => {
   withTick((t) => {
     const self = makeSelf(ANIM);
-    const b = border(0.1);
-    self._windowBorders.set({}, b);
+    const b = border(0.1), st = border(0.1, true, true);
+    self._windowBorders.set({}, b).set({ id: 2 }, st);
     self._startBorderAnimation();
     t.clock = at(1);
     t.fn();
     t.clock = at(1.05);
     t.fn();
-    assert.equal(b.repaints, 1);
+    assert.deepEqual([b.repaints, st.repaints], [1, 1]);
     t.clock = at(1.1);
     t.fn();
-    assert.equal(b.repaints, 2);
+    assert.deepEqual([b.repaints, st.repaints], [2, 2], 'the ring and the strips alike');
   });
 });
 

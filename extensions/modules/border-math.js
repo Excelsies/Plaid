@@ -104,7 +104,8 @@ export class BorderMath {
         return [0, 0, 0, h];
     }
 
-    // The four strips a w x h gradient border is drawn in: top and bottom the
+    // The four strips a w x h gradient border (cairo strips, or the ring's
+    // draw area) is drawn in: top and bottom the
     // full width, left and right the rows between. Each reaches as deep as a
     // corner (clamped radius plus stroke, plus one antialiased pixel); on a
     // border under two corners deep they meet, and no pixel is in two strips.
@@ -161,6 +162,23 @@ export class BorderMath {
             r: c1.r + (c2.r - c1.r) * k,
             g: c1.g + (c2.g - c1.g) * k,
             b: c1.b + (c2.b - c1.b) * k,
+        };
+    }
+
+    // The ring's look in a w x h box (border-ring.js): the path's centre and
+    // half extents, its radius, half the stroke and the colours. Null when
+    // the stroke fills the box.
+    ringUniforms(info, w, h) {
+        const path = this.borderPath(info, w, h);
+        if (!path) return null;
+        const c1 = info.color1, c2 = info.color2;
+        return {
+            size: [w, h],
+            path: [path.x + path.pw / 2, path.y + path.ph / 2, path.pw / 2, path.ph / 2],
+            radius: [path.r],
+            half: [info.width / 2],
+            color1: [c1.r, c1.g, c1.b],
+            color2: [c2.r, c2.g, c2.b],
         };
     }
 

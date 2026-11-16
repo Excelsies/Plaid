@@ -26,6 +26,11 @@ Releases older than v50.43 predate this changelog; see the git history and the
 - **Lighter gradient borders.** Each border is drawn as four thin edge strips
   instead of a full-window surface, using far less memory and redrawing only what
   changed while a window is moved or resized. Static gradients are smoother.
+- **Rotating gradient borders on the GPU.** While the gradient rotates, its border
+  is drawn by the GPU as the window is painted: a step of the rotation or a focus
+  change updates a few values instead of redrawing the border, so an animated
+  border at rest costs about a quarter of the CPU it did. While windows move or
+  resize it costs somewhat more than before; static gradients are unchanged.
 - **Desktop icons are not tiled.** A desktop-icons window (such as Desktop Icons
   NG) is ignored by Plaid instead of becoming a full-screen tile with borders and
   blur.
