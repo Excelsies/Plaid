@@ -52,9 +52,10 @@ bottom; fill the status table; paste the journal excerpts back.
       `min-window-sizes`, learned ones) are ignored
 - [ ] `Super+G` toggles the focused split's direction; `Super+Shift+G`
       swaps the two sides of the split
-- [ ] `Super+Shift+Arrow` moves the window within the layout (movewindow);
-      in the other layouts it moves the window to the monitor in that
-      direction
+- [ ] GNOME's "Move window one monitor to the left/right/up/down" shortcut
+      (`Super+Shift+Arrow` by default) moves the window within the layout
+      (movewindow); in the other layouts it moves the window to the monitor
+      in that direction
 
 ### Floating layout
 - [x] `Super+Shift+E` cycles to Floating (popup shows "Layout: Floating")
@@ -245,9 +246,10 @@ mismatch churn.
 
 ## Per-monitor tiling
 
-- [ ] Super+Shift+Arrow (any layout but Spiral, or tiling off) moves a
-      window to the monitor in that direction: it joins that monitor's
-      layout and stays there
+- [ ] GNOME's "Move window one monitor to the left/right/up/down" shortcut
+      (Super+Shift+Arrow by default; any layout but Spiral, or tiling off)
+      moves a window to the monitor in that direction: it joins that
+      monitor's layout and stays there
 - [ ] Drag a window onto a window on another monitor (and onto an empty
       monitor): the preview and the drop are on the pointer's monitor
 - [ ] Super + scroll while dragging: the window lands on the new workspace in

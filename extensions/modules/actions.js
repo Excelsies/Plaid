@@ -141,12 +141,12 @@ export class Actions extends PlaidSubsystem {
         return false;
     }
 
-    // Super+Shift+arrows. A tile of a Spiral group: Hyprland's movewindow
+    // GNOME's move-to-monitor keys (Super+Shift+arrows), on the window mutter
+    // passes. A tile of a Spiral group: Hyprland's movewindow
     // (spiral.moveWindow). Any other window, and every window with tiling
     // off, moves to the monitor in that direction as GNOME's move-to-monitor
     // does (monitors.moveToMonitor); its group follows as after GNOME's move.
-    moveWindow(direction) {
-        const win = this.getActiveWindow();
+    moveWindow(direction, win) {
         if (!win || this.core._grabOp) return;
         const monitors = this.core.monitors;
         const ws = win.get_workspace();

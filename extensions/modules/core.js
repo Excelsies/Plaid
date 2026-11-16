@@ -174,6 +174,7 @@ export class PlaidCore {
         this._pickFocusId = null;
         this._conflictScanId = 0;
         this._keybindChangeIds = [];
+        this._gnomeKeysHooked = false;
         this._backgroundAppCloneWatchId = 0;
         this._backgroundAppSpawnRetries = 0;
         this.persistence.loadPersistedLayoutRules();
@@ -316,6 +317,7 @@ export class PlaidCore {
         this.dragPreview.init();
         this.signals.connectSignals();
         this.keybindings.registerKeybindings();
+        this.keybindings.hookGnomeKeybindings();
         this.workspaces.suppressWorkspaceSwitcherPopup();
         this.dropdown.initDropdownTerminal();
         this._workspacePill = null;

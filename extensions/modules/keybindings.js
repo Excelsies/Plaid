@@ -2,8 +2,9 @@
 // feedback when a system shortcut already owns one of our combos.
 // PLAID_KEYBIND_KEYS below is the single source of truth for the keys.
 // Plaid NEVER writes GNOME keybindings or edge-tiling; those are the user's
-// call. The conflict dialog only unbinds another schema after an explicit
-// click on 'Let Plaid use it'.
+// call. GNOME's move-to-monitor keys get a Plaid handler (GNOME_MOVE_KEYS);
+// their bindings stay GNOME's. The conflict dialog only unbinds another
+// schema after an explicit click on 'Let Plaid use it'.
 //
 // Methods live on this subsystem class.
 
@@ -27,12 +28,19 @@ import { PlaidSubsystem } from './subsystem.js';
 const PLAID_KEYBIND_KEYS = [
     'move-focus-left', 'move-focus-right', 'move-focus-up', 'move-focus-down',
     'swap-left', 'swap-right', 'swap-up', 'swap-down', 'toggle-split', 'swap-split',
-    'move-window-left', 'move-window-right', 'move-window-up', 'move-window-down',
     'resize-shrink-width', 'resize-grow-width', 'resize-shrink-height', 'resize-grow-height',
     'toggle-float', 'toggle-tiling', 'toggle-maximize', 'center-window',
     'pick-float-window', 'cycle-layout',
     'scratchpad-toggle', 'scratchpad-add', 'dropdown-terminal',
 ];
+
+// GNOME's own keys that drive a Plaid action: the user's shortcut, set in
+// GNOME Settings, runs Plaid's handler. Plaid sets only the handler, never
+// the binding.
+const GNOME_MOVE_KEYS = {
+    'move-to-monitor-left': 'left', 'move-to-monitor-right': 'right',
+    'move-to-monitor-up': 'up', 'move-to-monitor-down': 'down',
+};
 
 export class Keybindings extends PlaidSubsystem {
     constructor(core) {
@@ -130,10 +138,6 @@ export class Keybindings extends PlaidSubsystem {
             { key: 'swap-down', fn: () => this.core.actions.swapWindow('down') },
             { key: 'toggle-split', fn: () => this.core.actions.toggleSplit() },
             { key: 'swap-split', fn: () => this.core.actions.swapSplit() },
-            { key: 'move-window-left', fn: () => this.core.actions.moveWindow('left') },
-            { key: 'move-window-right', fn: () => this.core.actions.moveWindow('right') },
-            { key: 'move-window-up', fn: () => this.core.actions.moveWindow('up') },
-            { key: 'move-window-down', fn: () => this.core.actions.moveWindow('down') },
             { key: 'resize-shrink-width', fn: () => this.core.actions.resizeWindow('shrink', 'width') },
             { key: 'resize-grow-width', fn: () => this.core.actions.resizeWindow('grow', 'width') },
             { key: 'resize-shrink-height', fn: () => this.core.actions.resizeWindow('shrink', 'height') },
@@ -416,6 +420,30 @@ export class Keybindings extends PlaidSubsystem {
         }
     }
 
+    // Super+Shift+arrows: GNOME's move-to-monitor keys run Plaid's move
+    // (actions.moveWindow) with the window mutter resolved for the key.
+    // NORMAL only, as GNOME's own. Setting a name again replaces its handler.
+    hookGnomeKeybindings() {
+        const wm = new Gio.Settings({ schema_id: 'org.gnome.desktop.wm.keybindings' });
+        for (const [name, dir] of Object.entries(GNOME_MOVE_KEYS)) {
+            Main.wm.setCustomKeybindingHandler(name, Shell.ActionMode.NORMAL,
+                (_display, win) => this.core.actions.moveWindow(dir, win));
+            const accels = wm.get_strv(name).filter(Boolean);
+            this.core.debugLog(accels.length
+                ? `keybind: ${name} hooked ('${accels.join("', '")}')`
+                : `keybind: ${name} hooked, but has no shortcut in GNOME`);
+        }
+        this.core._gnomeKeysHooked = true;
+    }
+
+    // A null handler gives the names back to mutter's own (move to monitor).
+    restoreGnomeKeybindings() {
+        if (!this.core._gnomeKeysHooked) return;
+        for (const name of Object.keys(GNOME_MOVE_KEYS))
+            Main.wm.setCustomKeybindingHandler(name, Shell.ActionMode.NORMAL, null);
+        this.core._gnomeKeysHooked = false;
+    }
+
     removeKeybindings() {
         for (const key of PLAID_KEYBIND_KEYS) {
             Main.wm.removeKeybinding(key);
@@ -438,6 +466,7 @@ export class Keybindings extends PlaidSubsystem {
     destroy() {
         this.destroyConflictDialog();
         this.removeKeybindings();
+        this.restoreGnomeKeybindings();
         if (this.core._conflictScanId) {
             GLib.source_remove(this.core._conflictScanId);
             this.core._conflictScanId = 0;

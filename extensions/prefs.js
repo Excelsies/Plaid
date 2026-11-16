@@ -688,14 +688,18 @@ export default class TilingWMPreferences extends ExtensionPreferences {
 
         const moveGroup = new Adw.PreferencesGroup({
             title: _('Window Moving'),
-            description: _('Spiral: beside the neighbour in that direction. Other windows: to the monitor in that direction'),
+            description: _('Spiral: beside the neighbour in that direction. Other windows: to the monitor in that direction. These are GNOME\'s "Move window one monitor" shortcuts: change them in Settings, Keyboard, View and Customize Shortcuts, Navigation'),
         });
         page.add(moveGroup);
 
-        this._addShortcutRow(moveGroup, settings, 'move-window-left', _('Move Left'));
-        this._addShortcutRow(moveGroup, settings, 'move-window-right', _('Move Right'));
-        this._addShortcutRow(moveGroup, settings, 'move-window-up', _('Move Up'));
-        this._addShortcutRow(moveGroup, settings, 'move-window-down', _('Move Down'));
+        // GNOME's keys, shown read-only: Plaid hooks their handler, never
+        // their binding.
+        const wmKeys = new Gio.Settings({ schema_id: 'org.gnome.desktop.wm.keybindings' });
+        this._wmMoveKeys = wmKeys;
+        this._addGnomeShortcutRow(moveGroup, wmKeys, 'move-to-monitor-left', _('Move Left'));
+        this._addGnomeShortcutRow(moveGroup, wmKeys, 'move-to-monitor-right', _('Move Right'));
+        this._addGnomeShortcutRow(moveGroup, wmKeys, 'move-to-monitor-up', _('Move Up'));
+        this._addGnomeShortcutRow(moveGroup, wmKeys, 'move-to-monitor-down', _('Move Down'));
 
         const splitGroup = new Adw.PreferencesGroup({
             title: _('Spiral Splits'),
@@ -786,6 +790,19 @@ export default class TilingWMPreferences extends ExtensionPreferences {
                 // The schema may be absent on this system.
             }
         }
+    }
+
+    _addGnomeShortcutRow(group, wmKeys, key, title) {
+        const row = new Adw.ActionRow({ title });
+        const label = new Gtk.Label({ css_classes: ['dim-label', 'monospace'] });
+        const refresh = () => {
+            const current = wmKeys.get_strv(key).filter(Boolean);
+            label.label = current.length > 0 ? current[0] : _('Disabled');
+        };
+        refresh();
+        wmKeys.connect(`changed::${key}`, refresh);
+        row.add_suffix(label);
+        group.add(row);
     }
 
     _addShortcutRow(group, settings, key, title) {

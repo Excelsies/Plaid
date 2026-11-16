@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
 
@@ -209,15 +208,13 @@ test('moveWindow: a Spiral tile uses movewindow; follow-focus warps the cursor w
   for (const ff of [false, true]) {
     const { self, b, tree, warped } = abc();
     self._settings.get_boolean = k => (k === 'follow-focus' ? ff : k === 'enabled');
-    global.display.focus_window = b;
-    self.actions.moveWindow('left');
+    self.actions.moveWindow('left', b);
     assert.equal(names(tree(0)), 'h(v(b,a),c)', `follow-focus ${ff}`);
     assert.deepEqual(warped, ff ? [b] : [], `follow-focus ${ff}`);
   }
   const { self, a, warped } = abc();
   self._settings.get_boolean = k => k === 'follow-focus' || k === 'enabled';
-  global.display.focus_window = a;
-  self.actions.moveWindow('left');
+  self.actions.moveWindow('left', a);
   assert.deepEqual(warped, [], 'nothing moved, no warp');
 });
 
@@ -235,10 +232,9 @@ test('moveWindow: any other window moves to the monitor in that direction, as GN
     const ctx = setup({ trees: [split('h', 0.5, leaf(a), leaf(b))], layouts: [kind === 'dwindle' ? 'dwindle' : 'spiral', 'spiral'], wins: [a, b] });
     ctx.self._windowMonitors.set(b, 'M0');
     prep?.({ ...ctx, b });
-    global.display.focus_window = b;
-    ctx.self.actions.moveWindow('right');
+    ctx.self.actions.moveWindow('right', b);
     assert.deepEqual([b.moved, ctx.regrouped, names(ctx.tree(0)), ctx.retiles.length], [[1], [], 'h(a,b)', 0], kind);
-    ctx.self.actions.moveWindow('left');
+    ctx.self.actions.moveWindow('left', b);
     assert.deepEqual(b.moved, [1], `${kind}: no monitor on the left`);
   }
 });
@@ -304,18 +300,16 @@ test('moveWindow: a non-Spiral window goes by the monitor it is on, not its grou
   const ctx = setup({ trees: [split('h', 0.5, leaf(a), leaf(b))], layouts: ['dwindle', 'dwindle'], wins: [a, b],
     neighbors: { 'right:0': 1, 'left:1': 0 } });
   ctx.self.monitors.windowMon = () => 0;
-  global.display.focus_window = b;
-  ctx.self.actions.moveWindow('left');
+  ctx.self.actions.moveWindow('left', b);
   assert.deepEqual(b.moved, [0]);
 });
 
-test('moveWindow: nothing without a focused window or during a grab', () => {
+test('moveWindow: nothing without a window or during a grab', () => {
   const { self, b, tree } = abc();
-  global.display.focus_window = null;
-  self.actions.moveWindow('left');
   global.display.focus_window = b;
+  self.actions.moveWindow('left', null);
   self._grabOp = 1;
-  self.actions.moveWindow('left');
+  self.actions.moveWindow('left', b);
   assert.equal(names(tree(0)), 'h(a,v(b,c))');
   assert.deepEqual(b.moved, []);
 });
@@ -335,27 +329,23 @@ test('monitors.neighbor: GNOME\'s monitor in that direction; none for a missing 
   }
 });
 
-test('keybindings: move-window-* are registered to moveWindow, on Super+Shift+arrows', () => {
+// The move runs from GNOME's move-to-monitor keys (keybind-gnome.test.mjs);
+// the Spiral split keys stay Plaid's.
+test('keybindings: no Plaid move key; toggle-split and swap-split stay', () => {
   const self = makeSelf();
   const keys = new Map();
   const prev = Main.wm.addKeybinding;
   Main.wm.addKeybinding = (key, _s, _f, _m, fn) => { keys.set(key, fn); return true; };
   self.keybindings.checkKeybindingConflicts = () => {};
   self.keybindings.connectObject = () => 0;
-  const called = [];
-  self.actions.moveWindow = d => called.push(d);
   try {
     self.keybindings.registerKeybindings();
   } finally {
     Main.wm.addKeybinding = prev;
   }
-  for (const d of ['left', 'right', 'up', 'down']) keys.get(`move-window-${d}`)();
-  assert.deepEqual(called, ['left', 'right', 'up', 'down']);
-  const schema = readFileSync(new URL('../../extensions/schemas/org.gnome.shell.extensions.plaid.gschema.xml', import.meta.url), 'utf8');
-  for (const [d, k] of [['left', 'Left'], ['right', 'Right'], ['up', 'Up'], ['down', 'Down']]) {
-    const m = new RegExp(`<key name="move-window-${d}" type="as">\\s*<default><!\\[CDATA\\[(.*?)\\]\\]></default>`).exec(schema);
-    assert.equal(m?.[1], `['<Super><Shift>${k}']`, d);
-  }
+  assert.ok(keys.size > 20, `only ${keys.size} keys registered`);
+  assert.deepEqual([...keys.keys()].filter(k => /^move-window-/.test(k)), []);
+  assert.ok(keys.has('toggle-split') && keys.has('swap-split'));
 });
 
 // The real group move: the window leaves monitor 0's tree and splits the
