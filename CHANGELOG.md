@@ -23,6 +23,29 @@ Releases older than v50.43 predate this changelog; see the git history and the
 - **Animated borders use less idle CPU.** Gradient borders and masks redraw only
   while visible and only once the rotation visibly changes colour; the animation
   timer stops entirely when nothing can animate.
+- **Lighter gradient borders.** Each border is drawn as four thin edge strips
+  instead of a full-window surface, using far less memory and redrawing only what
+  changed while a window is moved or resized. Static gradients are smoother.
+- **Desktop icons are not tiled.** A desktop-icons window (such as Desktop Icons
+  NG) is ignored by Plaid instead of becoming a full-screen tile with borders and
+  blur.
+- **Windows that settle off their slot stay tiled.** A window that honours its own
+  size hints — smaller or larger than its slot — is no longer floated after the
+  landing retries: it keeps its slot, and a size it refuses to shrink below is
+  recorded and the split re-fitted, so the surrounding layout no longer
+  re-divides around a hole.
+- **Hover focus only moves when the pointer enters a window.** Moving the mouse
+  inside the focused window no longer pulls focus back from one of its menus or
+  toolbars.
+- **X11 borders stay inside the window buffer.** Frameless X11 windows no longer
+  leave border trails behind while they are dragged.
+- **Explicit minimum sizes win again.** A learned size floor can no longer
+  override a `min-window-sizes` entry, so a window with an override stays
+  resizable instead of being pinned at its first observed size.
+- **Reopened windows no longer pop out or overlap.** A window that is still
+  restoring its own geometry after opening (at login or when reopened) is not
+  counted as a failed placement, and the split is re-fitted once it has settled,
+  so the window stays tiled instead of floating.
 
 ## v51.27 — 2026-11-04
 

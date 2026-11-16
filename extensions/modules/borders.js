@@ -186,11 +186,6 @@ export class Borders extends PlaidSubsystem {
         };
     }
 
-    // Moves and sizes a border to its window; a border already there is left
-    // alone (the grab loop calls this for every border on every frame). A
-    // gradient's strips are laid out when the size changes, or on `force` (a
-    // new look), and each is drawn once: St redraws a resized DrawingArea at
-    // the next frame by itself, and queue_repaint draws at once, every call.
     // The border's box in the window actor: `width` around the frame. An X11
     // window actor repaints only its surface and shadow (mutter's paint volume
     // leaves Plaid's children out), so on X11 the box stays inside the buffer:
@@ -208,6 +203,11 @@ export class Borders extends PlaidSubsystem {
         return [x, y, x2 - x, y2 - y];
     }
 
+    // Moves and sizes a border to its window; a border already there is left
+    // alone (the grab loop calls this for every border on every frame). A
+    // gradient's strips are laid out when the size changes, or on `force` (a
+    // new look), and each is drawn once: St redraws a resized DrawingArea at
+    // the next frame by itself, and queue_repaint draws at once, every call.
     placeBorder(border, x, y, w, h, force = false) {
         const g = border._plaidGeom;
         const resized = force || !g || g[2] !== w || g[3] !== h;

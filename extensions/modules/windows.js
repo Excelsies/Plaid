@@ -18,7 +18,17 @@ export class Windows extends PlaidSubsystem {
         super(core);
     }
 
+    isDesktopWindow(win) {
+        if (!win) return false;
+        if (win.get_window_type() === Meta.WindowType.DESKTOP) return true;
+        // Desktop-icon providers such as DING expose their desktop surface as
+        // a normal-looking window until the app id resolves. Keep it out of
+        // the tiler, Flair and the blur pipeline.
+        return this.core.winClassCandidates(win).includes('com.rastersoft.ding');
+    }
+
     shouldManage(win) {
+        if (this.isDesktopWindow(win)) return false;
         if (this.core._dropdownWin === win ||
             (this.core._dropdownWaiters && this.core._dropdownWaiters.has(win))) return false;
         if (win._plaidDdt) return false;
@@ -97,6 +107,7 @@ export class Windows extends PlaidSubsystem {
     // move, mask or border it). A fullscreen tile keeps its dwindle leaf
     // (isFullscreenTile).
     isFloating(win) {
+        if (this.isDesktopWindow(win)) return false;
         return this.floatsWhenWindowed(win) || win.is_fullscreen();
     }
 
@@ -393,6 +404,7 @@ export class Windows extends PlaidSubsystem {
 
     addWindow(win, resume = false) {
         if (!this.core._settings) return;
+        if (this.isDesktopWindow(win)) return;
         if (this.core._windowWorkspaces.has(win)) {
             // Belt-and-braces: if the maps survived a disable/enable but the
             // window signals did not (stale flag from a previous instance),
@@ -969,6 +981,27 @@ export class Windows extends PlaidSubsystem {
         if (!this.core._settings || !win) return;
         this.core.debugLog(`identity: ${this.core.winClassCandidates(win).join('/') || '?'} appId=${win.get_gtk_application_id() || '?'} ` +
             `ws=${this.core.geometry.wsIndex(win.get_workspace())} managed=${this.core._windowWorkspaces.has(win)}`);
+        // Desktop-icon providers can look like a normal window at map time and
+        // only resolve to DESKTOP / com.rastersoft.ding later. Never let one
+        // stay in the tiler or keep Flair attached: it is a full-screen tile
+        // that poisons every target.
+        if (this.isDesktopWindow(win)) {
+            if (this.core._windowWorkspaces.has(win)) {
+                this.core.debugLog('desktop window: un-tiling after late identity');
+                this.removeWindow(win);
+            }
+            this.core.borders.removeBorder(win);
+            this.core.masks.removeMask(win);
+            this.core.blur.removeBlur(win);
+            // It may have been hidden by the new-window choreography before
+            // its identity resolved; the desktop surface must stay visible.
+            const actor = win.get_compositor_private();
+            if (actor) {
+                actor.visible = true;
+                actor.set_opacity(255);
+            }
+            return;
+        }
         // Backstop for the Extensions app / prefs window: its wm-class and GTK
         // app id can resolve AFTER the window was already added to the tiler.
         // If it identifies as the Extensions app now, un-tile it and restore
