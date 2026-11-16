@@ -214,7 +214,7 @@ export class Grab extends PlaidSubsystem {
         }
 
         const wmClass = metaWindow.get_wm_class_instance() || '?';
-        this.core.debugLog(`GRAB_BEGIN win=${wmClass} rect=${JSON.stringify(frame)} grabOp=${grabOp} ` +
+        this.core.debugLog(`GRAB_BEGIN win=${wmClass} rect=(${frame.x},${frame.y},${frame.width},${frame.height}) grabOp=${grabOp} ` +
             `isResize=${this.isResizeGrab(grabOp)} isMove=${this.isMoveGrab(grabOp)} float=${this.core.windows.isFloating(metaWindow)}`);
 
         if (this.isResizeGrab(grabOp) && !this.core.windows.isFloating(metaWindow)) {
@@ -1095,6 +1095,10 @@ export class Grab extends PlaidSubsystem {
                     this.core.signals.scheduleBorders();
                 }
             } else {
+                // A slot already accepted for this window is where it stays: a
+                // retile would only re-send it, and a client that resizes itself
+                // answers each one with another size-changed.
+                if (this.core.placement.landingAccepted(win, slot.x, slot.y, slot.w, slot.h)) return;
                 this.core.debugLog(`slot re-assert: ${win.get_wm_class_instance() || '?'} frame=(${f.x},${f.y},${f.width},${f.height}) slot=(${slot.x},${slot.y},${slot.w},${slot.h})`);
                 this.core.signals.scheduleRetile(ws);
             }

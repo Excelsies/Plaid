@@ -11,6 +11,12 @@ import { isBspLayout, isSpiralLayout } from './helpers.js';
 // slots (a layout that keeps moving the slot), reset when it lands.
 const LANDING_RETRIES = 3;
 const LANDING_MISSES = 9;
+// A frame short of its slot (a client sizing in cell steps) is accepted once
+// it holds still after a retry: aligned to the slot's top-left, and short by
+// at most this much on each axis.
+const SHORTFALL_ALIGN = 4;
+const SHORTFALL_MAX = 64;
+const SHORTFALL_FRAC = 0.1;
 // A new window stuck this long while placement fails is revealed where it is.
 const NEW_WINDOW_FROZEN_MS = 1000;
 
@@ -532,7 +538,7 @@ export class Placement {
                     const tree = this.core.bsp.bspGetTree(ws, mon);
                     const min = this.core.bsp.layoutMinSize(win, ws, mon);
                     if (tree)
-                        this.core.debugLog(`diag: tree=${JSON.stringify(tree)} min=${min.w}x${min.h}`);
+                        this.core.debugLog(`diag: tree=${this.core.bsp.dwindleShapeToString(tree)} min=${min.w}x${min.h}`);
                 }
                 const prev = this.landingFrame(win, f);
                 const refusesShrink = f.width > s.targetW + 16 || f.height > s.targetH + 16;
@@ -550,6 +556,10 @@ export class Placement {
                     Math.abs(f.width - prev.w) <= 1 && Math.abs(f.height - prev.h) <= 1) {
                     this.recordObservedMin(win, f, { w: s.targetW, h: s.targetH });
                     this.adjustPinnedTree(win, ws);
+                }
+                if (!settling && this.stableShortOfSlot(win, f, prev, s)) {
+                    this.acceptLanding(win, s, 'held still short of its slot');
+                    return false;
                 }
                 this.retryLanding(win, s, settling);
             }
@@ -668,6 +678,41 @@ export class Placement {
         return prev;
     }
 
+    // The frame missed the slot `s` again, unchanged since the previous miss
+    // on the same slot (a retry was already sent): it sits at the slot's
+    // top-left and is short of it by a little on each axis. A spawn rect, a
+    // frame larger than the slot, or one off the slot's corner is retried.
+    stableShortOfSlot(win, f, prev, s) {
+        const rec = this.core._landings?.get(win);
+        if (!rec || !prev || rec.key !== landingKey(s.targetX, s.targetY, s.targetW, s.targetH)) return false;
+        if (Math.abs(f.x - prev.x) > 1 || Math.abs(f.y - prev.y) > 1 ||
+            Math.abs(f.width - prev.w) > 1 || Math.abs(f.height - prev.h) > 1) return false;
+        if (Math.abs(f.x - s.targetX) > SHORTFALL_ALIGN || Math.abs(f.y - s.targetY) > SHORTFALL_ALIGN) return false;
+        const short = (have, want) => have <= want && want - have <= Math.min(SHORTFALL_MAX, want * SHORTFALL_FRAC);
+        return short(f.width, s.targetW) && short(f.height, s.targetH);
+    }
+
+    landedWithin(win, s, tol) {
+        const f = win.get_frame_rect();
+        return Math.abs(f.x - s.targetX) <= tol && Math.abs(f.y - s.targetY) <= tol &&
+            Math.abs(f.width - s.targetW) <= tol && Math.abs(f.height - s.targetH) <= tol;
+    }
+
+    // The window stays at the slot `s`: shown, its pending warp dropped.
+    acceptLanding(win, s, why) {
+        this.landingAccept(win, landingKey(s.targetX, s.targetY, s.targetW, s.targetH));
+        // Clear the pending-warp state: an accepted slot makes every later
+        // verifyAnimationLanding return false, so the success branch
+        // that clears _pendingWarp does not run for it. Mirror the
+        // backstop-reveal block.
+        if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
+        this.core.windows.showSpawnHidden(win);
+        this.core.signals.scheduleBorders();
+        const f = win.get_frame_rect();
+        this.core.debugLog(`anim: landing accepted (${why}) for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
+            `frame=${Math.round(f.width)}x${Math.round(f.height)} slot=${Math.round(s.targetW)}x${Math.round(s.targetH)}`);
+    }
+
     hasAcceptedLanding(win) {
         const rec = this.core._landings?.get(win);
         return !!rec && rec.accepted !== null;
@@ -708,17 +753,7 @@ export class Placement {
         if (n > LANDING_RETRIES || total > LANDING_MISSES) {
             // Never floated: the window keeps its leaf, and its slot is not
             // re-requested until the layout gives it another.
-            this.landingAccept(win, key);
-            // Clear the pending-warp state: an accepted slot makes every later
-            // verifyAnimationLanding return false, so the success branch
-            // that clears _pendingWarp does not run for it. Mirror the
-            // backstop-reveal block.
-            if (this.core._pendingWarp) this.core._pendingWarp.delete(win);
-            this.core.windows.showSpawnHidden(win);
-            this.core.signals.scheduleBorders();
-            const f = win.get_frame_rect();
-            this.core.debugLog(`anim: landing accepted after retries for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
-                `frame=${Math.round(f.width)}x${Math.round(f.height)} slot=${Math.round(s.targetW)}x${Math.round(s.targetH)}`);
+            this.acceptLanding(win, s, 'after retries');
             return;
         }
         this.core.signals.addTimeout(200, () => {
@@ -729,6 +764,13 @@ export class Placement {
             // this 200ms window — touching a finalized Meta.Window here
             // throws inside the source callback.
             if (!win.get_compositor_private()) return GLib.SOURCE_REMOVE;
+            // A client still answering the last configure (its frame was on
+            // the way to the slot) has usually landed by now: that is a
+            // landing, not a miss to retile for.
+            if (this.landedWithin(win, s, 16)) {
+                this.verifyAnimationLanding(s, 'late');
+                return GLib.SOURCE_REMOVE;
+            }
             const ws = win.get_workspace();
             if (ws) {
                 this.core.debugLog(`anim: landing retry ${n} for ${win.get_wm_class_instance() || '?'} id=${win.get_id()} minimized=${win.minimized}`);

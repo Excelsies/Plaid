@@ -823,6 +823,27 @@ test('maybeReassertSlot: a window already on another monitor is not pulled back'
   assert.deepEqual(retiles, [ws]);
 });
 
+test('maybeReassertSlot: a window off a slot already accepted for it is not retiled', () => {
+  const [, ws] = stubGlobal();
+  const a = W('a', ws, 0), b = W('b', ws, 0);
+  const { self, retiles } = groupSelf(ws, [a, b]);
+  self.bsp.bspSetTree(ws, 0, split('h', 0.5, leaf(a), leaf(b)));
+  self.bsp.bspTagGeometry(self.bsp.bspGetTree(ws, 0), 0, 0, 1000, 500, 0);
+  const slot = self.grab.windowSlotRect(a, ws, self.windows.getWorkspaceLayout(ws, 0),
+    self.monitors.monitorWorkArea(ws, 0), self._settings.get_int('inside-gap'));
+  // The client keeps resizing itself after its slot was accepted.
+  self.windows.showSpawnHidden = () => {};
+  self.placement.acceptLanding(a, { targetX: slot.x, targetY: slot.y, targetW: slot.w, targetH: slot.h }, 'test');
+  a._frame = { x: slot.x, y: slot.y, width: slot.w - 120, height: slot.h };
+  self.grab.maybeReassertSlot(a);
+  assert.deepEqual(retiles, []);
+  // Another slot (the layout moved on): re-asserted as before.
+  self.placement.landingSlotChanged(a);
+  self._slotReassertTimes.clear();
+  self.grab.maybeReassertSlot(a);
+  assert.deepEqual(retiles, [ws]);
+});
+
 test('grab end: a window left on another monitor joins it (float, untracked grab); other grabs leave it', () => {
   const [, ws] = stubGlobal();
   const a = W('a', ws, 0), b = W('b', ws, 0), f = W('f', ws, 0);
