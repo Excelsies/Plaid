@@ -151,6 +151,11 @@ export class PlaidCore {
         this._groupObjs = new Map();
         this._monitorConnCache = null;
         this._monitorConnPartial = false;
+        // A burst of monitor changes waiting for its settled pass (Monitors).
+        this._monitorsSettling = false;
+        this._monitorSettleId = 0;
+        this._monitorSettleFirst = 0;
+        this._monitorSettleRetries = 0;
         this._tiledMonitorsCache = null;
         this._keyedPrimary = this.resumeKeyedPrimary(wasEnabled);
         this._resumeMonitorsMoved = false;

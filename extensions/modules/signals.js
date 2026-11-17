@@ -90,10 +90,9 @@ export class Signals extends PlaidSubsystem {
             this.core.spiral.clearGhosts();
             this.core.dragPreview.updateDropOverlaySize();
             this.core.bgApp.refillBackgroundApp();
-            // An unplugged monitor's windows join the monitor they are on now.
-            this.core.monitors.syncKeyedPrimary();
-            this.core.monitors.regroupWindows('hotplug');
-            this.core.layouts.retileAll();
+            // Regrouping and retiling wait for the burst to settle: acting here
+            // can rebuild trees from a half-applied configuration.
+            this.core.monitors.armSettle();
             this.core.debugLog('monitors-changed handled');
         });
         if (this.core._mutterSettings) {

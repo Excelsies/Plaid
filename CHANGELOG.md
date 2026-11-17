@@ -20,6 +20,10 @@ Releases older than v50.43 predate this changelog; see the git history and the
 - **Per-monitor arrangements are remembered.** Layouts are stored per display
   connector, so unplugging a monitor moves its windows to a remaining display and
   plugging it back in restores them. The arrangement also survives a login.
+- **Monitor changes settle before Plaid acts.** Plugging or unplugging a display,
+  or changing its resolution, scale or the primary, is handled once the burst of
+  changes is over (300 ms after the last, at most 2 s after the first), so windows
+  on the other display no longer shuffle mid-change.
 - **Changing the primary display keeps both arrangements.** Layouts and ratios
   are re-keyed to the new primary instead of being lost.
 - **Moving windows across monitors works.** GNOME's Move to Monitor shortcuts

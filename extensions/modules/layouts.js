@@ -27,6 +27,12 @@ export class Layouts {
         if (!this.core._settings.get_boolean('enabled')) {
             return;
         }
+        // Monitors are being reconfigured: the settled pass retiles every
+        // workspace once the burst is over.
+        if (this.core._monitorsSettling) {
+            this.core.debugLog(`retile: deferred ws=${this.core.geometry.wsIndex(workspace)} (monitors settling)`);
+            return;
+        }
         // A Spiral drag lays its group out itself: re-flow its ghost, or a
         // closed window's dead leaf would come back with the drop.
         if (this.core._grabOp && this.core._dragGhost?.ws === workspace)

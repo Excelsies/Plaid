@@ -12,11 +12,19 @@
 // through setWindowGroup. Naming an index stand-in ("#0" -> "DP-1") renames
 // the record in place (syncKeyedPrimary).
 
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 
 import { PlaidSubsystem } from './subsystem.js';
 import { isBspLayout } from './helpers.js';
 import { sessionState } from './session-state.js';
+
+// A burst of monitor changes is handled once: SETTLE_MS after its last event,
+// at most SETTLE_CAP_MS after its first; a partial connector map waits
+// SETTLE_MS more, SETTLE_RETRIES times, before the stand-ins are used.
+const SETTLE_MS = 300;
+const SETTLE_CAP_MS = 2000;
+const SETTLE_RETRIES = 10;
 
 // A frame the configure ticks sent counts as theirs this long (a late commit).
 const TICK_SETTLE_MS = 2000;
@@ -64,7 +72,10 @@ export class Monitors extends PlaidSubsystem {
         // mutter moves windows off a removed monitor (window-entered-monitor)
         // before it reports monitors-changed: drop the connector map first.
         const mm = global.backend.get_monitor_manager();
-        this.connectObject(mm, 'monitors-changed-internal', () => this.invalidate());
+        this.connectObject(mm, 'monitors-changed-internal', () => {
+            this.invalidate();
+            this.armSettle();
+        });
         this.connectObject(global.display, 'window-entered-monitor',
             (_d, mon, win) => this.onWindowEnteredMonitor(win, mon));
         // Which monitors tile (tiledMonitors).
@@ -374,6 +385,9 @@ export class Monitors extends PlaidSubsystem {
         if (!this.core._settings || this.core._shuttingDown || !this.core._windowMonitors?.has(win)) return;
         // Mid-hotplug the indices may already be the new configuration's.
         this.invalidate();
+        // A burst of monitor changes is settling: its pass regroups every
+        // window from where mutter finally put it.
+        if (this.core._monitorsSettling) return;
         // A drag keeps its group until the grab ends (regroupAfterGrab).
         if (win === this.core._grabbedWindow) return;
         // Our own animation crossing a monitor on its way to its slot there.
@@ -453,12 +467,92 @@ export class Monitors extends PlaidSubsystem {
         return sessionState.stashedTiling !== null;
     }
 
+    // Monitor changes come in bursts (a hotplug, a scale or a primary change is
+    // several events, and mutter moves windows in between): one settled pass
+    // handles the burst. Until it runs, retiles wait (layouts) and
+    // window-entered-monitor is ignored.
+    armSettle() {
+        if (!this.core._settings || this.core._shuttingDown) return;
+        const now = GLib.get_monotonic_time() / 1000;
+        if (!this.core._monitorsSettling) {
+            this.core._monitorsSettling = true;
+            this.core._monitorSettleFirst = now;
+        }
+        const wait = Math.max(0, Math.min(SETTLE_MS, this.core._monitorSettleFirst + SETTLE_CAP_MS - now));
+        this.clearSettleTimer();
+        this.core._monitorSettleId = this.core.signals.addTimeout(Math.round(wait), () => {
+            this.core._monitorSettleId = 0;
+            this.settledPass();
+            return GLib.SOURCE_REMOVE;
+        });
+        this.core.debugLog(`monitors: settle armed (${Math.round(wait)} ms)`);
+    }
+
+    clearSettleTimer() {
+        if (!this.core._monitorSettleId) return;
+        GLib.source_remove(this.core._monitorSettleId);
+        this.core.signals.untrackSource(this.core._monitorSettleId);
+        this.core._monitorSettleId = 0;
+    }
+
+    // The burst is over: every window joins the group of the monitor mutter put
+    // it on, the primary is re-keyed if it changed, and every workspace is
+    // retiled once (work areas change even when no window moved).
+    settledPass() {
+        // First, so that nothing below can leave every retile waiting.
+        this.core._monitorsSettling = false;
+        this.core._monitorSettleFirst = 0;
+        if (!this.core._settings || this.core._shuttingDown) return;
+        this.invalidate();
+        this.connectors();
+        this.core.debugLog(`monitors: settled pass begin partial=${!!this.core._monitorConnPartial} ` +
+            `retries=${this.core._monitorSettleRetries}`);
+        if (this.core._monitorConnPartial && this.core._monitorSettleRetries < SETTLE_RETRIES) {
+            this.core._monitorSettleRetries++;
+            this.armSettle();
+            return;
+        }
+        this.core._monitorSettleRetries = 0;
+        this.syncKeyedPrimary();
+        this.regroupWindows('hotplug');
+        this.core.layouts.retileAll();
+        // X11 frame and buffer offsets can be stale after a reconfiguration
+        // even for a window that did not resize.
+        this.core.signals.addTimeout(150, () => {
+            if (this.core._settings) this.core.borders.updateBorders();
+            return GLib.SOURCE_REMOVE;
+        });
+        this.logSettleShapes();
+        this.core.debugLog('monitors: settled pass done');
+    }
+
+    // Debug only: each workspace's dwindle and Spiral shapes per monitor after a
+    // settled pass, so a shuffle after a monitor event leaves a trail.
+    logSettleShapes() {
+        if (!this.core._settings.get_boolean('debug')) return;
+        const parts = [];
+        for (let i = 1; i < global.workspace_manager.get_n_workspaces(); i++) {
+            const ws = global.workspace_manager.get_workspace_by_index(i);
+            if (!ws) continue;
+            const groups = [];
+            for (const mon of this.tiledMonitors()) {
+                const tree = this.core.bsp.bspGetTree(ws, mon);
+                if (tree?.type !== 'split') continue;
+                groups.push(`${this.monConn(mon)}:${this.core.bsp.dwindleShapeToString(tree)}`);
+            }
+            if (groups.length) parts.push(`${i}:[${groups.join(' ')}]`);
+        }
+        this.core.debugLog(`settle shapes: ${parts.join(' ') || 'none'}`);
+    }
+
     // One idle for every monitor change of a hotplug.
     scheduleRegroup() {
         if (this.core._regroupId || !this.core._settings || this.core._shuttingDown) return;
         this.core._regroupId = this.core.signals.addIdle(() => {
             this.core._regroupId = 0;
             if (!this.core._settings || this.core._shuttingDown) return false;
+            // The settled pass regroups.
+            if (this.core._monitorsSettling) return false;
             this.invalidate();
             this.syncKeyedPrimary();
             this.regroupWindows('hotplug');
@@ -620,6 +714,10 @@ export class Monitors extends PlaidSubsystem {
     }
 
     destroy() {
+        this.clearSettleTimer();
+        this.core._monitorsSettling = false;
+        this.core._monitorSettleFirst = 0;
+        this.core._monitorSettleRetries = 0;
         this.core._regroupId = 0;
         this.core._grabbedWindow = null;
         this.core._grabDropped = false;

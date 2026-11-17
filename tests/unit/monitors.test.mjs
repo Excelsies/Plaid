@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -1862,6 +1862,10 @@ test('monitors-changed: a new primary takes the single-monitor keys and an unplu
     Gio.Settings = OrigSettings;
   }
   handlers['monitors-changed']();
+  assert.equal(self._monitorsSettling, true, 'the handler only arms the settled pass');
+  assert.deepEqual([...self._workspaceLayouts], [[1, 'floating']]);
+  assert.equal(retiled, 0);
+  self.monitors.settledPass();
   assert.deepEqual([...self._workspaceLayouts], [['1@DP-1', 'floating']]);
   let parsed = 0;
   self.persistence.parsePersistedDwindleShapes = () => { parsed++; return new Map(); };
@@ -1869,6 +1873,106 @@ test('monitors-changed: a new primary takes the single-monitor keys and an unplu
   assert.equal(parsed, 1);
   assert.equal(self.monitors.windowConn(h), 'DP-2');
   assert.equal(retiled, 1);
+});
+
+// GLib functions the settle tests replace, put back after every test.
+const GLIB_REAL = { source_remove: GLib.source_remove, get_monotonic_time: GLib.get_monotonic_time };
+afterEach(() => Object.assign(GLib, GLIB_REAL));
+
+// A self whose timers are recorded, not run: [delay, callback] per addTimeout.
+function settleSelf() {
+  const [, ws] = stubGlobal();
+  const a = W('a', ws, 0), c = W('c', ws, 1);
+  const r = groupSelf(ws, [a, c]);
+  const timers = [];
+  const removed = [];
+  let next = 0;
+  r.self.signals.addTimeout = (ms, cb) => { timers.push({ id: ++next, ms, cb }); return next; };
+  r.self.signals.untrackSource = () => {};
+  GLib.source_remove = (id) => { removed.push(id); return true; };
+  let now = 0;
+  GLib.get_monotonic_time = () => now * 1000;
+  const calls = [];
+  r.self.monitors.regroupWindows = (why) => calls.push(`regroup:${why}`);
+  r.self.monitors.syncKeyedPrimary = () => calls.push('rekey');
+  r.self.layouts.retileAll = () => calls.push('retileAll');
+  r.self.borders.updateBorders = () => calls.push('borders');
+  const fire = (id) => timers.find(t => t.id === id).cb();
+  return { ...r, ws, a, c, timers, removed, calls, fire, at: (ms) => { now = ms; } };
+}
+
+test('settle: a burst of monitor changes gives one pass, 300 ms after its last event', () => {
+  const s = settleSelf();
+  s.self.monitors.armSettle();
+  s.at(100);
+  s.self.monitors.armSettle();
+  s.at(250);
+  s.self.monitors.armSettle();
+  assert.deepEqual(s.timers.map(t => t.ms), [300, 300, 300]);
+  assert.deepEqual(s.removed, [1, 2], 'each event re-arms: the earlier timers are removed');
+  assert.equal(s.self._monitorsSettling, true);
+  assert.deepEqual(s.calls, []);
+  s.fire(3);
+  assert.equal(s.self._monitorsSettling, false);
+  assert.deepEqual(s.calls, ['rekey', 'regroup:hotplug', 'retileAll']);
+  assert.equal(s.self._monitorSettleId, 0);
+});
+
+test('settle: a stream of events is cut off 2 s after its first', () => {
+  const s = settleSelf();
+  s.self.monitors.armSettle();
+  s.at(1900);
+  s.self.monitors.armSettle();
+  assert.equal(s.timers.at(-1).ms, 100, 'only what is left of the cap');
+  s.at(2100);
+  s.self.monitors.armSettle();
+  assert.equal(s.timers.at(-1).ms, 0);
+});
+
+test('settle: retiles and monitor moves wait while a burst settles', () => {
+  const s = settleSelf();
+  s.self._settings.get_boolean = (k) => k === 'enabled';
+  let laid = 0;
+  s.self.windows.getWindowsForWorkspace = () => { laid++; return []; };
+  s.self.monitors.armSettle();
+  s.self.layouts.doRetileWorkspace(s.ws);
+  assert.equal(laid, 0, 'the retile is deferred');
+  s.c._mon = 0;
+  s.self.monitors.onWindowEnteredMonitor(s.c, 0);
+  assert.equal(s.self.monitors.windowConn(s.c), 'DP-2', 'no regroup mid-burst');
+  let idled = null;
+  s.self.signals.addIdle = (cb) => { idled = cb; return 1; };
+  s.self.monitors.scheduleRegroup();
+  idled();
+  assert.deepEqual(s.calls, [], 'the regroup idle stands down too');
+});
+
+test('settle: a partial connector map waits, at most 10 times, then the pass runs', () => {
+  const s = settleSelf();
+  const real = s.self.monitors.connectors.bind(s.self.monitors);
+  s.self.monitors.connectors = () => { const c = real(); s.self._monitorConnPartial = true; return c; };
+  s.self.monitors.armSettle();
+  for (let i = 0; i < 10; i++) {
+    s.timers.at(-1).cb();
+    assert.deepEqual(s.calls, [], `retry ${i + 1} waits`);
+    assert.equal(s.self._monitorsSettling, true);
+  }
+  s.timers.at(-1).cb();
+  assert.deepEqual(s.calls, ['rekey', 'regroup:hotplug', 'retileAll']);
+  assert.equal(s.self._monitorSettleRetries, 0);
+});
+
+test('settle: a pass that throws leaves retiles running, and destroy disarms', () => {
+  const s = settleSelf();
+  s.self.monitors.regroupWindows = () => { throw new Error('boom'); };
+  s.self.monitors.armSettle();
+  assert.throws(() => s.fire(1), /boom/);
+  assert.equal(s.self._monitorsSettling, false, 'never stuck settling');
+  s.self.monitors.armSettle();
+  s.self.monitors.destroy();
+  assert.deepEqual(s.removed, [2]);
+  assert.equal(s.self._monitorsSettling, false);
+  assert.equal(s.self._monitorSettleId, 0);
 });
 
 test('window-entered-monitor is connected with mutter\'s argument order (display, monitor, window)', () => {
@@ -2007,6 +2111,7 @@ test('connectSignals: the monitor setting and mutter\'s own change drop the cach
     assert.equal(self._monitorConnCache, null, name);
     assert.equal(self._tiledMonitorsCache, null, name);
   }
+  assert.equal(self._monitorsSettling, true, 'monitors-changed-internal arms the settled pass');
 });
 
 test('saveGroupShapes: a removed monitor\'s single window is no arrangement to keep', () => {
