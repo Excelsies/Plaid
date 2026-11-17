@@ -2144,6 +2144,26 @@ test('retile: a new window on a monitor that does not tile fades in where mutter
   assert.deepEqual(runs, [[u.d, 1300, 250]]);
 });
 
+test('a monitor that does not tile: cycling its layout explains why, and its windows centre', () => {
+  const u = untiledSelf();
+  global.display.focus_window = u.c;
+  global.workspace_manager.get_active_workspace = () => u.ws;
+  const popups = [];
+  u.self.workspaces.showPopup = (title, _sub, _ms, _cb, mon) => popups.push([title, mon]);
+  u.self.persistence.scheduleSaveLayouts = () => popups.push('saved');
+  u.self.actions.cycleLayout();
+  assert.deepEqual(popups, [['Display not tiled', 1]]);
+  assert.equal(u.self._workspaceLayouts.get('1@DP-2'), 'master-stack', 'no layout is stored for it');
+
+  let moved = null;
+  u.c.move_resize_frame = (_u, x, y, w, h) => { moved = { x, y, width: w, height: h }; };
+  u.c.activate = () => {};
+  u.self.windows.moveCursorToWindow = () => {};
+  u.self.actions.centerWindow();
+  // DP-2's work area is x 1000..1800 (GEOM); c is 300 x 200.
+  assert.equal(moved?.x, 1000 + Math.floor((800 - 300) / 2), 'centred on its own monitor although not floating');
+});
+
 test('mouse resize over a stale dwindle tree on a monitor that does not tile moves no split', () => {
   const u = untiledSelf();
   u.self._workspaceLayouts.delete('1@DP-2');

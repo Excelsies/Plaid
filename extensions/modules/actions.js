@@ -453,10 +453,12 @@ export class Actions extends PlaidSubsystem {
     centerWindow() {
         const win = this.getActiveWindow();
         if (!win) return;
-        if (!this.core.windows.isFloating(win)) return;
-
         const ws = win.get_workspace();
         if (!ws) return;
+        // A tile is laid out; a floating window, or any window on a display
+        // that does not lay its windows out, can be centred.
+        if (!this.core.windows.isFloating(win) &&
+            this.core.monitors.groupPlaces(ws, this.core.monitors.windowMon(win))) return;
 
         const frame = win.get_frame_rect();
         // On its own monitor.
@@ -489,7 +491,19 @@ export class Actions extends PlaidSubsystem {
         const layouts = ['dwindle', 'spiral', 'master-stack', 'centered-master-stack', 'floating'];
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
-        const mon = this.core.monitors.activeMonitor(ws);
+        // The focused window's monitor even when it does not tile (activeMonitor
+        // would fall back to a tiled one and change a layout nobody is looking at).
+        const focus = global.display.focus_window;
+        const mon = focus && focus.get_workspace() === ws && this.core._windowMonitors?.has(focus)
+            ? this.core.monitors.windowMon(focus) : this.core.monitors.activeMonitor(ws);
+        // A display that does not tile (workspaces on the primary only) has no
+        // layout to change: say why instead of announcing one.
+        if (!this.core.monitors.monitorTiled(mon)) {
+            this.core.workspaces.showPopup(_('Display not tiled'),
+                _('Turn on "Workspaces on all displays" in Settings → Multitasking to tile this monitor.'),
+                3000, null, mon);
+            return;
+        }
         const current = this.core.windows.getWorkspaceLayout(ws, mon);
         const idx = layouts.indexOf(current);
         const next = layouts[(idx + 1) % layouts.length];

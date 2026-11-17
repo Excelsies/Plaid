@@ -28,6 +28,10 @@ Releases older than v50.43 predate this changelog; see the git history and the
   seam, and per-monitor resizing all agree on which display a window belongs to.
   Directional focus and swap move to the nearest window in that direction and
   prefer the display you are already on.
+- **A display that is not tiled says so.** With workspaces on the primary display
+  only, the layout shortcut on another display explains that it is not tiled
+  instead of changing the primary's layout, and Center Window works on that
+  display's windows.
 - **Blur and popups understand monitors.** Window blur uses each display's own
   scale, so mixed-DPI setups blur correctly; Plaid's popups appear on the focused
   display instead of between displays.
