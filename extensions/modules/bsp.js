@@ -982,19 +982,24 @@ export class Bsp {
         return slots;
     }
 
+    // The neighbour in `direction`, one on the window's own monitor first: a
+    // window across the seam is taken only when that monitor has none.
     // rectOf: the rect compared for each window (default its frame).
     findDirectionalTarget(win, direction, windows, rectOf = w => w.get_frame_rect()) {
+        const mon = this.core.monitors.windowMon(win);
+        const local = windows.filter(w => this.core.monitors.windowMon(w) === mon);
+        return this.findDirectionalIn(win, direction, local, rectOf) ??
+            this.findDirectionalIn(win, direction, windows, rectOf);
+    }
+
+    findDirectionalIn(win, direction, windows, rectOf) {
         const f = rectOf(win);
         let best = null;
-        // bestOverlap starts at 0 (not -1): the acceptance test requires
-        // overlap > bestOverlap + 5, so the OLD -1 made the first candidate
-        // need overlap > 4 — tall narrow panes sharing only a few pixels of
-        // edge were unnavigable by the focus/swap keybinds even when they
-        // were the only neighbor in that direction.
+        // Any positive overlap qualifies: tall narrow panes sharing only a few
+        // pixels of edge stay reachable by the focus and swap keys.
         let bestOverlap = 0;
         let bestDist = Infinity;
         let bestPerp = Infinity;
-        let bestHeight = -1;
 
         for (const w of windows) {
             if (w === win) continue;
@@ -1032,18 +1037,17 @@ export class Bsp {
             }
             if (overlap <= 0) continue;
 
-            const sameHeight = Math.abs(r.height - bestHeight) <= 5;
+            // Nearest edge wins; overlap, then the centre offset, break
+            // near-ties. Ranking by overlap first let a taller window farther
+            // away beat the pane next to the focused one.
             const overlapTie = Math.abs(overlap - bestOverlap) <= 5;
             const distTie = Math.abs(dist - bestDist) <= 5;
-            if (overlap > bestOverlap + 5 ||
-                (overlapTie && dist < bestDist - 5) ||
-                (overlapTie && distTie &&
-                 ((!sameHeight && r.height > bestHeight) ||
-                  (sameHeight && perp < bestPerp)))) {
+            if (dist < bestDist - 5 ||
+                (distTie && overlap > bestOverlap + 5) ||
+                (distTie && overlapTie && perp < bestPerp - 5)) {
                 bestOverlap = overlap;
                 bestDist = dist;
                 bestPerp = perp;
-                bestHeight = r.height;
                 best = w;
             }
         }

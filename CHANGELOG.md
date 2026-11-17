@@ -26,6 +26,8 @@ Releases older than v50.43 predate this changelog; see the git history and the
   (Super+Shift+arrows) move a window to the monitor in that direction (a Spiral
   tile lands at the matching point), and drag and drop, focus and swap across the
   seam, and per-monitor resizing all agree on which display a window belongs to.
+  Directional focus and swap move to the nearest window in that direction and
+  prefer the display you are already on.
 - **Blur and popups understand monitors.** Window blur uses each display's own
   scale, so mixed-DPI setups blur correctly; Plaid's popups appear on the focused
   display instead of between displays.

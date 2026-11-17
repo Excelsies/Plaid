@@ -753,6 +753,21 @@ test('focus and swap cross the monitor edge', () => {
   assert.deepEqual(retiles, [ws]);
 });
 
+// Above b (DP-1): `up` in b's own group, 100 px away, and `across`, a DP-2
+// window whose frame reaches over the seam, 10 px away.
+test('directional focus prefers the focused window\'s monitor, then crosses the seam', () => {
+  const [, ws] = stubGlobal();
+  const b = W('b', ws, 0, { x: 600, y: 600, width: 400, height: 400 });
+  const up = W('up', ws, 0, { x: 0, y: 0, width: 700, height: 500 });
+  const across = W('across', ws, 1, { x: 600, y: 0, width: 400, height: 590 });
+  const { self } = groupSelf(ws, [b, up, across]);
+  assert.equal(self.bsp.findDirectionalTarget(b, 'up', [b, up, across]), up,
+    'a neighbour on the same monitor beats a nearer one on the other');
+  self._windowMonitors.set(up, CONN[1]);
+  assert.equal(self.bsp.findDirectionalTarget(b, 'up', [b, up, across]), across,
+    'with none on its own monitor it takes the nearest across');
+});
+
 test('swap: not into a monitor with the floating layout, nor one that does not tile', () => {
   const floating = edgeSelf();
   floating.self._workspaceLayouts.set('1@DP-2', 'floating');

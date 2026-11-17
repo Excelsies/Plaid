@@ -66,6 +66,22 @@ test('_findDirectionalTarget finds the left neighbour', () => {
   assert.equal(self._findDirectionalTarget(focused, 'left', [focused, left, right]), left);
 });
 
+test('_findDirectionalTarget prefers the nearest edge over a taller, farther window', () => {
+  const self = makeSelf();
+  const focused = fakeWin({ frame: { x: 100, y: 0, width: 100, height: 800 } });
+  const nearShort = fakeWin({ frame: { x: 0, y: 0, width: 100, height: 300 } });
+  const farTall = fakeWin({ frame: { x: -500, y: 0, width: 400, height: 800 } });
+  assert.equal(self._findDirectionalTarget(focused, 'left', [focused, farTall, nearShort]), nearShort);
+});
+
+test('_findDirectionalTarget: at equal distance the larger overlap wins', () => {
+  const self = makeSelf();
+  const focused = fakeWin({ frame: { x: 100, y: 0, width: 100, height: 800 } });
+  const small = fakeWin({ frame: { x: 0, y: 0, width: 98, height: 200 } });
+  const large = fakeWin({ frame: { x: 0, y: 200, width: 100, height: 600 } });
+  assert.equal(self._findDirectionalTarget(focused, 'left', [focused, small, large]), large);
+});
+
 test('_findDirectionalTarget reaches a narrow few-pixel overlap', () => {
   const self = makeSelf();
   const focused = fakeWin({ frame: { x: 0, y: 0, width: 100, height: 100 } });
