@@ -521,6 +521,23 @@ export class Actions extends PlaidSubsystem {
         });
     }
 
+    floatListMatches(win) {
+        const out = [];
+        const classes = new Set();
+        for (const c of this.core.winClassCandidates(win)) {
+            if (this.core._floatingClasses && this.core._floatingClasses.has(c))
+                classes.add(c);
+        }
+        for (const token of this.core.windows.matchingFloatTokens(win))
+            classes.add(token);
+        for (const value of classes)
+            out.push({ key: 'float-windows', value });
+        const title = win.get_title() || '';
+        if (title && this.core._floatingTitles && this.core._floatingTitles.has(title))
+            out.push({ key: 'float-titles', value: title });
+        return out;
+    }
+
     handlePickFloat() {
         const win = global.display.focus_window;
         if (!win) {
@@ -530,57 +547,76 @@ export class Actions extends PlaidSubsystem {
 
         const cls = this.core.winClassCandidates(win)[0] || '';
         const title = win.get_title() || '';
+        const matches = this.floatListMatches(win);
 
-        if (!cls && !title) {
+        if (!cls && !title && matches.length === 0) {
             Main.notify(_('Could not identify the focused window'));
             return;
         }
 
-        this.showFloatPickDialog(cls, title);
+        this.showFloatPickDialog(cls, title, matches);
     }
 
-    showFloatPickDialog(cls, title) {
+    showFloatPickDialog(cls, title, matches = []) {
         this.destroyFloatPickDialog();
         const dialog = new ModalDialog();
         this.core._pickDialog = dialog;
 
         const content = new St.BoxLayout({ orientation: Clutter.Orientation.VERTICAL, style: 'spacing: 12px;' });
+        const removing = matches.length > 0;
 
         const header = new St.Label({
-            text: _('Add Floating Window'),
+            text: removing ? _('Remove from Float List') : _('Add Floating Window'),
             style: 'font-weight: bold; font-size: 14px;',
         });
         content.add_child(header);
 
         const subtitle = new St.Label({
-            text: _('How should this window be identified?'),
+            text: removing
+                ? _('This window is floating because of an entry in the float list.')
+                : _('How should this window be identified?'),
         });
         content.add_child(subtitle);
 
         dialog.contentLayout.add_child(content);
 
         const buttons = [];
+        const short = (value) => value.length > 40 ? value.substring(0, 37) + '...' : value;
 
-        if (cls) {
+        if (removing) {
+            let values = [...new Set(matches.map(m => m.value))];
+            if (values.length > 2)
+                values = [values[0], values[1], `+${values.length - 2}`];
             buttons.push({
-                label: _('By class: %s').replace('%s', cls),
+                label: _('Remove: %s').replace('%s', values.map(short).join(', ')),
                 action: () => {
-                    this.addFloatEntry('float-windows', cls.toLowerCase());
+                    this.removeFloatEntries(matches);
                     dialog.close();
                 },
-                key: Clutter.KEY_c,
+                key: Clutter.KEY_Return,
             });
-        }
+        } else {
+            if (cls) {
+                buttons.push({
+                    label: _('By class: %s').replace('%s', cls),
+                    action: () => {
+                        this.addFloatEntry('float-windows', cls.toLowerCase());
+                        dialog.close();
+                    },
+                    key: Clutter.KEY_c,
+                });
+            }
 
-        if (title) {
-            buttons.push({
-                label: _('By title: %s').replace('%s', title),
-                action: () => {
-                    this.addFloatEntry('float-titles', title);
-                    dialog.close();
-                },
-                key: Clutter.KEY_t,
-            });
+            if (title) {
+                buttons.push({
+                    label: _('By title: %s').replace('%s', title),
+                    action: () => {
+                        this.addFloatEntry('float-titles', title);
+                        dialog.close();
+                    },
+                    key: Clutter.KEY_t,
+                });
+            }
         }
 
         buttons.push({
@@ -603,10 +639,52 @@ export class Actions extends PlaidSubsystem {
         } else {
             this.core._floatingTitles = new Set(this.core._settings.get_strv('float-titles'));
         }
+        // A process-based verdict cached from before the rule existed would
+        // keep the window floating until relog.
+        if (this.core._floatProcessCache) this.core._floatProcessCache.clear();
 
-        if (value.length > 40)
-            value = value.substring(0, 37) + '...';
-        Main.notify(_('Added "%s" to float list').replace('%s', value));
+        Main.notify(_('Added "%s" to float list').replace('%s', this.clipFloatValue(value)));
+    }
+
+    removeFloatEntries(matches) {
+        const removed = this.applyFloatRemoval(matches);
+
+        const win = global.display.focus_window;
+        if (win) {
+            if (!this.core._windowWorkspaces.has(win) && this.core.windows.shouldManage(win))
+                this.core.windows.addWindow(win);
+            const ws = win.get_workspace();
+            if (ws) this.core.layouts.retileWorkspace(ws);
+        }
+
+        let values = removed;
+        if (values.length > 2)
+            values = [values[0], values[1], `+${values.length - 2}`];
+        Main.notify(_('Removed "%s" from float list').replace('%s', values.map(v => this.clipFloatValue(v)).join(', ')));
+    }
+
+    // Remove the matching entries from the settings and the live sets. Returns
+    // the removed values (unique), without touching the focused window.
+    applyFloatRemoval(matches) {
+        const removed = [];
+        const byKey = new Map();
+        for (const { key, value } of matches) {
+            if (!byKey.has(key)) byKey.set(key, new Set());
+            byKey.get(key).add(value);
+            removed.push(value);
+        }
+        for (const [key, values] of byKey) {
+            const next = this.core._settings.get_strv(key).filter(v => !values.has(v));
+            this.core._settings.set_strv(key, next);
+        }
+        this.core._floatingClasses = new Set(this.core._settings.get_strv('float-windows'));
+        this.core._floatingTitles = new Set(this.core._settings.get_strv('float-titles'));
+        if (this.core._floatProcessCache) this.core._floatProcessCache.clear();
+        return [...new Set(removed)];
+    }
+
+    clipFloatValue(value) {
+        return value.length > 40 ? value.substring(0, 37) + '...' : value;
     }
 
     destroyFloatPickDialog() {

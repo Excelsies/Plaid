@@ -142,6 +142,22 @@ export class Windows extends PlaidSubsystem {
             this.core.monitors.windowConn(win) === this.core.monitors.groupConn(mon);
     }
 
+    // float-windows entries that match this window's process command line.
+    // Covers rules whose token is not the window class (Steam-style entries).
+    matchingFloatTokens(win) {
+        const pid = win ? win.get_pid() : 0;
+        if (!pid) return [];
+        const cmd = this.core.procInfo.procCmdlineCached(pid);
+        if (!cmd) return [];
+        const lower = cmd.toLowerCase();
+        const out = new Set();
+        for (const token of this.core._floatingClasses || []) {
+            if (!token || token.length < 3) continue;
+            if (lower.includes(token.toLowerCase())) out.add(token);
+        }
+        return [...out];
+    }
+
     isFloatProcessWindow(win) {
         if (!win) return false;
         let pid = 0;
