@@ -4,7 +4,11 @@
   <img src="extensions/assets/plaid-logo.svg" alt="Plaid" width="160">
 </p>
 
-
+<p align="center">
+  <a href="https://github.com/Plyply99/Plaid/releases">
+    <img src="https://img.shields.io/github/downloads/Plyply99/Plaid/total?label=downloads" alt="Downloads">
+  </a>
+</p>
 
 Plaid is a tiling window manager for GNOME Shell. Tiling, borders, true rounded corners, window blur and plenty more.
 
@@ -16,7 +20,8 @@ Full docs live on the [wiki](https://github.com/Plyply99/Plaid/wiki).
   Master-stack, Centered Master-stack, and Floating. Per workspace layouts.
 - **Every monitor tiles**: each monitor has its own layout per workspace; a
   window moved or dragged to another monitor joins that monitor's layout, and
-  focus/swap keys cross monitor edges.
+  focus/swap keys cross monitor edges. Unplugging, replugging and primary changes
+  keep each display's saved arrangement.
 
 
 [Plaid-layouts.webm](https://github.com/user-attachments/assets/ca001f17-9bfd-49b9-9251-152579054011)
@@ -162,8 +167,10 @@ what Plaid was doing):
 journalctl -b -o cat | grep '\[plaid\]'
 ```
 
-Multi-monitor setups are especially valuable to test. Feature ideas and pull
-requests are welcome: [github.com/Plyply99/Plaid/issues](https://github.com/Plyply99/Plaid/issues)
+Multi-monitor setups are supported: per-display layouts, hotplug and primary
+changes. Feature ideas and pull requests are welcome — use
+[Discussions → Ideas](https://github.com/Plyply99/Plaid/discussions/new?category=ideas)
+for ideas, and the issue tracker for bugs.
 
 
 
@@ -177,3 +184,19 @@ requests are welcome: [github.com/Plyply99/Plaid/issues](https://github.com/Plyp
 ## Stars over time
 
 ![Plaid stars](https://raw.githubusercontent.com/Plyply99/Plaid/main/.github/stars.svg)
+
+## Downloads by release
+
+| Release | Downloads |
+|---|---|
+| [v51.30](https://github.com/Plyply99/Plaid/releases/tag/v51.30) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.30/total?label=) |
+| [v51.27](https://github.com/Plyply99/Plaid/releases/tag/v51.27) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.27/total?label=) |
+| [v51.23](https://github.com/Plyply99/Plaid/releases/tag/v51.23) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.23/total?label=) |
+| [v51.22](https://github.com/Plyply99/Plaid/releases/tag/v51.22) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.22/total?label=) |
+| [v51.21](https://github.com/Plyply99/Plaid/releases/tag/v51.21) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.21/total?label=) |
+| [v51.20](https://github.com/Plyply99/Plaid/releases/tag/v51.20) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.20/total?label=) |
+| [v51.19](https://github.com/Plyply99/Plaid/releases/tag/v51.19) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.19/total?label=) |
+| [v51.18](https://github.com/Plyply99/Plaid/releases/tag/v51.18) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.18/total?label=) |
+| [v51.17](https://github.com/Plyply99/Plaid/releases/tag/v51.17) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.17/total?label=) |
+| [v51.16](https://github.com/Plyply99/Plaid/releases/tag/v51.16) | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/v51.16/total?label=) |
+| **Total** | ![](https://img.shields.io/github/downloads/Plyply99/Plaid/total?label=) |
