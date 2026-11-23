@@ -517,7 +517,6 @@ export class Windows extends PlaidSubsystem {
         win._plaidSettleUntil = 0;
         win._plaidSurfaceStrikes = 0;
         win._plaidHoldReveal = false;
-        if (this.core._maximizeToggleRects) this.core._maximizeToggleRects.delete(win);
         this.core._savedRects.delete(win);
         this.core._scratchpadWindows.delete(win);
         this.core._gappedMaxSet.delete(win);
@@ -630,8 +629,11 @@ export class Windows extends PlaidSubsystem {
         }) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'notify::fullscreen', () => {
             // Leaving fullscreen, mutter restores the frame saved on entry,
-            // stale if the layout changed since.
-            if (!this.core._settings || win.is_fullscreen() || this.floatsWhenWindowed(win)) return;
+            // stale if the layout changed since. Each toggle starts a fresh
+            // landing record: misses do not pile up across toggles.
+            if (!this.core._settings) return;
+            this.core.placement.releaseLanding(win);
+            if (win.is_fullscreen() || this.floatsWhenWindowed(win)) return;
             const ws = win.get_workspace();
             if (ws) this.core.layouts.retileWorkspace(ws);
         }) });
@@ -698,7 +700,6 @@ export class Windows extends PlaidSubsystem {
             this.core.borders.removeBorder(win); // border + ring + mask
             this.core._floatMaxRects.delete(win);
             this.core._gappedMaxSet.delete(win);
-            this.core._maximizeToggleRects.delete(win);
             this.core._scratchpadWindows.delete(win);
             this.core._toggleFloatWindows.delete(win);
             this.core._savedRects.delete(win);

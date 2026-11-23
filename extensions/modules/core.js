@@ -252,7 +252,6 @@ export class PlaidCore {
         this._backgroundAppWin = null;
         this._backgroundAppWaiter = null;
         this._backgroundAppReleaseId = 0;
-        this._maximizeToggleRects = new Map();
         this._backgroundAppPending = false;
         this._backgroundAppSpawnRetries = 0;
         this._backgroundAppFailureNotified = false;
@@ -424,7 +423,6 @@ export class PlaidCore {
                 scratchpadVisible: this._scratchpadVisible,
                 observedMinSizes: this._observedMinSizes,
                 savedRects: this._savedRects,
-                maximizeToggleRects: this._maximizeToggleRects,
                 floatMaxRects: this._floatMaxRects,
                 gappedMaxSet: this._gappedMaxSet,
                 dwindleLeafSigs: this._dwindleLeafSigs,
@@ -547,7 +545,6 @@ export class PlaidCore {
             return m;
         };
         if (s.savedRects) this._savedRects = liveOnly(s.savedRects);
-        if (s.maximizeToggleRects) this._maximizeToggleRects = liveOnly(s.maximizeToggleRects);
         if (s.floatMaxRects) this._floatMaxRects = liveOnly(s.floatMaxRects);
         if (s.gappedMaxSet) this._gappedMaxSet = liveOnly(s.gappedMaxSet);
         if (s.windowMonitors) this._windowMonitors = s.windowMonitors;
@@ -691,7 +688,6 @@ export class PlaidCore {
         this._retileAfterGrab = null;
         this._pinnedAdjustCounts = null;
         this._stackDiagnostics = null;
-        this._maximizeToggleRects = null;
         this._scratchpadWindows = null;
         this._scratchpadVisible = false;
     }

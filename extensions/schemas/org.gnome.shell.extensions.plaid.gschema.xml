@@ -375,12 +375,6 @@
       <description>Master switch: disables and re-enables tiling. Flair (borders, rounded corners, blur) is controlled by its own settings and survives the toggle</description>
     </key>
 
-    <key name="toggle-maximize" type="as">
-      <default><![CDATA[['<Super><Shift>m']]]></default>
-      <summary>Toggle maximize</summary>
-      <description>Maximize the focused window; press again to restore its previous geometry</description>
-    </key>
-
     <key name="center-window" type="as">
       <default><![CDATA[['<Super><Shift>c']]]></default>
       <summary>Center focused window</summary>
@@ -532,7 +526,7 @@
     <key name="background-app" type="s">
       <default>''</default>
       <summary>Background app command</summary>
-      <description>Command for an app pinned behind all windows as a live desktop background (looks best with frameless windows). Empty disables.</description>
+      <description>Command line for an app pinned behind all windows as a live desktop background (looks best with frameless windows). Run directly, not through a shell: quoting works, shell operators such as pipes, redirects, &amp;&amp; and ~ do not. Empty disables.</description>
     </key>
 
     <key name="background-app-history" type="as">

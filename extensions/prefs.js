@@ -497,7 +497,7 @@ export default class TilingWMPreferences extends ExtensionPreferences {
 
         const bgAppRow = new Adw.ActionRow({
             title: _('Command'),
-            subtitle: _('Pinned behind all windows as a live desktop background. Looks best with frameless windows.'),
+            subtitle: _('Pinned behind all windows as a live desktop background. Looks best with frameless windows. Run directly, not through a shell.'),
         });
         const bgAppEntry = new Gtk.Entry({
             text: settings.get_string('background-app'),
@@ -728,7 +728,6 @@ export default class TilingWMPreferences extends ExtensionPreferences {
 
         this._addShortcutRow(miscGroup, settings, 'toggle-float', _('Toggle Float'));
         this._addShortcutRow(miscGroup, settings, 'toggle-tiling', _('Toggle Plaid'));
-        this._addShortcutRow(miscGroup, settings, 'toggle-maximize', _('Toggle Maximize'));
         this._addShortcutRow(miscGroup, settings, 'cycle-layout', _('Cycle Layout'));
         this._addShortcutRow(miscGroup, settings, 'center-window', _('Center Window'));
         this._addShortcutRow(miscGroup, settings, 'pick-float-window', _('Toggle Window Float Rule'));

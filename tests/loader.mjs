@@ -24,7 +24,7 @@ const GI_SOURCES = {
     'frame(ms = 16) { for (const [, sig, fn] of [...this.handlers]) if (sig === \'new-frame\') fn(this, ms); } } };',
   Cogl: 'export default { SnippetHook: { FRAGMENT: 1, VERTEX: 2, TEXTURE_LOOKUP: 3 } };',
   GObject: 'export default { registerClass: () => { throw new Error("GObject.registerClass invoked at import time"); } };',
-  Gio: 'export default {};',
+  Gio: 'export default { Cancellable: class { constructor() { this._cancelled = false; } cancel() { this._cancelled = true; } is_cancelled() { return this._cancelled; } } };',
   GLib: 'export default { PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true, idle_add: () => 1, timeout_add: () => 1, source_remove: (id) => { if (typeof id !== "number") throw new TypeError("GLib.source_remove: expected a source id, got " + typeof id); return true; }, get_monotonic_time: () => 0, MainContext: { default: () => ({ find_source_by_id: () => true }) } };',
   Graphene: 'export default {};',
   Mtk: 'export default { Rectangle: class Rectangle { constructor(p = {}) { this.x = p.x ?? 0; this.y = p.y ?? 0; this.width = p.width ?? 0; this.height = p.height ?? 0; } } };',

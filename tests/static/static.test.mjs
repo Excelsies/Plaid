@@ -521,3 +521,8 @@ test('connectObject tokens are released through disconnectToken only', () => {
   assert.equal(seen, 3, 'the three allowed lines were seen');
   assert.deepEqual(found, []);
 });
+
+test('no boolean lifecycle flags', () => {
+  assert.ok(!/this\._destroyed\b/.test(codeOnly),
+    'use a Gio.Cancellable in destroy() instead of a _destroyed flag');
+});

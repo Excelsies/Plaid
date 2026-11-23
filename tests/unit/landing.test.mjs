@@ -216,3 +216,26 @@ test('landing: a side-tiled frame stuck over its slot bends no split', () => {
     assert.equal(bent, bends, `flags ${flags}`);
   }
 });
+
+test('landing: a fullscreen frame is accepted with no retry, learned minimum or bend', () => {
+  const { self, timers } = landingSelf();
+  const win = landingWin({ frame: { x: 0, y: 0, width: 3840, height: 2160 }, fullscreen: true });
+  const calls = { retry: 0, min: 0, adjust: 0 };
+  self.placement.retryLanding = () => calls.retry++;
+  self.placement.recordObservedMin = () => calls.min++;
+  self.placement.adjustPinnedTree = () => calls.adjust++;
+  self.placement.landingMiss(win, 'k');
+  assert.equal(self.placement.verifyAnimationLanding({ win, ...slot(0, 800) }, 'tiled'), true);
+  assert.deepEqual(calls, { retry: 0, min: 0, adjust: 0 });
+  assert.equal(self._landings.has(win), false);
+  assert.equal(timers.length, 0);
+});
+
+test('landing: a fullscreen window schedules no retry and learns no minimum', () => {
+  const { self, timers } = landingSelf();
+  const win = landingWin({ frame: { x: 0, y: 0, width: 3840, height: 2160 }, fullscreen: true });
+  self.placement.retryLanding(win, slot(0, 800));
+  assert.equal(timers.length, 0);
+  self.placement.recordObservedMin(win, win.get_frame_rect(), { w: 800, h: 600 });
+  assert.equal(self._observedMinSizes.has(win), false);
+});

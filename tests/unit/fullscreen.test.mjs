@@ -106,6 +106,20 @@ test('notify::fullscreen: leaving fullscreen retiles, entering does not', () => 
   assert.deepEqual(retiled, [ws]);
 });
 
+test('notify::fullscreen: each toggle starts a fresh landing record', () => {
+  const self = makeSelf({}, { _retileWorkspace() {} });
+  const state = { fullscreen: true, ws: {} };
+  const { w, handlers } = signalWin(state);
+  self.windows.connectWindowSignals(w);
+  self.placement.landingMiss(w, 'k');
+  handlers['notify::fullscreen']();
+  assert.equal(self._landings.has(w), false);
+  self.placement.landingMiss(w, 'k');
+  state.fullscreen = false;
+  handlers['notify::fullscreen']();
+  assert.equal(self._landings.has(w), false);
+});
+
 test('notify::minimized: a fullscreen tile retiles, a float does not', () => {
   const ws = {};
   const retiled = [];

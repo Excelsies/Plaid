@@ -354,16 +354,14 @@ test('lock cycle: a layout switch after the restore resets the splits, as withou
   assert.equal(next._bspLaidOutAs.get(ws), 'spiral');
 });
 
-test('lock cycle: natural, maximize-toggle and float-maximize rects survive for live windows', () => {
+test('lock cycle: natural and float-maximize rects survive for live windows', () => {
   const [, ws] = stubGlobal();
   const a = liveWin('a', ws, 0), f = liveWin('f', ws, 0), gone = liveWin('gone', ws, 0);
   const { self } = groupSelf(ws, [a]);
   const natural = { x: 10, y: 20, w: 300, h: 200 };
   const before = { x: 40, y: 50, w: 400, h: 300 };
-  for (const w of [a, gone]) {
+  for (const w of [a, gone])
     self._savedRects.set(w, natural);
-    self._maximizeToggleRects.set(w, before);
-  }
   for (const w of [f, gone]) {
     self._floatMaxRects.set(w, before);
     self._gappedMaxSet.add(w);
@@ -371,10 +369,9 @@ test('lock cycle: natural, maximize-toggle and float-maximize rects survive for 
   gone.get_compositor_private = () => null;
   const next = lockCycle(self, [a]);
   assert.deepEqual(next._savedRects.get(a), natural, 'the natural rect from before the lock');
-  assert.deepEqual(next._maximizeToggleRects.get(a), before);
   assert.deepEqual(next._floatMaxRects.get(f), before);
   assert.equal(next._gappedMaxSet.has(f), true, 'a gapped float still restores on maximize');
-  for (const m of [next._savedRects, next._maximizeToggleRects, next._floatMaxRects, next._gappedMaxSet])
+  for (const m of [next._savedRects, next._floatMaxRects, next._gappedMaxSet])
     assert.equal(m.has(gone), false);
 });
 

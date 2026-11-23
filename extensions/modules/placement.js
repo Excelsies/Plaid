@@ -515,6 +515,12 @@ export class Placement {
                 this.core.debugLog(`anim: landing skipped (window gone) ${kind} id=${win ? win.get_id() : '?'}`);
             return false;
         }
+        // Fullscreen mid-flight: the frame is the monitor's, not a miss. No
+        // retry, no learned minimum, no bend; leaving fullscreen retiles.
+        if (win.is_fullscreen()) {
+            this.releaseLanding(win);
+            return true;
+        }
         const accepted = this.landingAccepted(win, s.targetX, s.targetY, s.targetW, s.targetH);
         // An accepted slot ends when the layout gives the window another.
         if (!accepted) this.landingSlotChanged(win);
@@ -602,7 +608,7 @@ export class Placement {
         // will actually take (apps such as ghostty report no min width, so
         // get_min_size() can't tell us).
         if (!this.core._observedMinSizes || !win) return;
-        if (this.mutterSized(win)) return;
+        if (this.mutterSized(win) || win.is_fullscreen()) return;
         // An explicit override is the authority; never learn a floor that
         // would silently beat it (and linger after the override is removed).
         if (this.core.bsp.hasMinSizeOverride(win)) return;
@@ -746,8 +752,8 @@ export class Placement {
             return;
         }
         // While it settles the poll re-asserts the slot and its end retiles;
-        // a miss there is not counted.
-        if (settling) return;
+        // a miss there is not counted. A fullscreen frame is not a miss.
+        if (settling || win.is_fullscreen()) return;
         const key = landingKey(s.targetX, s.targetY, s.targetW, s.targetH);
         const { n, total } = this.landingMiss(win, key);
         if (n > LANDING_RETRIES || total > LANDING_MISSES) {
