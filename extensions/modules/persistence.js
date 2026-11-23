@@ -99,14 +99,31 @@ export class Persistence {
         const monLayouts = new Map([...others(this.core._persistedLayoutByIndex), ...others(this.core._workspaceLayouts)]);
         const monMaster = new Map([...others(this.core._persistedMasterByIndex), ...others(this.core._masterRatios)]);
         const monStack = new Map([...others(this.core._persistedStackByIndex), ...others(this.core._stackRatios)]);
+        // Fixed groups (monitors.fixedConn): "CONNECTOR:value", one per
+        // monitor. A disconnected monitor's entry stays for its return.
+        const fixedOf = map => [...(map ?? [])].filter(([k]) => typeof k === 'string' && k.startsWith('m@'))
+            .map(([k, v]) => [k.substring(2), v]);
+        const fixedLayouts = new Map([...fixedOf(this.core._persistedLayoutByIndex), ...fixedOf(this.core._workspaceLayouts)]);
+        const fixedMaster = new Map([...fixedOf(this.core._persistedMasterByIndex), ...fixedOf(this.core._masterRatios)]);
+        const fixedStack = new Map([...fixedOf(this.core._persistedStackByIndex), ...fixedOf(this.core._stackRatios)]);
         for (const mon of monitors.tiledMonitors()) {
             const conn = monitors.monConn(mon);
-            if (conn === primary) continue;
+            if (!monitors.fixedConn(conn)) continue;
+            const active = global.workspace_manager.get_active_workspace();
+            const layout = this.core.windows.getWorkspaceLayout(active, mon);
+            fixedLayouts.set(conn, layout);
+            const tree = this.core._bspTrees.get(monitors.groupObj(active, mon));
+            if (tree && tree.type === 'split' && isBspLayout(layout))
+                dwindleRaw.set(this.shapeKey(`m@${conn}`, layout), this.core.bsp.dwindleShapeToString(tree));
+        }
+        for (const mon of monitors.tiledMonitors()) {
+            const conn = monitors.monConn(mon);
+            if (conn === primary || monitors.fixedConn(conn)) continue;
             for (let i = 1; i < n; i++) {
                 const ws = global.workspace_manager.get_workspace_by_index(i);
                 if (!ws) continue;
                 const layout = this.core.windows.getWorkspaceLayout(ws, mon);
-                const key = monitors.groupKeyFor(i, conn);
+                const key = monitors.slotKeyFor(i, conn);
                 monLayouts.set(key, layout);
                 const tree = this.core._bspTrees.get(monitors.groupObj(ws, mon));
                 if (tree && tree.type === 'split' && isBspLayout(layout))
@@ -133,7 +150,20 @@ export class Persistence {
         const monShapes = new Map();
         const pins = [];
         const monPins = new Map();
+        const fixedShapes = new Map();
         for (const [key, shape] of dwindleRaw) {
+            // A fixed group's shape keeps its Spiral pins in place: no other
+            // build reads a spiral entry there.
+            if (typeof key === 'string' && key.startsWith('m@')) {
+                const sep = key.indexOf(':');
+                const conn = sep < 0 ? key.substring(2) : key.substring(2, sep);
+                const tag = sep < 0 ? '' : key.substring(sep + 1);
+                const node = this.core.bsp.dwindleShapeFromString(shape);
+                if (isBspLayout(tag || 'dwindle') && (!node || node.type !== 'split')) continue;
+                if (Monitors.savedConn(conn))
+                    fixedShapes.set(key, `${conn}:${tag ? `${tag}:` : ''}${tag ? shape : shape.toLowerCase()}`);
+                continue;
+            }
             const p = Monitors.parseGroupKey(key);
             if (!p) continue;
             const node = this.core.bsp.dwindleShapeFromString(shape);
@@ -164,6 +194,12 @@ export class Persistence {
         this.core._settings.set_strv('monitor-workspace-master-ratios', monEntries(monMaster, v => `${v}`));
         this.core._settings.set_strv('monitor-workspace-stack-ratios', monEntries(monStack, weights));
         this.core._settings.set_strv('monitor-workspace-dwindle-trees', monDwindle);
+        const fixedEntries = (map, fmt) => [...map].filter(([c, v]) => Monitors.savedConn(c) && fmt(v) !== null)
+            .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([c, v]) => `${c}:${fmt(v)}`);
+        this.core._settings.set_strv('monitor-fixed-layouts', fixedEntries(fixedLayouts, v => v));
+        this.core._settings.set_strv('monitor-fixed-master-ratios', fixedEntries(fixedMaster, v => `${v}`));
+        this.core._settings.set_strv('monitor-fixed-stack-ratios', fixedEntries(fixedStack, weights));
+        this.core._settings.set_strv('monitor-fixed-dwindle-trees', [...fixedShapes.values()].sort());
         this.core._settings.set_strv('workspace-layouts', layouts);
         this.core._settings.set_strv('workspace-master-ratios', masterRatios);
         this.core._settings.set_strv('workspace-stack-ratios', stackRatios);
@@ -177,6 +213,10 @@ export class Persistence {
             const m = Monitors.splitMonitorEntry(entry);
             const e = m && this.parseDwindleTreeEntry(m.rest, m.conn);
             if (e) raw.set(e.key, e.shape);
+        }
+        for (const [key, entry] of fixedShapes) {
+            const e = this.parseFixedShapeEntry(entry);
+            if (e) raw.set(key, e.shape);
         }
         this.applySplitPins(raw, null, splitPins, null);
         this.core._persistedDwindleRaw = raw;
@@ -201,7 +241,7 @@ export class Persistence {
             const idx = parseInt(idxStr, 10);
             if (idx <= 0 || !Number.isInteger(idx)) continue;
             if (!Object.hasOwn(LAYOUT_NAMES, layout)) continue;
-            this.core._persistedLayoutByIndex.set(monitors.groupKeyFor(idx, conn), layout);
+            this.core._persistedLayoutByIndex.set(monitors.slotKeyFor(idx, conn), layout);
         }
         for (const { conn, entry } of this.persistedEntries('workspace-master-ratios', 'monitor-workspace-master-ratios')) {
             const [idxStr, ratioStr] = entry.split(':');
@@ -209,7 +249,7 @@ export class Persistence {
             const ratio = parseFloat(ratioStr);
             if (idx <= 0 || !Number.isInteger(idx) || !Number.isFinite(ratio)) continue;
             if (ratio < 0.05 || ratio > 0.95) continue;
-            this.core._persistedMasterByIndex.set(monitors.groupKeyFor(idx, conn), ratio);
+            this.core._persistedMasterByIndex.set(monitors.slotKeyFor(idx, conn), ratio);
         }
         for (const { conn, entry } of this.persistedEntries('workspace-stack-ratios', 'monitor-workspace-stack-ratios')) {
             // "INDEX:SLOT:WEIGHT,SLOT:WEIGHT": the weights hold ':' too,
@@ -219,16 +259,22 @@ export class Persistence {
             const idx = parseInt(entry.substring(0, sep), 10);
             const weightsStr = entry.substring(sep + 1);
             if (idx <= 0 || !Number.isInteger(idx)) continue;
-            const map = new Map();
-            for (const part of (weightsStr || '').split(',')) {
-                const [kStr, vStr] = part.split(':');
-                const k = parseInt(kStr, 10);
-                const v = parseFloat(vStr);
-                if (k >= 0 && Number.isFinite(v) && v > 0)
-                    map.set(k, v);
-            }
+            const map = this.parseStackWeights(weightsStr);
             if (map.size > 0)
-                this.core._persistedStackByIndex.set(monitors.groupKeyFor(idx, conn), map);
+                this.core._persistedStackByIndex.set(monitors.slotKeyFor(idx, conn), map);
+        }
+        // Fixed groups: "CONNECTOR:value", keyed m@CONNECTOR.
+        for (const { conn, entry } of this.persistedEntries(null, 'monitor-fixed-layouts')) {
+            if (Object.hasOwn(LAYOUT_NAMES, entry)) this.core._persistedLayoutByIndex.set(`m@${conn}`, entry);
+        }
+        for (const { conn, entry } of this.persistedEntries(null, 'monitor-fixed-master-ratios')) {
+            const ratio = parseFloat(entry);
+            if (Number.isFinite(ratio) && ratio >= 0.05 && ratio <= 0.95)
+                this.core._persistedMasterByIndex.set(`m@${conn}`, ratio);
+        }
+        for (const { conn, entry } of this.persistedEntries(null, 'monitor-fixed-stack-ratios')) {
+            const map = this.parseStackWeights(entry);
+            if (map.size > 0) this.core._persistedStackByIndex.set(`m@${conn}`, map);
         }
         this.core.debugLog(`persisted rules: ${this.core._persistedLayoutByIndex.size} layouts, ` +
             `${this.core._persistedMasterByIndex.size} master, ${this.core._persistedStackByIndex.size} stack, ` +
@@ -280,6 +326,19 @@ export class Persistence {
             const e = this.parseDwindleTreeEntry(entry, conn);
             if (!e) continue;
             // Another layout's shape is not applied, only kept.
+            if (!e.known) {
+                raw.set(e.key, e.shape);
+                continue;
+            }
+            const shape = this.core.bsp.dwindleShapeFromString(e.shape);
+            if (shape) {
+                map.set(e.key, shape);
+                raw.set(e.key, e.shape);
+            }
+        }
+        for (const { conn, entry } of this.persistedEntries(null, 'monitor-fixed-dwindle-trees')) {
+            const e = this.parseFixedShapeEntry(`${conn}:${entry}`);
+            if (!e) continue;
             if (!e.known) {
                 raw.set(e.key, e.shape);
                 continue;
@@ -342,9 +401,39 @@ export class Persistence {
             tag = shape.substring(0, t);
             shape = shape.substring(t + 1);
         }
-        const group = this.core.monitors.groupKeyFor(idx, conn);
+        const group = this.core.monitors.slotKeyFor(idx, conn);
         const known = isBspLayout(tag);
         return { key: known ? this.shapeKey(group, tag) : `${group}:${tag}`, shape, known, tag };
+    }
+
+    // "CONNECTOR:SHAPE" or "CONNECTOR:layout:SHAPE" of monitor-fixed-dwindle-trees,
+    // keyed as shapeKey keys the fixed group m@CONNECTOR.
+    parseFixedShapeEntry(entry) {
+        const m = Monitors.splitMonitorEntry(entry);
+        if (!m || !m.rest) return null;
+        let shape = m.rest;
+        let tag = 'dwindle';
+        const t = shape.indexOf(':');
+        if (t >= 0) {
+            tag = shape.substring(0, t);
+            shape = shape.substring(t + 1);
+        }
+        const group = `m@${m.conn}`;
+        const known = isBspLayout(tag);
+        return { key: known ? this.shapeKey(group, tag) : `${group}:${tag}`, shape, known, tag };
+    }
+
+    // "SLOT:WEIGHT,SLOT:WEIGHT" stack weights.
+    parseStackWeights(str) {
+        const map = new Map();
+        for (const part of (str || '').split(',')) {
+            const [kStr, vStr] = part.split(':');
+            const k = parseInt(kStr, 10);
+            const v = parseFloat(vStr);
+            if (k >= 0 && Number.isFinite(v) && v > 0)
+                map.set(k, v);
+        }
+        return map;
     }
 
     // The saved-shape key of a group (monitors.groupKey) for a BSP layout:
@@ -368,6 +457,7 @@ export class Persistence {
             const m = Monitors.splitMonitorEntry(raw);
             if (m) out.push({ conn: m.conn, entry: m.rest });
         }
+        if (!key) return out;
         const saved = this.core._settings.get_string('monitor-primary-connector') || null;
         for (const entry of this.core._settings.get_strv(key) || [])
             out.push({ conn: saved, entry });

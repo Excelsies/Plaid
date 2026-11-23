@@ -584,12 +584,14 @@ test('per-group trees and slots: a window is laid out on its own monitor', () =>
   assert.deepEqual(self.grab.windowSlotRect(c, ws, 'master-stack', GEOM[1], 0), { x: 1000, y: 0, w: 600, h: 500 });
 });
 
-test('windowSlotRect: no slot on a monitor that is not tiled (workspaces only on the primary)', () => {
+test('windowSlotRect: workspaces on the primary only, a secondary tiles as its fixed group', () => {
   const [, ws] = stubGlobal();
   const c = W('c', ws, 1);
   const { self } = groupSelf(ws, [c], { _mutterSettings: { get_boolean: () => true } });
-  assert.deepEqual(self.monitors.tiledMonitors(), [0]);
-  assert.equal(self.grab.windowSlotRect(c, ws, 'dwindle', GEOM[1], 0), null);
+  assert.deepEqual(self.monitors.tiledMonitors(), [0, 1]);
+  self.bsp.bspSetTree(ws, 1, leaf(c));
+  self.bsp.bspTagGeometry(self.bsp.bspGetTree(ws, 1), GEOM[1].x, GEOM[1].y, GEOM[1].width, GEOM[1].height, 0);
+  assert.deepEqual(self.grab.windowSlotRect(c, ws, 'dwindle', GEOM[1], 0), { x: 1000, y: 0, w: 800, h: 500 });
 });
 
 test('moveWindowToGroup: leaves the old tree, joins the new one, goes last, the workspace retiles', () => {
@@ -607,12 +609,14 @@ test('moveWindowToGroup: leaves the old tree, joins the new one, goes last, the 
   assert.deepEqual(retiles, [ws]);
   assert.equal(self.monitors.moveWindowToGroup(a, 'DP-2', 'monitor'), false, 'same group: nothing to do');
   assert.deepEqual(retiles, [ws]);
-  // Into a monitor that does not tile: no tree there.
+  // Workspaces on the primary only: b joins the secondary's fixed group,
+  // whose tree is not the workspace group's.
   self.monitors.invalidate();
   self._mutterSettings = { get_boolean: () => true };
   b._mon = 1;
   self.monitors.moveWindowToGroup(b, 'DP-2', 'monitor');
-  assert.deepEqual(treeWins(self, ws, 1).sort(byTitle), [a, c]);
+  assert.equal(self.monitors.groupObj(ws, 1).fixed, true);
+  assert.deepEqual(treeWins(self, ws, 1), [b]);
 });
 
 test('onWindowEnteredMonitor: regroups, except mid-drag, in transit, or off a removed monitor', () => {
@@ -765,20 +769,17 @@ test('directional focus prefers the focused window\'s monitor, then crosses the 
     'with none on its own monitor it takes the nearest across');
 });
 
-test('swap: not into a monitor with the floating layout, nor one that does not tile', () => {
+test('swap: not into a monitor with the floating layout', () => {
   const floating = edgeSelf();
   floating.self._workspaceLayouts.set('1@DP-2', 'floating');
   floating.self.actions.swapWindow('right');
   assert.deepEqual([floating.self.monitors.windowConn(floating.b), floating.self.monitors.windowConn(floating.c)], ['DP-1', 'DP-2']);
   assert.deepEqual(floating.retiles, []);
-  const untiled = edgeSelf({ _mutterSettings: { get_boolean: () => true } });
-  untiled.self.actions.swapWindow('right');
-  assert.deepEqual([untiled.self.monitors.windowConn(untiled.b), untiled.self.monitors.windowConn(untiled.c)], ['DP-1', 'DP-2']);
-  assert.deepEqual(untiled.retiles, []);
 });
 
-test('swap and resize of a window on a monitor that does not tile: as on a floating layout', () => {
-  const { self, retiles, b, c } = edgeSelf({ _mutterSettings: { get_boolean: () => true } });
+test('swap and resize of a window in a floating group on another monitor: as a float', () => {
+  const { self, retiles, b, c } = edgeSelf();
+  self._workspaceLayouts.set('1@DP-2', 'floating');
   global.display.focus_window = c;
   const moved = [];
   self.actions.moveFloating = (w, d) => moved.push([w, d]);
@@ -1116,7 +1117,7 @@ test('addWindow: a window joins the group of the monitor it opens on (the primar
   assert.deepEqual(treeWins(self, ws, 0), [b]);
 });
 
-test('drop over a floating or an untiled monitor: it goes there, nothing lays it out', () => {
+test('drop over a floating monitor: it goes there, nothing lays it out; over a fixed group it joins its tree', () => {
   const [, ws] = stubGlobal({ pointer: [1600, 250] });
   const a = W('a', ws, 0), b = W('b', ws, 0), d = W('d', ws, 1);
   const { self } = groupSelf(ws, [a, b, d]);
@@ -1127,13 +1128,13 @@ test('drop over a floating or an untiled monitor: it goes there, nothing lays it
   self.windows.repositionWindow(a, ws);
   assert.equal(self.monitors.windowConn(a), 'DP-2');
   assert.deepEqual(treeWins(self, ws, 1), [d]);
-  // Workspaces only on the primary: monitor 1 does not tile at all.
+  // Workspaces on the primary only: monitor 1 tiles as its fixed group.
   self._workspaceLayouts.delete('1@DP-2');
   self._mutterSettings = { get_boolean: () => true };
   self.monitors.invalidate();
   self.windows.repositionWindow(b, ws);
   assert.equal(self.monitors.windowConn(b), 'DP-2');
-  assert.deepEqual(treeWins(self, ws, 1), [d]);
+  assert.ok(treeWins(self, ws, 1).includes(b), 'b joins the fixed group\'s tree');
 });
 
 test('save: a primary change since the last save moves the single-monitor keys to the new primary', () => {
@@ -1713,19 +1714,19 @@ test('regroupWindows: our own animation passing over a monitor is not regrouped'
   assert.equal(self.monitors.windowConn(a), 'DP-1');
 });
 
-// workspaces-only-on-primary with a master-stack rule on the secondary: c and d
-// sit there where mutter put them.
+// The floating layout on the secondary: c and d sit there where mutter put
+// them, a group that places nothing.
 function untiledSelf(extra = {}) {
   const [, ws] = stubGlobal({ pointer: [1450, 300] });
   const a = W('a', ws, 0), c = W('c', ws, 1, { x: 1200, y: 100, width: 300, height: 200 });
   const d = W('d', ws, 1, { x: 1300, y: 250, width: 300, height: 200 });
-  const r = dragSelf(ws, [a, c, d], { _mutterSettings: { get_boolean: () => true }, ...extra });
-  r.self._workspaceLayouts.set('1@DP-2', 'master-stack');
+  const r = dragSelf(ws, [a, c, d], extra);
+  r.self._workspaceLayouts.set('1@DP-2', 'floating');
   const frames = () => [c, d].map(w => w.get_frame_rect());
   return { ...r, ws, a, c, d, frames, before: frames() };
 }
 
-test('a monitor that does not tile: a drag within it, the drop, the preview and a resize leave its windows alone', () => {
+test('a floating group on another monitor: a drag within it, the drop, the preview and a resize leave its windows alone', () => {
   const u = untiledSelf();
   assert.equal(u.self.monitors.groupPlaces(u.ws, 1), false);
   u.self.dragPreview.updateMoveDragPreview(u.d);
@@ -1816,14 +1817,16 @@ test('drop with the pointer between monitors: no monitor, the window keeps its g
   assert.ok(![...self._windowMonitors.values()].includes('#-1'));
 });
 
-test('addWindow on a monitor that does not tile: no tree takes it', () => {
+test('addWindow on a secondary, workspaces on the primary only: its fixed group\'s tree takes it', () => {
   const [, ws] = stubGlobal();
   const c = W('c', ws, 1);
   const { self } = groupSelf(ws, [], { _mutterSettings: { get_boolean: () => true } });
   c.connectObject = () => 1;
   self.windows.addWindow(c, true);
   assert.equal(self.monitors.windowConn(c), 'DP-2');
-  assert.equal(self.bsp.bspGetTree(ws, 1), null);
+  assert.equal(self.bsp.bspGetTree(ws, 1)?.window, c);
+  assert.equal(self._bspTrees.get(self.monitors.groupObj(ws, 1)), self.bsp.bspGetTree(ws, 1));
+  assert.equal(self._bspTrees.has(ws), false, 'not the workspace group');
 });
 
 test('checkWorkspaceLandings: a window off its slot on the second monitor re-tiles', () => {
@@ -2221,11 +2224,11 @@ function retileOnce(self, ws) {
   }
 }
 
-test('retile: a monitor that does not tile, and a floating group, are not laid out', () => {
+test('retile: a floating group, on any monitor, is not laid out', () => {
   const u = untiledSelf();
   for (const w of [u.a, u.c, u.d]) w.get_compositor_private = () => ({});
   retileOnce(u.self, u.ws);
-  assert.deepEqual(u.frames(), u.before, 'workspaces only on the primary: DP-2 is left alone');
+  assert.deepEqual(u.frames(), u.before, 'DP-2 floats: left alone');
   assert.deepEqual(u.a.get_frame_rect(), { x: 0, y: 0, width: 1000, height: 500 }, 'the primary is laid out');
   const [, ws] = stubGlobal();
   const a = W('a', ws, 0, { x: 10, y: 10, width: 200, height: 200 }), b = W('b', ws, 0, { x: 300, y: 50, width: 200, height: 200 });
@@ -2236,7 +2239,7 @@ test('retile: a monitor that does not tile, and a floating group, are not laid o
   assert.deepEqual([a, b].map(w => w.get_frame_rect()), [{ x: 10, y: 10, width: 200, height: 200 }, { x: 300, y: 50, width: 200, height: 200 }]);
 });
 
-test('retile: a new window on a monitor that does not tile fades in where mutter put it', () => {
+test('retile: a new window in a floating group on another monitor fades in where mutter put it', () => {
   const u = untiledSelf();
   for (const w of [u.a, u.c, u.d]) w.get_compositor_private = () => ({ remove_all_transitions() {}, set_opacity() {} });
   u.self._newWindowSet.add(u.d);
@@ -2246,29 +2249,22 @@ test('retile: a new window on a monitor that does not tile fades in where mutter
   assert.deepEqual(runs, [[u.d, 1300, 250]]);
 });
 
-test('a monitor that does not tile: cycling its layout explains why, and its windows centre', () => {
-  const u = untiledSelf();
+test('workspaces on the primary only: cycling a secondary\'s layout changes its fixed group', () => {
+  const u = untiledSelf({ _mutterSettings: { get_boolean: () => true } });
   global.display.focus_window = u.c;
   global.workspace_manager.get_active_workspace = () => u.ws;
   const popups = [];
   u.self.workspaces.showPopup = (title, _sub, _ms, _cb, mon) => popups.push([title, mon]);
-  u.self.persistence.scheduleSaveLayouts = () => popups.push('saved');
+  u.self.persistence.scheduleSaveLayouts = () => {};
   u.self.actions.cycleLayout();
-  assert.deepEqual(popups, [['Display not tiled', 1]]);
-  assert.equal(u.self._workspaceLayouts.get('1@DP-2'), 'master-stack', 'no layout is stored for it');
-
-  let moved = null;
-  u.c.move_resize_frame = (_u, x, y, w, h) => { moved = { x, y, width: w, height: h }; };
-  u.c.activate = () => {};
-  u.self.windows.moveCursorToWindow = () => {};
-  u.self.actions.centerWindow();
-  // DP-2's work area is x 1000..1800 (GEOM); c is 300 x 200.
-  assert.equal(moved?.x, 1000 + Math.floor((800 - 300) / 2), 'centred on its own monitor although not floating');
+  assert.equal(popups.length, 1);
+  assert.notEqual(popups[0][0], 'Display not tiled');
+  assert.ok(u.self._workspaceLayouts.has('m@DP-2'), 'the fixed group keeps the layout');
+  assert.equal(u.self._workspaceLayouts.get('1@DP-2'), 'floating', 'the per-workspace rule is untouched');
 });
 
-test('mouse resize over a stale dwindle tree on a monitor that does not tile moves no split', () => {
+test('mouse resize over a stale dwindle tree in a floating group moves no split', () => {
   const u = untiledSelf();
-  u.self._workspaceLayouts.delete('1@DP-2');
   const stale = split('h', 0.5, leaf(u.c), leaf(u.d));
   u.self.bsp.bspSetTree(u.ws, 1, stale);
   u.c.get_buffer_rect = () => u.c.get_frame_rect();
@@ -2511,4 +2507,289 @@ test('Spiral: a window moved to another monitor enters by the Spiral rule; a def
   self._dropGhost = { ws };
   self.layouts.doRetileWorkspace(ws);
   assert.equal(self._dropGhost, null);
+});
+
+// Workspaces on the primary only: each other monitor tiles as one fixed group.
+const ONLY_PRIMARY = { _mutterSettings: { get_boolean: (k) => k === 'workspaces-only-on-primary' } };
+
+test('fixed groups: a secondary\'s key and object are one per connector, only with the setting on', () => {
+  const [, ws1, ws2] = stubGlobal();
+  const off = groupSelf(ws1, []).self;
+  assert.equal(off.monitors.groupKey(ws1, 1), '1@DP-2');
+  assert.notEqual(off.monitors.groupObj(ws1, 1), off.monitors.groupObj(ws2, 1));
+  assert.equal(off.monitors.fixedMon(1), false);
+  const { self } = groupSelf(ws1, [], ONLY_PRIMARY);
+  assert.equal(self.monitors.groupKey(ws1, 1), 'm@DP-2');
+  assert.equal(self.monitors.groupKey(ws2, 1), 'm@DP-2');
+  assert.equal(self.monitors.groupObj(ws1, 1), self.monitors.groupObj(ws2, 1));
+  assert.equal(self.monitors.groupObj(ws1, 1).fixed, true);
+  assert.equal(self.monitors.groupKey(ws2, 0), 2, 'the primary keeps its per-workspace keys');
+  assert.equal(self.monitors.groupObj(ws2, 0), ws2);
+  assert.equal(self.monitors.fixedMon(0), false);
+  // One monitor: nothing is fixed.
+  stubGlobal({ conns: ['DP-1'] });
+  self.monitors.invalidate();
+  assert.equal(self.monitors.fixedMon(0), false);
+});
+
+test('fixed groups: the group holds the monitor\'s windows from every workspace\'s order', () => {
+  const [, ws1, ws2] = stubGlobal();
+  const a = W('a', ws1, 0), c = W('c', ws1, 1), d = W('d', ws2, 1);
+  const { self } = groupSelf(ws1, [a, c], ONLY_PRIMARY);
+  self._workspaceOrders.set(ws2, [d]);
+  self._windowWorkspaces.set(d, ws2);
+  self._windowMonitors.set(d, 'DP-2');
+  // mutter reports a window shown on every workspace on the active one.
+  for (const w of [c, d]) w._ws = ws1;
+  assert.deepEqual(self.monitors.getWindowsForGroup(ws1, 1), [c, d]);
+  assert.deepEqual(self.monitors.getWindowsForGroup(ws2, 1), [c, d]);
+  assert.deepEqual(self.monitors.getWindowsForGroup(ws1, 0), [a]);
+  c.minimized = true;
+  assert.deepEqual(self.monitors.getWindowsForGroup(ws1, 1), [d], 'tile candidates only');
+});
+
+test('fixed groups: laid out from the active workspace\'s pass only', () => {
+  const [, ws1, ws2] = stubGlobal();
+  const a = W('a', ws1, 0, { x: 10, y: 10, width: 200, height: 200 });
+  const c = W('c', ws1, 1, { x: 1200, y: 100, width: 300, height: 200 });
+  const d = W('d', ws1, 1, { x: 1300, y: 250, width: 300, height: 200 });
+  for (const w of [a, c, d]) w.get_compositor_private = () => ({});
+  const { self } = groupSelf(ws1, [a, c, d], ONLY_PRIMARY);
+  self.bsp.bspSetTree(ws1, 1, split('h', 0.5, leaf(c), leaf(d)));
+  const frames = () => [c, d].map(w => w.get_frame_rect());
+  const before = frames();
+  retileOnce(self, ws2);
+  assert.deepEqual(frames(), before, 'not from another workspace\'s pass');
+  retileOnce(self, ws1);
+  assert.deepEqual(frames(), [{ x: 1000, y: 0, width: 400, height: 500 }, { x: 1400, y: 0, width: 400, height: 500 }]);
+});
+
+test('fixed groups: a retile of another workspace also retiles the active one, only with the setting on', () => {
+  const [, ws1, ws2] = stubGlobal();
+  // The real retileWorkspace (groupSelf stubs it); scheduleRetile records.
+  const retile = (self, ws) => Object.getPrototypeOf(self.layouts).retileWorkspace.call(self.layouts, ws);
+  const on = groupSelf(ws1, [], ONLY_PRIMARY);
+  retile(on.self, ws2);
+  assert.deepEqual(on.retiles, [ws2, ws1]);
+  on.retiles.length = 0;
+  retile(on.self, ws1);
+  assert.deepEqual(on.retiles, [ws1]);
+  const off = groupSelf(ws1, []);
+  retile(off.self, ws2);
+  assert.deepEqual(off.retiles, [ws2]);
+});
+
+test('fixed groups: a primary change and a workspace removal leave m@ keys and fixed trees alone', () => {
+  const [, ws1] = stubGlobal();
+  const c = W('c', ws1, 1);
+  const { self } = groupSelf(ws1, [c], ONLY_PRIMARY);
+  self._workspaceLayouts.set('m@DP-2', 'master-stack');
+  self._workspaceLayouts.set('2@DP-3', 'spiral');
+  const g = self.monitors.groupObj(ws1, 1);
+  self.bsp.bspSetTree(ws1, 1, leaf(c));
+  self.persistence.shiftWorkspaceIndexKeys(1, -1);
+  assert.equal(self._workspaceLayouts.get('m@DP-2'), 'master-stack');
+  assert.equal(self._workspaceLayouts.get('1@DP-3'), 'spiral', 'per-workspace keys still shift');
+  self._keyedPrimary = 'DP-1';
+  global.display.get_primary_monitor = () => 1;
+  self.monitors.invalidate();
+  assert.equal(self.monitors.syncKeyedPrimary(), true);
+  assert.equal(self._workspaceLayouts.get('m@DP-2'), 'master-stack');
+  assert.equal(self._bspTrees.get(g)?.window, c);
+});
+
+test('fixed groups: the landing check looks at a fixed group from the active workspace only', () => {
+  const [, ws1, ws2] = stubGlobal();
+  const c = W('c', ws1, 1, { x: 1200, y: 100, width: 300, height: 200 });
+  const { self, retiles } = groupSelf(ws1, [c], ONLY_PRIMARY);
+  self.bsp.bspSetTree(ws1, 1, leaf(c));
+  self.bsp.bspTagGeometry(self.bsp.bspGetTree(ws1, 1), 1000, 0, 800, 500, 0);
+  self.placement.checkWorkspaceLandings(ws2);
+  assert.deepEqual(retiles, [], 'another workspace\'s check does not see it');
+  self.placement.checkWorkspaceLandings(ws1);
+  assert.deepEqual(retiles, [ws1], 'c is off its slot');
+});
+
+test('fixed groups: an unplugged fixed monitor keeps its one arrangement', () => {
+  const [, ws1] = stubGlobal();
+  const c = W('c', ws1, 1), d = W('d', ws1, 1);
+  const { self } = groupSelf(ws1, [c, d], ONLY_PRIMARY);
+  self.bsp.bspSetTree(ws1, 1, split('v', 0.3, leaf(c), leaf(d)));
+  self.monitors.saveGroupShapes('DP-2');
+  assert.deepEqual([...self._persistedDwindleRaw.keys()], ['m@DP-2']);
+  assert.equal(self._persistedDwindleByIndex.get('m@DP-2')?.ratio, 0.3);
+});
+
+test('fixed groups: persistence round-trips monitor-fixed-*, keeps the per-workspace rules and writes no m@ key elsewhere', () => {
+  const [, ws1] = stubGlobal();
+  const a = W('a', ws1, 0), c = W('c', ws1, 1), d = W('d', ws1, 1);
+  const { self } = groupSelf(ws1, [a, c, d], ONLY_PRIMARY);
+  self._settings = recSettings({
+    'monitor-primary-connector': 'DP-1',
+    // Saved while the setting was off: they stay for when it is off again.
+    'monitor-workspace-layouts': ['DP-2:1:master-stack', 'DP-2:2:spiral'],
+    'monitor-workspace-dwindle-trees': ['DP-2:3:h0.2500(l,l)'],
+    // A fixed monitor that is unplugged now: kept for its return.
+    'monitor-fixed-layouts': ['HDMI-9:floating', 'bad', '#1:dwindle', 'HDMI-8:nonsense'],
+    'monitor-fixed-dwindle-trees': ['HDMI-9:spiral:H0.4000(l,l)'],
+  });
+  self.persistence.loadPersistedLayoutRules();
+  assert.equal(self._persistedLayoutByIndex.get('1@DP-2'), 'master-stack', 'slot rules keep their slot keys');
+  assert.equal(self._persistedDwindleRaw.get('3@DP-2'), 'h0.2500(l,l)');
+  assert.equal(self._persistedLayoutByIndex.get('m@HDMI-9'), 'floating');
+  assert.equal(self._persistedLayoutByIndex.has('m@HDMI-8'), false, 'an unknown layout is not loaded');
+  assert.equal(self._persistedDwindleByIndex.get('m@HDMI-9:spiral')?.ratio, 0.4);
+  // An index stand-in's shape and a lone leaf are never written.
+  self._persistedDwindleRaw.set('m@#3', 'h0.5000(l,l)');
+  self._persistedDwindleRaw.set('m@DP-3', 'l');
+  self._workspaceLayouts.set('m@#4', 'spiral');
+  self._masterRatios.set('m@DP-2', 0.7);
+  self._stackRatios.set('m@DP-2', new Map([[0, 1], [1, 0.5]]));
+  self.bsp.bspSetTree(ws1, 1, split('v', 0.3, leaf(c), leaf(d)));
+  self.persistence.savePersistedLayouts();
+  const v = self._settings.v;
+  assert.deepEqual(v['monitor-fixed-layouts'], ['DP-2:dwindle', 'HDMI-9:floating']);
+  assert.deepEqual(v['monitor-fixed-master-ratios'], ['DP-2:0.7']);
+  assert.deepEqual(v['monitor-fixed-stack-ratios'], ['DP-2:0:1,1:0.5']);
+  assert.deepEqual(v['monitor-fixed-dwindle-trees'], ['DP-2:v0.3000(l,l)', 'HDMI-9:spiral:H0.4000(l,l)'], 'a fixed Spiral shape keeps its pins');
+  assert.deepEqual(v['monitor-workspace-layouts'], ['DP-2:1:master-stack', 'DP-2:2:spiral']);
+  assert.deepEqual(v['monitor-workspace-dwindle-trees'], ['DP-2:3:h0.2500(l,l)']);
+  for (const [k, entries] of Object.entries(v))
+    if (Array.isArray(entries)) assert.ok(entries.every(e => !e.includes('m@') && !e.includes('NaN')), k);
+
+  // A second save keeps the unplugged monitor's shape (the raw map is
+  // re-synced to what was written), and a fresh session loads it all.
+  self.persistence.savePersistedLayouts();
+  assert.deepEqual(self._settings.v['monitor-fixed-dwindle-trees'], ['DP-2:v0.3000(l,l)', 'HDMI-9:spiral:H0.4000(l,l)']);
+  const fresh = makeSelf({}, { _keyedPrimary: 'DP-1', ...ONLY_PRIMARY });
+  fresh._settings = recSettings(self._settings.v);
+  fresh.persistence.loadPersistedLayoutRules();
+  assert.equal(fresh._persistedMasterByIndex.get('m@DP-2'), 0.7);
+  assert.deepEqual([...fresh._persistedStackByIndex.get('m@DP-2')], [[0, 1], [1, 0.5]]);
+  assert.equal(fresh._persistedDwindleByIndex.get('m@DP-2')?.ratio, 0.3);
+  assert.equal(fresh._persistedLayoutByIndex.get('2@DP-2'), 'spiral');
+});
+
+// edgeSelf with c on the fixed secondary, its home order on workspace 2 (it
+// was opened there): mutter shows it on the active workspace 1.
+function fixedEdgeSelf() {
+  const r = edgeSelf(ONLY_PRIMARY);
+  const ws2 = global.workspace_manager.get_workspace_by_index(2);
+  const order = r.self._workspaceOrders.get(r.ws);
+  order.splice(order.indexOf(r.c), 1);
+  r.self._workspaceOrders.set(ws2, [r.c]);
+  r.self._windowWorkspaces.set(r.c, ws2);
+  r.self._windowWSIndices.set(r.c, 2);
+  return { ...r, ws2 };
+}
+
+test('fixed groups: keyboard focus crosses into and out of a fixed group whatever its home workspace', () => {
+  const f = fixedEdgeSelf();
+  f.self.actions.moveFocus('right');
+  assert.equal(f.activated(), f.c);
+  global.display.focus_window = f.c;
+  f.self.actions.moveFocus('left');
+  assert.equal(f.activated(), f.b);
+  assert.deepEqual(f.self.windows.getVisibleWindows(f.ws2).map(w => w._title), [], 'not from an inactive workspace');
+  const off = edgeSelf();
+  assert.deepEqual(off.self.windows.getVisibleWindows(off.ws), off.self.windows.getWindowsForWorkspace(off.ws));
+});
+
+test('fixed groups: a swap across the edge trades places; the window leaving the fixed group joins the active workspace', () => {
+  const f = fixedEdgeSelf();
+  f.self.actions.swapWindow('right');
+  assert.deepEqual([f.self.monitors.windowConn(f.b), f.self.monitors.windowConn(f.c)], ['DP-2', 'DP-1']);
+  assert.deepEqual(treeWins(f.self, f.ws, 0), [f.a, f.c]);
+  assert.equal(f.self.bsp.bspGetTree(f.ws, 1).window, f.b);
+  assert.ok(f.self._workspaceOrders.get(f.ws).includes(f.c));
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), []);
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws);
+  assert.deepEqual(f.self.monitors.getWindowsForGroup(f.ws, 0).sort(byTitle), [f.a, f.c]);
+});
+
+test('fixed groups: a window moved out of a fixed group joins the workspace it shows on', () => {
+  const f = fixedEdgeSelf();
+  f.c._mon = 0;
+  f.self.monitors.moveWindowToGroup(f.c, 'DP-1', 'monitor');
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), []);
+  assert.ok(treeWins(f.self, f.ws, 0).includes(f.c));
+  assert.deepEqual(treeWins(f.self, f.ws, 1), [], 'the fixed tree lets it go');
+});
+
+test('fixed groups: a fixed window whose home is the active workspace is listed once', () => {
+  const e = edgeSelf(ONLY_PRIMARY);
+  assert.deepEqual(e.self.windows.getVisibleWindows(e.ws).map(w => w._title).sort(), ['a', 'b', 'c']);
+});
+
+test('fixed groups: swapping the focused fixed window onto the primary moves it to the active workspace', () => {
+  const f = fixedEdgeSelf();
+  global.display.focus_window = f.c;
+  f.self.actions.swapWindow('left');
+  assert.deepEqual([f.self.monitors.windowConn(f.b), f.self.monitors.windowConn(f.c)], ['DP-2', 'DP-1']);
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), []);
+});
+
+test('fixed groups: the Flair pass dresses a fixed window whatever its home workspace', () => {
+  const f = fixedEdgeSelf();
+  f.self._settings = recSettings({ 'borders-enabled': false, 'rounded-corners': false, 'window-blur': true, 'blur-exclude': [] });
+  const blurred = [];
+  f.self.blur.ensureWindowBlur = (w) => blurred.push(w._title);
+  f.self.masks.removeMask = () => {};
+  f.self.borders.syncBorderAnimation = () => {};
+  for (const w of [f.a, f.b, f.c]) w.get_compositor_private = () => ({});
+  f.ws.list_windows = () => [f.a, f.b, f.c];
+  f.self.borders.doUpdateBorders();
+  assert.deepEqual(blurred.sort(), ['a', 'b', 'c']);
+});
+
+test('fixed groups: an unplugged fixed monitor\'s windows go back to their home workspace', () => {
+  const f = fixedEdgeSelf();
+  // c (home: workspace 2) and d (home: the active workspace 1) were on the
+  // fixed HDMI-9, now unplugged: mutter put them on DP-1's active workspace.
+  const d = W('d', f.ws, 0);
+  f.self._workspaceOrders.get(f.ws).push(d);
+  f.self._windowWorkspaces.set(d, f.ws);
+  f.self._windowWSIndices.set(d, 1);
+  for (const w of [f.c, d]) {
+    w._mon = 0;
+    f.self._windowMonitors.set(w, 'HDMI-9');
+  }
+  f.self._bspTrees.set(f.self.monitors.groupObjFor(f.ws, 'HDMI-9'), split('h', 0.6, leaf(f.c), leaf(d)));
+  const moved = [];
+  f.c.change_workspace = (ws) => { moved.push(['c', ws]); f.c._ws = ws; };
+  d.change_workspace = (ws) => moved.push(['d', ws]);
+  f.self.monitors.regroupWindows('hotplug');
+  assert.deepEqual(moved, [['c', f.ws2]], 'c goes home; d is home already');
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws2);
+  assert.deepEqual([f.c, d].map(w => f.self.monitors.windowConn(w)), ['DP-1', 'DP-1']);
+  assert.equal(f.self._persistedDwindleRaw.get('m@HDMI-9'), 'h0.6000(l,l)', 'the fixed arrangement is kept for its return');
+  // The setting off: per-workspace groups, nobody is sent anywhere (even
+  // with its order on another workspace than mutter reports).
+  const g = edgeSelf();
+  const gws2 = global.workspace_manager.get_workspace_by_index(2);
+  g.self._windowWorkspaces.set(g.c, gws2);
+  g.c._mon = 0;
+  g.self._windowMonitors.set(g.c, 'HDMI-9');
+  g.c.change_workspace = () => moved.push(['off']);
+  g.self.monitors.regroupWindows('hotplug');
+  assert.equal(moved.length, 1);
+});
+
+test('fixed groups: a workspace switch (mutter\'s workspace-changed on a window shown everywhere) keeps its home order', () => {
+  const f = fixedEdgeSelf();
+  const handlers = {};
+  f.c.connectObject = (name, cb) => { handlers[name] = cb; return 1; };
+  f.self.windows.connectWindowSignals(f.c);
+  f.c._ws = f.ws;
+  handlers['workspace-changed']();
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws2);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), [f.c]);
+  // A workspace group's window still follows its workspace.
+  f.b.connectObject = (name, cb) => { handlers[name] = cb; return 1; };
+  f.self.windows.connectWindowSignals(f.b);
+  f.b._ws = f.ws2;
+  handlers['workspace-changed']();
+  assert.equal(f.self._windowWorkspaces.get(f.b), f.ws2);
 });

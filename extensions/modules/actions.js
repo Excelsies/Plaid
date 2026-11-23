@@ -46,7 +46,7 @@ export class Actions extends PlaidSubsystem {
         if (!ws) return;
 
         // Every monitor's: at a screen edge focus crosses over.
-        const windows = this.core.windows.getWindowsForWorkspace(ws)
+        const windows = this.core.windows.getVisibleWindows(ws)
             .filter(w => !this.core.windows.isFloating(w));
         if (windows.length <= 1) return;
 
@@ -182,7 +182,7 @@ export class Actions extends PlaidSubsystem {
 
         // Every tiled monitor's tiles: at a screen edge the swap crosses over
         // (not into a floating layout, which would not place the window).
-        const windows = this.core.windows.getWindowsForWorkspace(ws).filter(w =>
+        const windows = this.core.windows.getVisibleWindows(ws).filter(w =>
             !this.core.windows.isFloating(w) && monitors.groupPlaces(ws, monitors.windowMon(w)));
         if (windows.length <= 1) return;
 
@@ -475,14 +475,6 @@ export class Actions extends PlaidSubsystem {
         const focus = global.display.focus_window;
         const mon = focus && focus.get_workspace() === ws && this.core._windowMonitors?.has(focus)
             ? this.core.monitors.windowMon(focus) : this.core.monitors.activeMonitor(ws);
-        // A display that does not tile (workspaces on the primary only) has no
-        // layout to change: say why instead of announcing one.
-        if (!this.core.monitors.monitorTiled(mon)) {
-            this.core.workspaces.showPopup(_('Display not tiled'),
-                _('Turn on "Workspaces on all displays" in Settings → Multitasking to tile this monitor.'),
-                3000, null, mon);
-            return;
-        }
         const current = this.core.windows.getWorkspaceLayout(ws, mon);
         const idx = layouts.indexOf(current);
         const next = layouts[(idx + 1) % layouts.length];

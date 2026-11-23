@@ -20,6 +20,12 @@ export class Layouts {
     retileWorkspace(workspace) {
         if (!this.core._settings) return;
         this.core.signals.scheduleRetile(workspace);
+        // Fixed groups are laid out from the active workspace's pass: a
+        // change recorded against a window's home workspace reaches them too.
+        const monitors = this.core.monitors;
+        const active = global.workspace_manager?.get_active_workspace();
+        if (active && workspace !== active && monitors.onlyPrimary() && monitors.nMonitors() > 1)
+            this.core.signals.scheduleRetile(active);
     }
 
     doRetileWorkspace(workspace) {
@@ -55,6 +61,7 @@ export class Layouts {
         // only fade new windows in where they are.
         const groups = [];
         for (let mon = 0; mon < this.core.monitors.nMonitors(); mon++) {
+            if (!this.core.monitors.laidOutIn(workspace, mon)) continue;
             const tiledWindows = this.core.monitors.getWindowsForGroup(workspace, mon)
                 .filter(w => !this.core.windows.isFloating(w));
             if (tiledWindows.length === 0) continue;

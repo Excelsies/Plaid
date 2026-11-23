@@ -588,6 +588,11 @@ export class Windows extends PlaidSubsystem {
         sigIds.push({ emitter: win, id: this.connectObject(win, 'unmanaging', () => this.core.actions.noteClosing(win)) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'unmanaged', () => this.removeWindow(win)) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'workspace-changed', () => {
+            // A fixed group's window is shown on every workspace: mutter
+            // reports each workspace switch as a change. Its order stays with
+            // the workspace it came from (monitors.sendHome).
+            const monitors = this.core.monitors;
+            if (monitors.fixedConn(monitors.windowConn(win))) return;
             const oldWs = this.core._windowWorkspaces.get(win);
             const newWs = win.get_workspace();
             if (oldWs) {
@@ -728,13 +733,34 @@ export class Windows extends PlaidSubsystem {
     }
 
     // Every monitor's; a layout takes its group's (monitors.getWindowsForGroup).
+    // A window a layout can hold: a normal, visible, taskbar window that is
+    // not the Background App.
+    tileCandidate(w) {
+        if (w.get_window_type() !== Meta.WindowType.NORMAL) return false;
+        if (w.is_skip_taskbar() || w.minimized) return false;
+        return w !== this.core._backgroundAppWin;
+    }
+
+    // The windows on screen with `workspace`: its own and, while it is the
+    // active one, every fixed group's (monitors.fixedConn), whichever
+    // workspace's order holds them.
+    getVisibleWindows(workspace) {
+        const monitors = this.core.monitors;
+        const own = this.getWindowsForWorkspace(workspace);
+        if (!monitors.onlyPrimary() || workspace !== global.workspace_manager.get_active_workspace())
+            return own;
+        const out = own.filter(w => !monitors.fixedConn(monitors.windowConn(w)));
+        for (const mon of monitors.tiledMonitors()) {
+            if (monitors.fixedMon(mon)) out.push(...monitors.getWindowsForGroup(workspace, mon));
+        }
+        return out;
+    }
+
     getWindowsForWorkspace(workspace) {
         const order = this.getWorkspaceOrder(workspace);
         const targetIndex = this.core.geometry.wsIndex(workspace);
         return order.filter(w => {
-            if (w.get_window_type() !== Meta.WindowType.NORMAL) return false;
-            if (w.is_skip_taskbar() || w.minimized) return false;
-            if (w === this.core._backgroundAppWin) return false;
+            if (!this.tileCandidate(w)) return false;
             // Membership by LIVE workspace object. The stored index goes stale
             // when the shell's dynamic-workspace check removes the empty BGAPP
             // parking while Plaid is disabled — every workspace then shifts

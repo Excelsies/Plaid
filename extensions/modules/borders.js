@@ -737,7 +737,8 @@ export class Borders extends PlaidSubsystem {
         const ws = global.workspace_manager.get_active_workspace();
         if (!ws) return;
 
-        const windows = this.core.windows.getWindowsForWorkspace(ws);
+        // Fixed groups' windows too, whichever workspace's order holds them.
+        const windows = this.core.windows.getVisibleWindows(ws);
         for (const win of windows) {
             // Recorded again only once this pass lays the window out
             // (notePass): one stripped or skipped here is not.

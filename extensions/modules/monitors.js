@@ -157,6 +157,15 @@ export class Monitors extends PlaidSubsystem {
     }
 
     groupKeyFor(idx, conn) {
+        if (conn !== null && conn !== undefined && conn !== this.keyedPrimaryConn() && this.fixedConn(conn))
+            return `m@${conn}`;
+        return this.slotKeyFor(idx, conn);
+    }
+
+    // The per-workspace key of a slot, fixed groups or not: what the
+    // workspace-* and monitor-workspace-* settings store. Both arrangements
+    // are kept while the setting is toggled.
+    slotKeyFor(idx, conn) {
         if (conn === null || conn === undefined || conn === this.keyedPrimaryConn()) return idx;
         return `${idx}@${conn}`;
     }
@@ -168,7 +177,9 @@ export class Monitors extends PlaidSubsystem {
     }
 
     groupObjFor(ws, conn) {
-        if (!ws || conn === null || conn === undefined || conn === this.keyedPrimaryConn()) return ws;
+        if (conn === null || conn === undefined || conn === this.keyedPrimaryConn()) return ws;
+        if (this.fixedConn(conn)) return this.fixedGroupObj(conn);
+        if (!ws) return ws;
         if (!this.core._groupObjs) this.core._groupObjs = new Map();
         let byConn = this.core._groupObjs.get(ws);
         if (!byConn) {
@@ -181,6 +192,41 @@ export class Monitors extends PlaidSubsystem {
             byConn.set(conn, g);
         }
         return g;
+    }
+
+    // A fixed group's one object, whatever the workspace.
+    fixedGroupObj(conn) {
+        if (!this.core._fixedGroupObjs) this.core._fixedGroupObjs = new Map();
+        let g = this.core._fixedGroupObjs.get(conn);
+        if (!g) {
+            g = { plaidGroup: true, fixed: true, ws: null, conn };
+            this.core._fixedGroupObjs.set(conn, g);
+        }
+        return g;
+    }
+
+    // Workspaces on the primary only: mutter shows every other monitor's
+    // windows on every workspace, so each such monitor tiles them as one
+    // group of its own, a fixed group, that no workspace switch changes. Its
+    // keys are "m@CONNECTOR". Never true while the setting is off.
+    onlyPrimary() {
+        if (this.core._onlyPrimaryCache === null || this.core._onlyPrimaryCache === undefined)
+            this.core._onlyPrimaryCache = !!this.core._mutterSettings?.get_boolean('workspaces-only-on-primary');
+        return this.core._onlyPrimaryCache;
+    }
+
+    fixedConn(conn) {
+        return !!conn && this.onlyPrimary() && conn !== this.monConn(this.primaryMon());
+    }
+
+    fixedMon(mon) {
+        return mon !== undefined && mon !== null && mon >= 0 && this.fixedConn(this.monConn(mon));
+    }
+
+    // A fixed group is laid out from the active workspace's pass only: once
+    // per cycle, not once per workspace.
+    laidOutIn(ws, mon) {
+        return !this.fixedMon(mon) || ws === global.workspace_manager?.get_active_workspace();
     }
 
     // A removed workspace takes its groups' trees and signatures with it.
@@ -207,17 +253,17 @@ export class Monitors extends PlaidSubsystem {
     invalidate() {
         this.core._monitorConnCache = null;
         this.core._tiledMonitorsCache = null;
+        this.core._onlyPrimaryCache = null;
     }
 
-    // Primary first. With workspaces only on the primary the other monitors
-    // keep their windows on every workspace: they stay untiled.
+    // Every monitor, primary first. With workspaces on the primary only the
+    // others tile as fixed groups (fixedConn).
     tiledMonitors() {
         if (this.core._tiledMonitorsCache) return this.core._tiledMonitorsCache;
         const primary = this.primaryMon();
         const n = this.nMonitors();
-        const onlyPrimary = !!this.core._mutterSettings?.get_boolean('workspaces-only-on-primary');
         const out = [primary];
-        for (let i = 0; i < n && !onlyPrimary; i++) {
+        for (let i = 0; i < n; i++) {
             if (i !== primary) out.push(i);
         }
         this.core._tiledMonitorsCache = out;
@@ -293,9 +339,16 @@ export class Monitors extends PlaidSubsystem {
     }
 
     // Every monitor's windows are getWindowsForWorkspace; a layout takes its
-    // group's.
+    // group's. A fixed group's are every tracked window on its monitor:
+    // mutter reports such a window on the active workspace, whichever
+    // workspace's order holds it.
     getWindowsForGroup(ws, mon) {
         const conn = this.groupConn(mon);
+        if (this.fixedConn(conn)) {
+            return [...(this.core._windowMonitors ?? [])]
+                .filter(([w, c]) => c === conn && this.core.windows.tileCandidate(w))
+                .map(([w]) => w);
+        }
         return this.core.windows.getWindowsForWorkspace(ws).filter(w => this.windowConn(w) === conn);
     }
 
@@ -362,6 +415,10 @@ export class Monitors extends PlaidSubsystem {
         this.core._keyedPrimary = cur;
         for (const [map, entries] of objEntries) {
             for (const [k, v] of entries) {
+                if (k?.fixed) {
+                    map.set(k, v);
+                    continue;
+                }
                 const ws = k?.plaidGroup ? k.ws : k;
                 const conn = k?.plaidGroup ? k.conn : old;
                 map.set(this.groupObjFor(ws, conn), v);
@@ -573,10 +630,16 @@ export class Monitors extends PlaidSubsystem {
             if (mon < 0) continue;
             const to = this.monConn(mon);
             if (to === conn) continue;
-            if (!saved.has(conn) && this.connMon(conn) < 0) {
+            const gone = this.connMon(conn) < 0;
+            if (!saved.has(conn) && gone) {
                 saved.add(conn);
                 this.saveGroupShapes(conn);
             }
+            // A fixed monitor was unplugged: mutter put its windows on the
+            // active workspace. Each goes back to the workspace whose order
+            // holds it (where it was opened, or came from), so only that
+            // workspace reflows.
+            if (gone && this.fixedConn(conn)) this.sendHome(win);
             this.moveWindowToGroup(win, to, cause);
         }
     }
@@ -585,6 +648,7 @@ export class Monitors extends PlaidSubsystem {
     saveGroupShapes(conn) {
         const wm = global.workspace_manager;
         let saved = 0;
+        // A fixed group's key and tree are the same at every index.
         for (let i = 1; i < wm.get_n_workspaces(); i++) {
             const ws = wm.get_workspace_by_index(i);
             const group = this.groupKeyFor(i, conn);
@@ -610,6 +674,8 @@ export class Monitors extends PlaidSubsystem {
         if (!this.core._windowMonitors?.has(win)) return false;
         const from = this.windowConn(win);
         if (from === conn) return false;
+        // Out of a fixed group into a workspace's: the workspace it shows on.
+        if (this.fixedConn(from) && !this.fixedConn(conn)) this.adoptIntoWorkspace(win, win.get_workspace());
         const ws = this.core._windowWorkspaces.get(win) ?? win.get_workspace();
         this.setWindowGroup(win, conn, cause);
         if (!ws) return true;
@@ -647,6 +713,9 @@ export class Monitors extends PlaidSubsystem {
     swapAcrossGroups(ws, a, b) {
         const ca = this.windowConn(a);
         const cb = this.windowConn(b);
+        // A fixed group's window taking a workspace group's place joins ws.
+        if (this.fixedConn(ca) && !this.fixedConn(cb)) this.adoptIntoWorkspace(a, ws);
+        if (this.fixedConn(cb) && !this.fixedConn(ca)) this.adoptIntoWorkspace(b, ws);
         for (const conn of [ca, cb]) {
             const tree = this.core._bspTrees.get(this.groupObjFor(ws, conn));
             if (tree) this.core.bsp.bspSwapWindows(tree, a, b);
@@ -660,6 +729,33 @@ export class Monitors extends PlaidSubsystem {
         }
         this.setWindowGroup(a, cb, 'swap');
         this.setWindowGroup(b, ca, 'swap');
+    }
+
+    sendHome(win) {
+        const home = this.core._windowWorkspaces.get(win);
+        const cur = win.get_workspace();
+        // Never slot 0, the Background App's parking.
+        if (!home || home === cur || this.core.geometry.wsIndex(home) < 1) return;
+        this.core.debugLog(`group: ${win.get_wm_class_instance() || '?'} id=${win.get_id()} home ws=${this.core.geometry.wsIndex(home)} ` +
+            `(was on ws=${this.core.geometry.wsIndex(cur)})`);
+        win.change_workspace(home);
+    }
+
+    // A fixed group's window stays in the order of the workspace it came
+    // from (its home); joining a workspace's group it moves to that
+    // workspace's order.
+    adoptIntoWorkspace(win, ws) {
+        const home = this.core._windowWorkspaces.get(win);
+        if (!ws || home === ws) return;
+        if (home) {
+            const order = this.core.windows.getWorkspaceOrder(home);
+            const i = order.indexOf(win);
+            if (i !== -1) order.splice(i, 1);
+        }
+        const order = this.core.windows.getWorkspaceOrder(ws);
+        if (!order.includes(win)) order.push(win);
+        this.core._windowWorkspaces.set(win, ws);
+        this.core._windowWSIndices.set(win, this.core.geometry.wsIndex(ws));
     }
 
     // Leave the group's tree now: while a grab defers the retile, the stale

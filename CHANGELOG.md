@@ -12,6 +12,34 @@ Releases older than v50.43 predate this changelog; see the git history and the
 
 ---
 
+## Unreleased
+
+- **Windows from an unplugged display go back to their own workspace.** With
+  workspaces on the primary display only, a disconnected display's windows return
+  to the workspace each came from instead of piling onto the one you are viewing;
+  when the display returns they regroup onto it.
+
+## v51.31 — 2026-11-20
+
+- **Second displays tile when workspaces stay on the primary.** Each non-primary
+  display becomes one arrangement of its own, with its own layout, ratios and
+  saved shape, that stays put across workspace switches, instead of leaving its
+  windows untiled. Focus and swap keys, hover and borders reach its windows.
+  Turning GNOME's setting off returns to per-workspace layouts; both arrangements
+  are remembered.
+- **Every display tiles, so the "Display not tiled" hint is gone.** The layout
+  shortcut on a second display now changes that display's layout.
+- **Removed the duplicate Toggle Maximize shortcut (Super+Shift+M).** GNOME's
+  Toggle Maximized remains the binding for floating windows; tiled windows fill
+  the screen through the layout.
+- **Background App commands run directly.** The command is parsed as a program and
+  its arguments instead of going through a shell, so shell syntax (`~`, `|`, `&&`,
+  redirects, `$VAR`) is no longer interpreted; quoting still works. A command that
+  cannot start now says so.
+- **Rapid fullscreen toggles no longer disturb the layout.** A window caught going
+  fullscreen mid-animation is not retried, learns no false minimum size, and
+  bends no split; each toggle starts a fresh landing check.
+
 ## v51.30 — 2026-11-16
 
 - **Every monitor tiles its own windows.** Each display gets its own layout, split

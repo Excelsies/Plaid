@@ -394,7 +394,7 @@ export class Placement {
         let off = 0;
         let count = 0;
         for (const mon of this.core.monitors.tiledMonitors()) {
-            if (!this.core.monitors.groupPlaces(ws, mon)) continue;
+            if (!this.core.monitors.groupPlaces(ws, mon) || !this.core.monitors.laidOutIn(ws, mon)) continue;
             const layout = this.core.windows.getWorkspaceLayout(ws, mon);
             const tiled = this.core.monitors.getWindowsForGroup(ws, mon).filter(w => !this.core.windows.isFloating(w));
             if (tiled.length === 0) continue;

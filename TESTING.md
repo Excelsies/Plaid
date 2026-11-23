@@ -169,7 +169,8 @@ bottom; fill the status table; paste the journal excerpts back.
 
 - **Multi-monitor**: every monitor tiles its own windows, per workspace, with
   its own layout (see the checklist below). With mutter's
-  `workspaces-only-on-primary` on, only the primary tiles. Unplugging and
+  `workspaces-only-on-primary` on, each other monitor tiles as one fixed
+  arrangement for every workspace. Unplugging and
   replugging a monitor is covered by unit tests only (the headless shell
   cannot hotplug).
 - **X11**: Plaid is Wayland-only; on an X11 session it loads inert and shows
@@ -259,6 +260,14 @@ mismatch churn.
 - [ ] Unplug a monitor: its windows join the remaining layout; plug it back:
       windows moved there get its old layout and arrangement
 - [ ] Log out and in: each monitor keeps its layout per workspace
+- [ ] Settings → Multitasking → workspaces on the primary display only: a
+      window moved to another display tiles there; that display's
+      arrangement stays put across workspace switches, focus/swap keys and
+      hover reach its windows, and they keep their border. Cycle layout on
+      it changes only that display. Turn the setting off and on: both
+      arrangements come back
+- [ ] Same setting, unplug the other display: each of its windows goes back
+      to the workspace it came from
 
 ## Focus on Hover (v50.65)
 

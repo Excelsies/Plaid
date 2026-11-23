@@ -149,6 +149,8 @@ export class PlaidCore {
         // index stand-in in syncKeyedPrimary).
         this._windowMonitors = new Map();
         this._groupObjs = new Map();
+        // Fixed groups (monitors.fixedConn), one object per connector.
+        this._fixedGroupObjs = new Map();
         this._monitorConnCache = null;
         this._monitorConnPartial = false;
         // A burst of monitor changes waiting for its settled pass (Monitors).
@@ -429,6 +431,7 @@ export class PlaidCore {
                 bspLaidOutAs: this._bspLaidOutAs,
                 windowMonitors: this._windowMonitors,
                 groupObjs: this._groupObjs,
+                fixedGroupObjs: this._fixedGroupObjs,
                 keyedPrimary: this._keyedPrimary,
                 monitorSig: this.monitors.signature(),
             };
@@ -549,6 +552,7 @@ export class PlaidCore {
         if (s.gappedMaxSet) this._gappedMaxSet = liveOnly(s.gappedMaxSet);
         if (s.windowMonitors) this._windowMonitors = s.windowMonitors;
         if (s.groupObjs) this._groupObjs = s.groupObjs;
+        if (s.fixedGroupObjs) this._fixedGroupObjs = s.fixedGroupObjs;
         if (s.lastRealFocusedWindow && alive(s.lastRealFocusedWindow))
             this._lastRealFocusedWindow = s.lastRealFocusedWindow;
         if (s.scratchpadWindows) {
@@ -658,6 +662,7 @@ export class PlaidCore {
         this._windowWSIndices = null;
         this._windowMonitors = null;
         this._groupObjs = null;
+        this._fixedGroupObjs = null;
         this._keyedPrimary = null;
         this._workspaceLayouts = null;
         this._masterRatios = null;
