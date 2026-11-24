@@ -19,6 +19,26 @@ Releases older than v50.43 predate this changelog; see the git history and the
   to the workspace each came from instead of piling onto the one you are viewing;
   when the display returns they regroup onto it.
 
+## v51.32 — 2026-11-23
+
+- **A square border stays inside the window frame.** With Rounded Corners on
+  and radius 0, the border now uses the same inside-mask path as every other
+  radius instead of switching to a widget border drawn outside the frame.
+- **Steam popups keep their Flair again.** Skip-taskbar and transient floating
+  windows are picked up by the border, mask and blur pass without becoming
+  keyboard or hover targets.
+- **Monitor hotplug no longer shuffles the primary layout.** Window monitor
+  events are ignored until the monitor burst settles, so trees aren't rebuilt
+  from transient monitor indices.
+- **A disconnected display's windows move to unused workspaces.** Each source
+  workspace gets its own empty workspace on the remaining display, so existing
+  workspaces keep their layouts. When the display returns, the windows go back
+  to their original workspaces and the temporary workspaces are removed.
+- **Display changes explain where windows went.** A short popup reports when a
+  display's windows move to unused workspaces and when they return.
+- **Fixed-mode arrangements stay out of per-workspace rules.** No more
+  malformed `CONNECTOR:NaN` entries, and leftover empty tree slots are pruned.
+
 ## v51.31 — 2026-11-20
 
 - **Second displays tile when workspaces stay on the primary.** Each non-primary
