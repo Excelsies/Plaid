@@ -13,6 +13,13 @@ import { isBspLayout, isSpiralLayout } from './helpers.js';
 // declare 932x400, 1000x750 and 870x800; its menus and toolbars none or 2x2.
 const POPUP_APP_TILE_MIN = 200;
 
+// Window types of an open client menu (every Wayland xdg_popup is a
+// DROPDOWN_MENU window). Tooltips take no grab; MENU windows are torn-off
+// toplevels that stay open.
+const MENU_WINDOW_TYPES = new Set([
+    Meta.WindowType.DROPDOWN_MENU, Meta.WindowType.POPUP_MENU, Meta.WindowType.COMBO,
+]);
+
 export class Windows extends PlaidSubsystem {
     constructor(core) {
         super(core);
@@ -25,6 +32,34 @@ export class Windows extends PlaidSubsystem {
         // a normal-looking window until the app id resolves. Keep it out of
         // the tiler, Flair and the blur pipeline.
         return this.core.winClassCandidates(win).includes('com.rastersoft.ding');
+    }
+
+    // Whether the focused window has a menu open on the active workspace.
+    // Many toolkits close their menus when their window loses focus, and a
+    // client opening a nested menu as one closes can lose its Wayland
+    // connection (Zoom). Automatic focus changes are skipped while this holds.
+    // Wayland tooltips are popups too: one holds hover focus until it hides.
+    clientMenuOpen() {
+        const focus = global.display.focus_window;
+        if (!focus) return false;
+        const menus = global.display.list_all_windows().filter(w =>
+            MENU_WINDOW_TYPES.has(w.get_window_type()) && !w.minimized &&
+            w.get_compositor_private() !== null && this.menuOwnedBy(w, focus));
+        if (menus.length === 0) return false;
+        const ws = global.workspace_manager.get_active_workspace();
+        return ws !== null && menus.some(w => w.located_on_workspace(ws));
+    }
+
+    // Whether menu `w` belongs to `win`: it is `win` (a managed menu that took
+    // focus), its parent chain reaches `win` (a Wayland popup, nested ones
+    // included), or it is an X11 override-redirect menu of the same process.
+    menuOwnedBy(w, win) {
+        if (w === win) return true;
+        let p = w.get_transient_for();
+        if (!p) return w.is_override_redirect() && w.get_pid() > 0 && w.get_pid() === win.get_pid();
+        for (let i = 0; p && i < 8; i++, p = p.get_transient_for())
+            if (p === win) return true;
+        return false;
     }
 
     shouldManage(win) {

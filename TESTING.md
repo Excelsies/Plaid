@@ -284,6 +284,14 @@ Test checklist:
 - [ ] Hover ghostty / firefox / emacs — focus follows on arrival
 - [ ] An app menu that takes focus as its own window (Zoom's "More") stays
       open while the pointer crosses the window it opened from
+- [ ] While the focused window's drop-down, popup or combo menu is open,
+      hover focus waits: moving to another window leaves the menu open. Once
+      the menu closes, the window under the pointer takes focus, moved or not
+      (as GNOME's sloppy focus does). A Wayland tooltip is a popup too: it
+      holds hover focus until it hides
+- [ ] Focus after closing a window, the workspace-switch focus restore and the
+      Background App focus restore are skipped while the focused window has a
+      menu open
 - [ ] Chromium-family windows (Electron, CEF, Steam) never take hover focus
       (their menus are web overlays that close on a focus call)
 - [ ] Works with GNOME focus mode set to `click` (the mutter #4892 workaround)

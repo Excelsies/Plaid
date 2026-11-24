@@ -126,6 +126,8 @@ export class Actions extends PlaidSubsystem {
         if (!this.core._settings || this.core._shuttingDown || this.core._grabOp ||
             !this.core._settings.get_boolean('enabled') || Main.overview.visible || Main.modalCount > 0) return false;
         if (Date.now() - c.at > CLOSE_FOCUS_MS) return false;
+        // mutter's pick stands while a client has a menu open.
+        if (this.core.windows.clientMenuOpen()) return false;
         if (global.display.focus_window !== c.picked || c.ws !== global.workspace_manager.get_active_workspace()) return false;
         // A window still opening is no candidate, as it is none for mutter's pick.
         const slots = [...this.core.bsp.spiralSlots(c.ws, this.core.monitors.connMon(c.conn))]

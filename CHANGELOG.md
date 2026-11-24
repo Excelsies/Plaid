@@ -14,6 +14,13 @@ Releases older than v50.43 predate this changelog; see the git history and the
 
 ## Unreleased
 
+- **Plaid no longer moves focus away from a window while it has a menu open.**
+  While the focused window shows a drop-down, popup or combo menu, focus on
+  hover waits until the menu closes, and Plaid's own focus moves (after a window
+  closes, after a workspace switch, after the Background App) are skipped. Apps
+  that close their menus when their window loses focus keep them open. Once the
+  menu closes, the window under the pointer takes focus, as with GNOME's own
+  focus-follows-mouse.
 - **A window you move off its evacuation workspace stays where you put it.** When
   an unplugged display returns, only its windows still on the workspace they were
   moved to go back to their own workspaces. With workspaces on the primary display

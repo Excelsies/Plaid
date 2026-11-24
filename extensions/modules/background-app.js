@@ -1538,6 +1538,7 @@ export class BackgroundApp extends PlaidSubsystem {
             if (global.display.focus_window === prev) return false;
             // The workspace may have moved while the idle was queued.
             if (prev.get_workspace() !== global.workspace_manager.get_active_workspace()) return false;
+            if (this.core.windows.clientMenuOpen()) return false;
             { prev.activate(this.core.currentTime()); }
             return false;
         });

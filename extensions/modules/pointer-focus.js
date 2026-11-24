@@ -60,6 +60,15 @@ export class PointerFocus extends PlaidSubsystem {
     applyPointerFocus(px, py) {
         if (Main.overview.visible) return;
         if (Main.modalCount > 0) return;
+        // A client's open menu keeps focus where it is. The window under the
+        // pointer is not recorded and the next tick looks again even if the
+        // pointer stays put: once the menu closes, the window the pointer is in
+        // takes focus, as with mutter's own focus-follows-mouse.
+        if (this.core.windows.clientMenuOpen()) {
+            this.core._pointerFocusLastX = -1;
+            this.core._pointerFocusLastY = -1;
+            return;
+        }
         // Focus moves when the pointer ENTERS a window, never on a move over
         // the one it is already in: a menu that took focus from its window
         // (Zoom's "More", a frameless toplevel) stays open while the pointer

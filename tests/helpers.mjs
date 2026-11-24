@@ -20,6 +20,8 @@ export function oneMonitor(extra = {}) {
     get_monitor_geometry: () => ({ x: 0, y: 0, width: 2560, height: 1440 }),
     get_monitor_index_for_rect: () => 0,
     focus_window: null,
+    // No client menu open.
+    list_all_windows: () => [],
     ...extra,
   };
 }
@@ -452,6 +454,18 @@ export function frameClock() {
 
 let _winId = 0;
 
+// An open menu of `parent`: a shown DROPDOWN_MENU (9) window, as an xdg_popup is.
+export const menuWin = (parent, opts = {}) => fakeWin({ type: 9, actor: {}, transientFor: parent, ...opts });
+
+// Runs fn with `list` as the display's windows (clientMenuOpen reads them).
+export function withMenus(list, fn) {
+  const prev = global.display.list_all_windows;
+  const prevWm = global.workspace_manager;
+  global.display.list_all_windows = () => list;
+  if (!prevWm) global.workspace_manager = { get_active_workspace: () => 'ws-active' };
+  try { return fn(); } finally { global.display.list_all_windows = prev; global.workspace_manager = prevWm; }
+}
+
 export function fakeWin(opts = {}) {
   const frame = opts.frame ?? { x: 0, y: 0, width: 100, height: 100 };
   const buffer = opts.buffer ?? frame;
@@ -499,6 +513,12 @@ export function fakeWin(opts = {}) {
     stick() {},
     unstick() {},
     is_on_all_workspaces: () => opts.sticky ?? false,
+    // GI rejects a null workspace, as the real method does.
+    located_on_workspace: (ws) => {
+      if (ws == null) throw new TypeError('located_on_workspace: workspace must not be null');
+      return opts.workspace === undefined || opts.sticky || opts.workspace === ws;
+    },
+    is_override_redirect: () => opts.overrideRedirect ?? false,
   };
 }
 

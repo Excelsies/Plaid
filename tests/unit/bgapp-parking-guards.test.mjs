@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSelf, fakeWin } from '../helpers.mjs';
+import { makeSelf, fakeWin, oneMonitor, menuWin } from '../helpers.mjs';
 import { sessionState } from '../../extensions/modules/session-state.js';
 
 function resetSessionState() {
@@ -207,4 +207,33 @@ test('launchBackgroundApp: a new launch clears the failure-notified flag', () =>
   core.bgApp.launchBackgroundApp(true);
 
   assert.equal(core._backgroundAppFailureNotified, false);
+});
+
+test('restoreFocusFromBackgroundApp: a client\'s open menu keeps focus where it is', () => {
+  resetSessionState();
+  const ws = { id: 'ws1' };
+  const bg = fakeWin();
+  const activated = [];
+  const prev = Object.assign(fakeWin({ actor: {} }), {
+    get_workspace: () => ws,
+    activate() { activated.push(this); },
+  });
+  const core = makeSelf({}, { _backgroundAppWin: bg, _backgroundAppParkingWs: { id: 'parking' } });
+  core._lastRealFocusedWindow = prev;
+  const idles = [];
+  core.signals.addIdle = (fn) => { idles.push(fn); };
+  let menus = [menuWin(bg)];
+  withGlobal({
+    display: oneMonitor({ focus_window: bg, list_all_windows: () => menus }),
+    workspace_manager: { get_active_workspace: () => ws },
+    get_current_time: () => 0,
+  }, () => {
+    core.bgApp.restoreFocusFromBackgroundApp();
+    idles.shift()();
+    assert.deepEqual(activated, []);
+    menus = [];
+    core.bgApp.restoreFocusFromBackgroundApp();
+    idles.shift()();
+  });
+  assert.deepEqual(activated, [prev]);
 });

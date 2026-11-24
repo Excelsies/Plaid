@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { readFileSync } from 'node:fs';
-import { makeSelf, fakeWin, leaf, split } from '../helpers.mjs';
+import { makeSelf, fakeWin, leaf, split, menuWin, withMenus } from '../helpers.mjs';
 
 // Focus after a close in a Spiral group (Hyprland focus_on_close=0): the
 // leaf nearest the closed tile's centre, once mutter has picked a focus and
@@ -85,6 +85,14 @@ test('focus after close: the leaf that takes the closed tile\'s place, not mutte
   runIdles();
   assert.deepEqual(activated, [b]);
   assert.deepEqual(warped, [], 'follow-focus off: the cursor stays');
+});
+
+test('focus after close: a client\'s open menu keeps mutter\'s pick', () => {
+  const { self, a, c, close, runIdles, activated } = abc();
+  self.actions.noteClosing(c);
+  close(c, a);
+  withMenus([menuWin(global.display.focus_window)], runIdles);
+  assert.deepEqual(activated, []);
 });
 
 test('focus after close: follow-focus warps the cursor to it', () => {

@@ -4,7 +4,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import { makeSelf, leaf, split, oneMonitor } from '../helpers.mjs';
+import { makeSelf, leaf, split, oneMonitor, menuWin, withMenus } from '../helpers.mjs';
 import { sessionState } from '../../extensions/modules/session-state.js';
 
 const MOVE = 1;
@@ -380,6 +380,45 @@ test('drag-scroll: the switch focus restore skips the workspace the dragged wind
   self._handleGrabEnd(win, MOVE);
   handlers['active-workspace-changed']();
   assert.equal(restores, 1);
+});
+
+test('workspace switch: a client\'s open menu keeps mutter\'s focus, and the switch flag is cleared', () => {
+  const { self, values } = setup();
+  values['workspace-popup'] = false;
+  const handlers = {};
+  self.signals.connectObject = (_emitter, name, cb) => { handlers[name] = cb; };
+  const OrigSettings = Gio.Settings;
+  Gio.Settings = class {};
+  self.grab.connectGrabSignals = () => {};
+  self.monitors.connectSignals = () => {};
+  try {
+    self.signals.connectSignals();
+  } finally {
+    Gio.Settings = OrigSettings;
+  }
+  self.windows.reassertFloatingTransients = () => false;
+  self.borders.updateBorders = () => {};
+  self.placement.checkWorkspaceLandings = () => {};
+  self.bgApp.hideParkingCard = () => {};
+  GLib.timeout_add = () => 1;
+  const activated = [];
+  const target = Object.assign(dragWin(wss[1]), { activate() { activated.push(this); } });
+  self.windows.getWindowsForWorkspace = () => [target];
+  const idles = [];
+  self.signals.addIdle = (fn) => { idles.push(fn); };
+  handlers['active-workspace-changed']();
+  assert.equal(self._keyboardFocusChange, true);
+  const prevFocus = global.display.focus_window;
+  const sticky = dragWin(wss[1]);
+  global.display.focus_window = sticky;
+  try {
+    withMenus([menuWin(sticky)], () => idles.shift()());
+  } finally { global.display.focus_window = prevFocus; }
+  assert.deepEqual(activated, []);
+  assert.equal(self._keyboardFocusChange, false);
+  handlers['active-workspace-changed']();
+  idles.shift()();
+  assert.deepEqual(activated, [target]);
 });
 
 test('drag-scroll: a slide this grab did not start holds the step', () => {

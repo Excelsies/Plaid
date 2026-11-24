@@ -435,6 +435,78 @@ test('Spiral is decided by the layout traits only', () => {
   assert.deepEqual(sites, { 'actions.js': 1, 'helpers.js': 2, 'prefs.js': 2 });
 });
 
+// Focus that Plaid moves on its own is skipped while the focused window has a
+// menu open (windows.clientMenuOpen): focusing elsewhere can close the menu.
+// Every call that focuses or activates a window or workspace is counted here
+// per site and kind; a new one is refused until placed.
+test('automatic focus changes read windows.clientMenuOpen', () => {
+  const call = /\.(?:focus|activate|activate_with_focus|activate_with_workspace|focus_default_window|set_input_focus)\(|\b(?:activateWindow|actionMoveWindow)\(/;
+  // Calibration on lines copied verbatim from the tree, and on shell calls.
+  for (const line of [
+    '        target.focus(global.get_current_time());',
+    '            next.activate(this.core.currentTime());',
+    '                { prev.activate(this.core.currentTime()); }',
+    '        Main.wm.actionMoveWindow(win, dest);',
+    '        Main.activateWindow(win);',
+    '        ws.activate_with_focus(win, time);',
+    '        global.display.focus_default_window(time);',
+  ])
+    assert.ok(call.test(line), `calibration: ${line.trim()}`);
+  assert.ok(!call.test('            actor.grab_key_focus();') && !call.test('        this.core.signals.activateLater();'),
+    'calibration: other names');
+  // Per site, `file:enclosing method` -> [kind, calls].
+  const kinds = {
+    // Moved by Plaid on its own: each call has a guard read in its method.
+    'pointer-focus.js:applyPointerFocus': ['auto', 1],
+    'actions.js:focusLeafAfterClose': ['auto', 1],
+    'signals.js:connectSignals': ['auto', 1],
+    'background-app.js:restoreFocusFromBackgroundApp': ['auto', 1],
+    // The user's own key or drag: closing a menu is intended. The drop-down
+    // terminal is summoned by key; its focus can land after the launch.
+    'actions.js:moveFocus': ['user', 1],
+    'actions.js:swapWindow': ['user', 1],
+    'actions.js:centerWindow': ['user', 1],
+    'scratchpad.js:scratchpadToggle': ['user', 1],
+    'dropdown-terminal.js:showDropdownTerminal': ['user', 1],
+    'drag-scroll.js:carry': ['user', 1],
+    // Workspace activation: leaving the parking workspace cannot be skipped.
+    'background-app.js:reserveBackgroundAppWorkspace': ['workspace', 1],
+    'background-app.js:evacuateParkingWorkspace': ['workspace', 1],
+  };
+  const files = [join(ext, 'extension.js'), ...moduleFiles];
+  // Line numbers of matching lines per site.
+  const sites = (re) => {
+    const out = {};
+    for (const file of files) {
+      const lines = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n');
+      let method = '?';
+      lines.forEach((raw, i) => {
+        const line = raw.replace(/\/\/.*$/, '');
+        const head = /^ {4}(\w+)\s*\([^)]*\)\s*\{\s*$/.exec(line);
+        if (head) method = head[1];
+        if (re.test(line)) (out[`${basename(file)}:${method}`] ??= []).push(i);
+      });
+    }
+    return out;
+  };
+  const calls = sites(call);
+  assert.deepEqual(Object.fromEntries(Object.entries(calls).map(([k, v]) => [k, v.length])),
+    Object.fromEntries(Object.entries(kinds).map(([k, [, n]]) => [k, n])));
+  const guards = sites(/\bclientMenuOpen\(\)/);
+  for (const [site, [kind]] of Object.entries(kinds)) {
+    if (kind !== 'auto') {
+      assert.equal(guards[site], undefined, `${site} (${kind}) reads the guard`);
+      continue;
+    }
+    // Each call has its own guard read on an earlier line, after the call before it.
+    let prev = -1;
+    for (const at of calls[site]) {
+      assert.ok((guards[site] ?? []).some(g => g > prev && g < at), `${site}: call on line ${at + 1} has no guard read before it`);
+      prev = at;
+    }
+  }
+});
+
 // A BSP split's child boxes are computed in one place (bsp.splitBoxes).
 test('BSP split geometry is computed by bsp.splitBoxes only', () => {
   const geo = /\*\s*[\w.]*\bratio\)/;

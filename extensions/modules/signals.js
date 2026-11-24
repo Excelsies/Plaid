@@ -203,7 +203,9 @@ export class Signals extends PlaidSubsystem {
             this.core._keyboardFocusChange = true;
             this.addIdle(() => {
                 if (!this.core._settings) return false;
-                target.activate(this.core.currentTime());
+                // A client's open menu (a sticky window's) keeps mutter's focus.
+                if (!this.core.windows.clientMenuOpen())
+                    target.activate(this.core.currentTime());
                 this.core._keyboardFocusChange = false;
                 return false;
             });
