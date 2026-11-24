@@ -21,7 +21,8 @@ Full docs live on the [wiki](https://github.com/Plyply99/Plaid/wiki).
 - **Every monitor tiles**: each monitor has its own layout per workspace; a
   window moved or dragged to another monitor joins that monitor's layout, and
   focus/swap keys cross monitor edges. Unplugging, replugging and primary changes
-  keep each display's saved arrangement. With GNOME's workspaces on the primary
+  keep each display's saved arrangement; an unplugged display's windows wait on
+  unused workspaces and go back when it returns. With GNOME's workspaces on the primary
   display only, each other display tiles as one arrangement that stays put across
   workspace switches.
 

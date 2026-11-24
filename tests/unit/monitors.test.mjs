@@ -15,8 +15,14 @@ const GEOM = [{ x: 0, y: 0, width: 1000, height: 500 }, { x: 1000, y: 0, width: 
   { x: 1800, y: 0, width: 800, height: 500 }];
 const CONN = ['DP-1', 'DP-2', 'DP-3'];
 
+// Every W() window, for a workspace's list_windows.
+let _wins = [];
 function fakeWs() {
-  return { get_work_area_for_monitor: (m) => ({ ...GEOM[m] }) };
+  const ws = {
+    get_work_area_for_monitor: (m) => ({ ...GEOM[m] }),
+    list_windows: () => _wins.filter(w => w._ws === ws),
+  };
+  return ws;
 }
 
 // Workspaces 0 (the parking slot), 1 and 2; returns them.
@@ -49,8 +55,11 @@ function stubGlobal({ conns = ['DP-1', 'DP-2'], primary = 0, focus = null, point
       get_n_workspaces: () => wss.length,
       get_workspace_by_index: (i) => wss[i] ?? null,
       get_active_workspace: () => wss[1],
+      append_new_workspace: () => { const ws = fakeWs(); wss.push(ws); return ws; },
+      remove_workspace: (ws) => { const i = wss.indexOf(ws); if (i >= 0) wss.splice(i, 1); },
     },
   };
+  _wins = [];
   return wss;
 }
 
@@ -66,12 +75,16 @@ function W(title, ws, mon, frame = null) {
     get_buffer_rect: () => ({ ...w._frame }),
     get_monitor: () => w._mon,
     get_workspace: () => w._ws,
+    is_on_all_workspaces: () => false,
+    // mutter emits workspace-changed from inside change_workspace.
+    change_workspace: (ws) => { w._ws = ws; w._wsChanged?.(); },
     get_compositor_private: () => null,
     get_stable_sequence: () => id,
     unmaximize: () => {},
     raise: () => {},
     move_resize_frame: (_u, x, y, width, height) => { w._frame = { x, y, width, height }; },
   });
+  _wins.push(w);
   return w;
 }
 
@@ -103,6 +116,26 @@ function groupSelf(ws, wins, extra = {}) {
   return { self, retiles };
 }
 
+// Our real workspace-changed handler on each window, so its change_workspace
+// moves the order and tree as in the shell. Its other signals are dropped.
+function wireWs(self, wins) {
+  for (const w of wins) {
+    const h = {};
+    const own = w.connectObject;
+    const connected = w._plaidSignalsConnected;
+    w.connectObject = (name, cb) => { h[name] = cb; return 1; };
+    w._plaidSignalsConnected = false;
+    const actor = w.get_compositor_private;
+    w.get_compositor_private = () => null;
+    self.windows.connectWindowSignals(w);
+    w.get_compositor_private = actor;
+    w.connectObject = own;
+    w._plaidSignalsConnected = connected;
+    self._windowSignals?.delete(w);
+    w._wsChanged = h['workspace-changed'];
+  }
+}
+
 const treeWins = (self, ws, mon) => self.bsp.bspCollectWindows(self.bsp.bspGetTree(ws, mon));
 
 test('group keys: the primary keeps the index, others add their connector; codec round-trips', () => {
@@ -127,10 +160,11 @@ test('group keys: the primary keeps the index, others add their connector; codec
 
 // A lock cycle: the stash outlives the core, the next core restores it and
 // re-adds every window as a resume.
-function lockCycle(self, wins) {
+function lockCycle(self, wins, { wire = false } = {}) {
   sessionState.stashedTiling = null;
   self.stashTilingState();
   const next = groupSelf(wins[0]._ws, []).self;
+  if (wire) wireWs(next, wins);
   next._windowWorkspaces = new Map();
   try {
     next.restoreTilingState();
@@ -229,7 +263,7 @@ function unplugSecond(primaryAfter = 0) {
   });
 }
 
-test('lock cycle: an undock while disabled brings the removed monitor\'s windows into a live group', () => {
+test('lock cycle: an undock while disabled moves the removed monitor\'s windows into a live group on an unused workspace', () => {
   const [, ws] = stubGlobal({ conns: ['eDP-1', 'DP-2'], primary: 1 });
   const a = liveWin('a', ws, 0), b = liveWin('b', ws, 1), c = liveWin('c', ws, 1);
   const { self } = groupSelf(ws, []);
@@ -248,9 +282,15 @@ test('lock cycle: an undock while disabled brings the removed monitor\'s windows
   unplugSecond(0);
   b._mon = 0;
   c._mon = 0;
+  // The resume pass runs before the windows' signals are connected again.
   const next = lockCycle(self, [a, b, c]);
   assert.deepEqual([a, b, c].map(w => next.monitors.windowMon(w)), [0, 0, 0]);
-  assert.deepEqual(new Set(treeWins(next, ws, 0)), new Set([a, b, c]));
+  const ws2 = global.workspace_manager.get_workspace_by_index(2);
+  assert.deepEqual(treeWins(next, ws, 0), [a]);
+  assert.deepEqual(new Set(treeWins(next, ws2, 0)), new Set([b, c]), 'moved together to the unused workspace 2');
+  assert.deepEqual([b, c].map(w => next._windowWorkspaces.get(w)), [ws2, ws2], 'our order follows without the signal');
+  assert.deepEqual(next._workspaceOrders.get(ws), [a]);
+  assert.equal(next._evacuated.get(b).conn, 'DP-2');
   assert.ok([...next._persistedDwindleRaw.keys()].some(k => String(k).includes('DP-2')),
     'the removed monitor\'s arrangement is kept for its return');
 });
@@ -648,10 +688,11 @@ test('onWindowEnteredMonitor: regroups, except mid-drag, in transit, or off a re
   assert.equal(self.monitors.windowConn(a), 'DP-2');
 });
 
-test('hotplug: a removed monitor\'s windows join their new monitor, its arrangement and layout stay', () => {
+test('hotplug: a removed monitor\'s windows move to an unused workspace on their new monitor, its arrangement and layout stay', () => {
   const [, ws] = stubGlobal();
   const a = W('a', ws, 0), b = W('b', ws, 0), c = W('c', ws, 0);
   const { self, retiles } = groupSelf(ws, [a, b, c]);
+  wireWs(self, [a, b, c]);
   let saves = 0;
   self.persistence.scheduleSaveLayouts = () => saves++;
   // b and c were on HDMI-9 (now unplugged); mutter put them on DP-1.
@@ -666,13 +707,226 @@ test('hotplug: a removed monitor\'s windows join their new monitor, its arrangem
   self.monitors.regroupWindows('hotplug');
   assert.equal(self.monitors.windowConn(b), 'DP-1');
   assert.equal(self.monitors.windowConn(c), 'DP-1');
-  assert.equal(treeWins(self, ws, 0).length, 3);
+  assert.deepEqual(treeWins(self, ws, 0), [a], 'workspace 1 does not reflow');
+  assert.deepEqual([b, c].map(w => w.get_workspace()), [ws2, ws2], 'the empty workspace 2');
+  assert.deepEqual(treeWins(self, ws2, 0), [b, c]);
+  assert.deepEqual(self._workspaceOrders.get(ws2), [b, c]);
+  assert.deepEqual(self._workspaceOrders.get(ws), [a]);
+  assert.deepEqual(self._evacuated.get(b), { conn: 'HDMI-9', source: ws, target: ws2 });
   assert.equal(self._persistedDwindleRaw.get('1@HDMI-9'), 'h0.7000(l,l)');
   assert.equal(self._persistedDwindleByIndex.get('1@HDMI-9').ratio, 0.7);
   assert.equal(self._workspaceLayouts.get('2@HDMI-9'), 'master-stack', 'kept for its return');
   assert.equal(self._persistedDwindleRaw.has('2@HDMI-9'), false, 'a master-stack group has no dwindle shape');
   assert.equal(saves, 1);
   assert.ok(retiles.length > 0);
+});
+
+// The monitors: DP-1 alone (`false`) or DP-1 and DP-2 again (`true`).
+function setSecond(on) {
+  const conns = on ? ['DP-1', 'DP-2'] : ['DP-1'];
+  global.display.get_n_monitors = () => conns.length;
+  global.backend.get_monitor_manager = () => ({
+    get_logical_monitors: () => conns.map((c, i) => ({ get_number: () => i, get_monitors: () => [{ get_connector: () => c }] })),
+  });
+}
+
+// Workspace 1: a (DP-1), b (DP-2); workspace 2: e (DP-1), c (DP-2);
+// workspace 3 empty. Popups are recorded.
+function evacSelf() {
+  const wss = stubGlobal({ nws: 4 });
+  const [, ws1, ws2, ws3] = wss;
+  const a = W('a', ws1, 0), b = W('b', ws1, 1), e = W('e', ws2, 0), c = W('c', ws2, 1);
+  for (const w of [a, b, e, c]) w.get_compositor_private = () => ({});
+  const { self } = groupSelf(ws1, [a, b]);
+  self._workspaceOrders.set(ws2, [e, c]);
+  for (const w of [e, c]) {
+    self._windowWorkspaces.set(w, ws2);
+    self._windowWSIndices.set(w, 2);
+    self._windowMonitors.set(w, CONN[w._mon]);
+  }
+  self._backgroundAppParkingWs = wss[0];
+  self.bsp.bspSetTree(ws1, 0, leaf(a));
+  self.bsp.bspSetTree(ws1, 1, leaf(b));
+  self.bsp.bspSetTree(ws2, 0, leaf(e));
+  self.bsp.bspSetTree(ws2, 1, leaf(c));
+  wireWs(self, [a, b, e, c]);
+  const popups = [];
+  self.signals.addTimeout = (_ms, cb) => cb();
+  self.workspaces.showPopup = (title, sub) => popups.push([title, sub]);
+  const unplug = () => {
+    setSecond(false);
+    for (const w of [b, c]) w._mon = 0;
+    self.monitors.invalidate();
+    self.monitors.regroupWindows('hotplug');
+  };
+  const replug = () => {
+    setSecond(true);
+    for (const w of [b, c]) w._mon = 1;
+    self.monitors.invalidate();
+    self.monitors.regroupWindows('hotplug');
+  };
+  return { self, wss, ws1, ws2, ws3, a, b, c, e, popups, unplug, replug };
+}
+
+test('evacuation: one unused workspace per source workspace, an empty one first, then a new one; one popup', () => {
+  const t = evacSelf();
+  t.unplug();
+  const ws4 = global.workspace_manager.get_workspace_by_index(4);
+  assert.deepEqual([t.b.get_workspace(), t.c.get_workspace()], [t.ws3, ws4]);
+  assert.deepEqual([t.a, t.e].map(w => w.get_workspace()), [t.ws1, t.ws2], 'the rest stay');
+  assert.deepEqual(treeWins(t.self, t.ws1, 0), [t.a]);
+  assert.deepEqual(treeWins(t.self, t.ws3, 0), [t.b]);
+  assert.deepEqual(t.self._workspaceOrders.get(ws4), [t.c]);
+  assert.deepEqual([...t.self._createdEvacTargets], [ws4], 'only the appended one is ours to remove');
+  assert.deepEqual(t.popups, [['DP-2 disconnected', '2 windows moved to Workspaces 3\u20134']]);
+  t.self.monitors.regroupWindows('hotplug');
+  assert.equal(t.popups.length, 1, 'a later pass does not repeat it');
+});
+
+test('evacuation: on the replug each window goes back to its source workspace and group, and a made workspace goes', () => {
+  const t = evacSelf();
+  t.unplug();
+  const ws4 = global.workspace_manager.get_workspace_by_index(4);
+  t.replug();
+  assert.deepEqual([t.b.get_workspace(), t.c.get_workspace()], [t.ws1, t.ws2]);
+  assert.deepEqual([t.b, t.c].map(w => t.self.monitors.windowConn(w)), ['DP-2', 'DP-2']);
+  assert.deepEqual(treeWins(t.self, t.ws1, 1), [t.b]);
+  assert.deepEqual(treeWins(t.self, t.ws2, 1), [t.c]);
+  assert.deepEqual(t.self._workspaceOrders.get(t.ws3), []);
+  assert.equal(global.workspace_manager.get_n_workspaces(), 4, 'workspace 4 (made for c) removed');
+  assert.ok(!global.workspace_manager.get_workspace_by_index(4) && t.ws3 === global.workspace_manager.get_workspace_by_index(3),
+    'workspace 3 (already there) kept');
+  assert.equal(ws4.list_windows().length, 0);
+  assert.equal(t.self._evacuated.size, 0);
+  assert.deepEqual(t.popups[1], ['DP-2 connected', '2 windows returned to their workspaces']);
+});
+
+test('evacuation: the return follows in our order with no workspace-changed (a resume pass)', () => {
+  const t = evacSelf();
+  t.unplug();
+  for (const w of [t.b, t.c]) w._wsChanged = null;
+  t.replug();
+  assert.deepEqual([t.b, t.c].map(w => t.self._windowWorkspaces.get(w)), [t.ws1, t.ws2]);
+  assert.deepEqual(t.self._workspaceOrders.get(t.ws1), [t.a, t.b]);
+  assert.deepEqual(treeWins(t.self, t.ws3, 0), []);
+  assert.deepEqual(treeWins(t.self, t.ws1, 1), [t.b]);
+});
+
+test('evacuation: a window moved off its evacuation workspace stays where it was put; a gone source keeps it too', () => {
+  const t = evacSelf();
+  t.unplug();
+  t.b.change_workspace(t.ws2);
+  // c's source (workspace 2) is removed meanwhile.
+  const wm = global.workspace_manager;
+  const ws4 = wm.get_workspace_by_index(4);
+  t.self._evacuated.get(t.c).source = { gone: true };
+  t.replug();
+  assert.equal(t.b.get_workspace(), t.ws2, 'moved by hand: stays');
+  assert.equal(t.c.get_workspace(), ws4, 'no source to go back to');
+  assert.equal(wm.get_workspace_by_index(4), ws4, 'still has c: kept');
+  assert.equal(t.self._evacuated.size, 0, 'both records dropped');
+  assert.equal(t.popups.length, 1, 'nothing returned: no second popup');
+});
+
+test('evacuation: never slot 0, the parking, a non-empty or a source workspace; an empty shown one before a new one', () => {
+  const t = evacSelf();
+  const wm = global.workspace_manager;
+  // Workspace 3 is shown and empty; a window shown on every workspace does not count.
+  wm.get_active_workspace = () => t.ws3;
+  const sticky = W('sticky', t.ws3, 0);
+  sticky.is_on_all_workspaces = () => true;
+  const n = wm.get_n_workspaces();
+  t.unplug();
+  assert.equal(t.b.get_workspace(), t.ws3, 'the shown empty workspace, as nothing else is free');
+  assert.equal(wm.get_n_workspaces(), n + 1, 'c needs a new one');
+  for (const ws of [t.wss[0], t.ws1, t.ws2]) assert.ok(![t.b, t.c].some(w => w.get_workspace() === ws));
+  // A made workspace that is shown is not removed until it is not.
+  const made = wm.get_workspace_by_index(4);
+  wm.get_active_workspace = () => made;
+  t.replug();
+  assert.equal(wm.get_workspace_by_index(4), made, 'shown: kept');
+  wm.get_active_workspace = () => t.ws1;
+  t.self.monitors.cleanupEvacuation();
+  assert.equal(wm.get_workspace_by_index(4), null, 'removed once not shown');
+});
+
+test('evacuation: a closed window leaves no record; the records survive a lock cycle', () => {
+  const t = evacSelf();
+  for (const w of [t.a, t.b, t.c, t.e]) w._plaidSignalsConnected = true;
+  t.unplug();
+  const rec = t.self._evacuated.get(t.c);
+  t.self.windows.removeWindow(t.b);
+  assert.equal(t.self._evacuated.has(t.b), false);
+  const next = lockCycle(t.self, [t.a, t.c, t.e], { wire: true });
+  assert.equal(next._evacuated.get(t.c), rec);
+  assert.deepEqual([...next._createdEvacTargets], [...t.self._createdEvacTargets]);
+});
+
+test('evacuation: an empty workspace not shown before the shown one; a remembered target at slot 0 or the parking is not reused', () => {
+  const t = evacSelf();
+  const wm = global.workspace_manager;
+  const ws4 = wm.append_new_workspace();
+  wm.get_active_workspace = () => t.ws3;
+  t.self._backgroundAppParkingWs = ws4;
+  t.self._evacTargets = new Map([['DP-2|1', t.wss[0]], ['DP-2|2', ws4]]);
+  t.unplug();
+  const ws5 = wm.get_workspace_by_index(5);
+  assert.deepEqual([t.b.get_workspace(), t.c.get_workspace()], [t.ws3, ws5],
+    'b: slot 0 is no target, the shown empty workspace 3 is all there is; c: workspace 4 is the parking, so a new one');
+  const u = evacSelf();
+  const ws4b = global.workspace_manager.append_new_workspace();
+  global.workspace_manager.get_active_workspace = () => u.ws3;
+  u.unplug();
+  assert.deepEqual([u.b.get_workspace(), u.c.get_workspace()], [ws4b, u.ws3], 'the hidden empty workspace 4 first');
+});
+
+test('evacuation: a window mutter leaves on the remaining monitor at the replug is no longer restored later', () => {
+  const t = evacSelf();
+  t.unplug();
+  setSecond(true);
+  t.c._mon = 1;
+  t.self.monitors.invalidate();
+  t.self.monitors.regroupWindows('hotplug');
+  assert.equal(t.self._evacuated.has(t.b), false, 'b stayed on DP-1: its record goes');
+  // Later moved to DP-2 by hand, from where it was: it stays there.
+  t.b._mon = 1;
+  t.self.monitors.regroupWindows('hotplug');
+  assert.equal(t.b.get_workspace(), t.ws3);
+});
+
+test('evacuation: after a replug the next unplug picks afresh, not the workspace it used before', () => {
+  const t = evacSelf();
+  t.unplug();
+  t.replug();
+  W('busy', t.ws3, 0);
+  t.unplug();
+  assert.notEqual(t.b.get_workspace(), t.ws3, 'workspace 3 has a window of its own now');
+});
+
+test('evacuation: a window that moves to another display than the one it left is not restored', () => {
+  const t = evacSelf();
+  t.unplug();
+  // A different display arrives as the second; b is moved onto it.
+  global.display.get_n_monitors = () => 2;
+  global.backend.get_monitor_manager = () => ({
+    get_logical_monitors: () => ['DP-1', 'HDMI-1'].map((c, i) => ({ get_number: () => i, get_monitors: () => [{ get_connector: () => c }] })),
+  });
+  t.b._mon = 1;
+  t.self.monitors.invalidate();
+  t.self.monitors.regroupWindows('hotplug');
+  assert.equal(t.self.monitors.windowConn(t.b), 'HDMI-1');
+  assert.equal(t.b.get_workspace(), t.ws3, 'not DP-2: stays on its evacuation workspace');
+  assert.equal(t.self._evacuated.has(t.b), true, 'kept for DP-2\'s return');
+});
+
+test('formatWorkspaces: one, a run, a list, none', () => {
+  const [, ws] = stubGlobal();
+  const { self } = groupSelf(ws, []);
+  const f = (l) => self.monitors.formatWorkspaces(l);
+  assert.equal(f([3]), 'Workspace 3');
+  assert.equal(f([4, 3, 3, 5]), 'Workspaces 3\u20135');
+  assert.equal(f([2, 5]), 'Workspaces 2, 5');
+  assert.equal(f([0]), 'an unused workspace');
 });
 
 test('drop on another monitor: onto a window it splits that leaf, onto an empty monitor it fills it', () => {
@@ -2014,14 +2268,19 @@ test('scheduleRegroup: one idle for a burst; it regroups, and not after shutdown
   }
 });
 
-test('hotplug: three windows off a removed monitor keep its whole arrangement, and append where they land', () => {
-  const [, ws] = stubGlobal({ pointer: [200, 250] });
+test('hotplug: with no workspace to spare, three windows off a removed monitor keep its whole arrangement, and append where they land', () => {
+  const [, ws, ws2] = stubGlobal({ pointer: [200, 250] });
   const a = W('a', ws, 0), e = W('e', ws, 0), b = W('b', ws, 0), c = W('c', ws, 0), d = W('d', ws, 0);
+  W('busy', ws2, 0);
+  global.workspace_manager.append_new_workspace = () => null;
   const { self } = groupSelf(ws, [a, e, b, c, d]);
+  wireWs(self, [a, e, b, c, d]);
   for (const w of [b, c, d]) self._windowMonitors.set(w, 'HDMI-9');
   self._bspTrees.set(self.monitors.groupObjFor(ws, 'HDMI-9'), split('h', 0.7, leaf(b), split('v', 0.4, leaf(c), leaf(d))));
   self.bsp.bspSetTree(ws, 0, split('h', 0.5, leaf(a), leaf(e)));
   self.monitors.regroupWindows('hotplug');
+  assert.deepEqual([b, c, d].map(w => w.get_workspace()), [ws, ws, ws], 'nowhere to go: they stay');
+  assert.equal(self._evacuated.size, 0);
   assert.equal(self._persistedDwindleRaw.get('1@HDMI-9'), 'h0.7000(l,v0.4000(l,l))');
   // Appended dwindle style: a, under the pointer, is not split.
   const t = self.bsp.bspGetTree(ws, 0);
@@ -2744,7 +3003,7 @@ test('fixed groups: the Flair pass dresses a fixed window whatever its home work
   assert.deepEqual(blurred.sort(), ['a', 'b', 'c']);
 });
 
-test('fixed groups: an unplugged fixed monitor\'s windows go back to their home workspace', () => {
+test('fixed groups: an unplugged fixed monitor\'s windows move to one unused workspace per home workspace', () => {
   const f = fixedEdgeSelf();
   // c (home: workspace 2) and d (home: the active workspace 1) were on the
   // fixed HDMI-9, now unplugged: mutter put them on DP-1's active workspace.
@@ -2752,29 +3011,54 @@ test('fixed groups: an unplugged fixed monitor\'s windows go back to their home 
   f.self._workspaceOrders.get(f.ws).push(d);
   f.self._windowWorkspaces.set(d, f.ws);
   f.self._windowWSIndices.set(d, 1);
+  wireWs(f.self, [f.a, f.b, f.c, d]);
   for (const w of [f.c, d]) {
     w._mon = 0;
     f.self._windowMonitors.set(w, 'HDMI-9');
   }
   f.self._bspTrees.set(f.self.monitors.groupObjFor(f.ws, 'HDMI-9'), split('h', 0.6, leaf(f.c), leaf(d)));
-  const moved = [];
-  f.c.change_workspace = (ws) => { moved.push(['c', ws]); f.c._ws = ws; };
-  d.change_workspace = (ws) => moved.push(['d', ws]);
   f.self.monitors.regroupWindows('hotplug');
-  assert.deepEqual(moved, [['c', f.ws2]], 'c goes home; d is home already');
-  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws2);
+  const wm = global.workspace_manager;
+  const [ws3, ws4] = [wm.get_workspace_by_index(3), wm.get_workspace_by_index(4)];
+  assert.ok(ws3 && ws4, 'workspace 2 is c\'s home, so two new ones');
+  assert.deepEqual([d.get_workspace(), f.c.get_workspace()], [ws3, ws4], 'in home order');
+  assert.deepEqual([f.self._workspaceOrders.get(ws3), f.self._workspaceOrders.get(ws4)], [[d], [f.c]]);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), [], 'c left its home order');
   assert.deepEqual([f.c, d].map(w => f.self.monitors.windowConn(w)), ['DP-1', 'DP-1']);
+  assert.deepEqual([f.self._evacuated.get(f.c).source, f.self._evacuated.get(d).source], [f.ws2, f.ws]);
   assert.equal(f.self._persistedDwindleRaw.get('m@HDMI-9'), 'h0.6000(l,l)', 'the fixed arrangement is kept for its return');
-  // The setting off: per-workspace groups, nobody is sent anywhere (even
-  // with its order on another workspace than mutter reports).
-  const g = edgeSelf();
-  const gws2 = global.workspace_manager.get_workspace_by_index(2);
-  g.self._windowWorkspaces.set(g.c, gws2);
-  g.c._mon = 0;
-  g.self._windowMonitors.set(g.c, 'HDMI-9');
-  g.c.change_workspace = () => moved.push(['off']);
-  g.self.monitors.regroupWindows('hotplug');
-  assert.equal(moved.length, 1);
+});
+
+test('fixed groups: an evacuated window back on its fixed display rejoins its arrangement and its home order', () => {
+  const f = fixedEdgeSelf();
+  for (const w of [f.a, f.b, f.c]) w.get_compositor_private = () => ({});
+  wireWs(f.self, [f.a, f.b, f.c]);
+  f.self._bspTrees.set(f.self.monitors.groupObjFor(f.ws, 'DP-2'), leaf(f.c));
+  setSecond(false);
+  f.c._mon = 0;
+  f.self.monitors.invalidate();
+  f.self.monitors.regroupWindows('hotplug');
+  const ws3 = global.workspace_manager.get_workspace_by_index(3);
+  assert.equal(f.c.get_workspace(), ws3, 'workspace 2 is its home, workspace 1 is not empty: a new one');
+  // The replug: mutter shows c on every workspace again, reporting the
+  // active one, which emits workspace-changed.
+  setSecond(true);
+  f.c._mon = 1;
+  f.c.is_on_all_workspaces = () => true;
+  const moves = [];
+  f.c.change_workspace = (ws) => moves.push(ws);
+  f.c._ws = f.ws;
+  f.c._wsChanged();
+  assert.equal(f.self._evacuated.has(f.c), true, 'shown everywhere is no move by hand');
+  f.self.monitors.invalidate();
+  f.self.monitors.regroupWindows('hotplug');
+  assert.deepEqual(moves, [], 'mutter is not asked to move a window shown everywhere');
+  assert.equal(f.self.monitors.windowConn(f.c), 'DP-2');
+  assert.equal(f.self._windowWorkspaces.get(f.c), f.ws2);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws2), [f.c]);
+  assert.deepEqual(f.self._workspaceOrders.get(f.ws), [f.a, f.b]);
+  assert.deepEqual(f.self.monitors.getWindowsForGroup(f.ws, 1), [f.c]);
+  assert.equal(global.workspace_manager.get_workspace_by_index(3), null, 'the made workspace goes');
 });
 
 test('fixed groups: a workspace switch (mutter\'s workspace-changed on a window shown everywhere) keeps its home order', () => {

@@ -619,29 +619,203 @@ export class Monitors extends PlaidSubsystem {
 
     // Every window whose monitor is not its group's joins its monitor's
     // group. A removed monitor's groups keep their layout and saved shape for
-    // its return.
+    // its return. Its windows move off the remaining display's workspaces: one
+    // unused workspace per (monitor, source workspace), so no existing
+    // workspace reflows; when mutter brings one back to the returning monitor
+    // it goes back to its source workspace (if it is still where it was sent).
     regroupWindows(cause) {
         if (!this.core._settings || this.core._shuttingDown || !this.core._windowMonitors) return;
-        const saved = new Set();
+        const evacuated = this.evacuated();
+        const moves = [];
         for (const [win, conn] of [...this.core._windowMonitors]) {
             // A drag regroups at its end; our own animation is passing over.
             if (win === this.core._grabbedWindow || this.ownMoveInFlight(win)) continue;
             const mon = win.get_monitor();
             if (mon < 0) continue;
             const to = this.monConn(mon);
-            if (to === conn) continue;
-            const gone = this.connMon(conn) < 0;
+            if (to === conn) {
+                // Back on the monitor it left without a regroup: nothing to restore.
+                const e = evacuated.get(win);
+                if (e && this.connMon(e.conn) >= 0) evacuated.delete(win);
+                continue;
+            }
+            moves.push({ win, conn, to, gone: this.connMon(conn) < 0 });
+        }
+        const targets = this.evacuationTargets(moves.filter(m => m.gone));
+        const saved = new Set();
+        const lost = new Set(), sentTo = new Set(), back = new Set();
+        let sent = 0, returned = 0;
+        for (const { win, conn, to, gone } of moves) {
             if (!saved.has(conn) && gone) {
                 saved.add(conn);
                 this.saveGroupShapes(conn);
             }
-            // A fixed monitor was unplugged: mutter put its windows on the
-            // active workspace. Each goes back to the workspace whose order
-            // holds it (where it was opened, or came from), so only that
-            // workspace reflows.
-            if (gone && this.fixedConn(conn)) this.sendHome(win);
+            const target = targets.get(win);
+            if (target) {
+                // Change workspace while still in the old group: the order and
+                // the old tree follow the move, then the window joins `to` there.
+                evacuated.set(win, { conn, source: this.core._windowWorkspaces.get(win) ?? win.get_workspace(), target });
+                this.core.debugLog(`evacuate: ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ${conn} ` +
+                    `ws=${this.core.geometry.wsIndex(evacuated.get(win).source)} -> ws=${this.core.geometry.wsIndex(target)}`);
+                if (win.get_workspace() !== target) win.change_workspace(target);
+                this.followMove(win);
+                sent++;
+                lost.add(conn);
+                sentTo.add(target);
+            } else {
+                const e = evacuated.get(win);
+                if (e && e.conn === to) {
+                    evacuated.delete(win);
+                    if (this.restoreEvacuated(win, e)) {
+                        returned++;
+                        back.add(to);
+                        // Shown on every workspace now: back in its home order.
+                        if (this.fixedConn(to)) {
+                            this.moveWindowToGroup(win, to, cause);
+                            this.adoptIntoWorkspace(win, e.source);
+                            continue;
+                        }
+                    }
+                }
+            }
             this.moveWindowToGroup(win, to, cause);
         }
+        this.cleanupEvacuation();
+        this.monitorChangeNotice(lost, sent, sentTo, back, returned);
+    }
+
+    evacuated() {
+        if (!this.core._evacuated) this.core._evacuated = new Map();
+        return this.core._evacuated;
+    }
+
+    // A workspace no window of its own is on (windows shown on every
+    // workspace, such as a fixed monitor's, do not count).
+    wsEmpty(ws) {
+        return !ws.list_windows().some(w => !w.is_on_all_workspaces?.());
+    }
+
+    // An unused workspace for each (monitor, source workspace) group of
+    // windows whose monitor is gone, in source order: an empty one that is not
+    // shown, else the shown one if empty, else a new one. Never slot 0 or the
+    // Background App's parking. Map window -> target.
+    evacuationTargets(detached) {
+        const out = new Map();
+        const wm = global.workspace_manager;
+        if (!detached.length || !wm) return out;
+        if (!this.core._evacTargets) this.core._evacTargets = new Map();
+        if (!this.core._createdEvacTargets) this.core._createdEvacTargets = new Set();
+        const geo = this.core.geometry;
+        const groups = new Map();
+        for (const d of detached) {
+            const src = this.core._windowWorkspaces.get(d.win) ?? d.win.get_workspace();
+            const key = `${d.conn}|${src ? geo.wsIndex(src) : -1}`;
+            if (!groups.has(key)) groups.set(key, { idx: src ? geo.wsIndex(src) : -1, src, wins: [] });
+            groups.get(key).wins.push(d.win);
+        }
+        // A source stays as it was, for the windows' return.
+        const used = new Set([...groups.values()].map(g => g.src));
+        const usable = (ws) => ws && geo.wsIndex(ws) >= 1 && ws !== this.core._backgroundAppParkingWs && !used.has(ws);
+        const sorted = [...groups].sort((a, b) => a[1].idx - b[1].idx || (a[0] < b[0] ? -1 : 1));
+        for (const [key, g] of sorted) {
+            let target = this.core._evacTargets.get(key);
+            if (!usable(target)) {
+                target = null;
+                const active = wm.get_active_workspace();
+                let shown = null;
+                for (let i = 1; i < wm.get_n_workspaces() && !target; i++) {
+                    const ws = wm.get_workspace_by_index(i);
+                    if (!usable(ws) || !this.wsEmpty(ws)) continue;
+                    if (ws === active) shown ??= ws;
+                    else target = ws;
+                }
+                target ??= shown;
+                if (!target) {
+                    target = wm.append_new_workspace(false, this.core.currentTime());
+                    if (target) this.core._createdEvacTargets.add(target);
+                }
+                if (!target) {
+                    this.core.debugLog(`evacuate: no workspace for ${key} (${g.wins.map(w => w.get_id()).join(',')}): staying put`);
+                    continue;
+                }
+                this.core._evacTargets.set(key, target);
+            }
+            used.add(target);
+            for (const w of g.wins) out.set(w, target);
+        }
+        return out;
+    }
+
+    // An evacuated window mutter brought back to its monitor goes to its
+    // source workspace, unless the source is gone. (Moved by hand meanwhile,
+    // it has no record: windows.js drops it.) A fixed monitor's window is
+    // shown on every workspace: the caller puts it in its home order.
+    restoreEvacuated(win, e) {
+        const srcIdx = e.source ? this.core.geometry.wsIndex(e.source) : -1;
+        if (srcIdx < 1 || global.workspace_manager.get_workspace_by_index(srcIdx) !== e.source) return false;
+        this.core.debugLog(`evacuate: restore ${win.get_wm_class_instance() || '?'} id=${win.get_id()} ` +
+            `ws=${this.core.geometry.wsIndex(e.target)} -> ws=${srcIdx}`);
+        if (!this.fixedConn(e.conn) && win.get_workspace() !== e.source) {
+            win.change_workspace(e.source);
+            this.followMove(win);
+        }
+        return true;
+    }
+
+    // Our order follows a change_workspace even when the window's signals
+    // are not connected (the resume pass of a lock cycle runs before them).
+    followMove(win) {
+        if (this.core._windowWorkspaces.get(win) !== win.get_workspace()) this.core.windows.followWorkspace(win);
+    }
+
+    // Workspaces made for an evacuation go once empty and not shown; a
+    // returned monitor's reuse keys go.
+    cleanupEvacuation() {
+        const wm = global.workspace_manager;
+        if (!wm || (!this.core._evacTargets?.size && !this.core._createdEvacTargets?.size)) return;
+        for (const key of [...(this.core._evacTargets?.keys() ?? [])]) {
+            if (this.connMon(key.slice(0, key.lastIndexOf('|'))) >= 0) this.core._evacTargets.delete(key);
+        }
+        const active = wm.get_active_workspace();
+        for (const ws of [...(this.core._createdEvacTargets ?? [])]) {
+            const idx = this.core.geometry.wsIndex(ws);
+            if (idx < 1 || wm.get_workspace_by_index(idx) !== ws) {
+                this.core._createdEvacTargets.delete(ws);
+                continue;
+            }
+            if (ws === active || !this.wsEmpty(ws)) continue;
+            this.core.debugLog(`evacuate: removed ws=${idx}`);
+            this.core._createdEvacTargets.delete(ws);
+            wm.remove_workspace(ws, this.core.currentTime());
+        }
+    }
+
+    formatWorkspaces(list) {
+        const n = [...new Set(list)].filter(i => i >= 1).sort((a, b) => a - b);
+        if (n.length === 0) return 'an unused workspace';
+        if (n.length === 1) return `Workspace ${n[0]}`;
+        return n.every((v, i) => i === 0 || v === n[i - 1] + 1)
+            ? `Workspaces ${n[0]}\u2013${n[n.length - 1]}`
+            : `Workspaces ${n.join(', ')}`;
+    }
+
+    // One popup per pass that moved windows away or back, on the pointer's
+    // monitor.
+    monitorChangeNotice(lost, sent, sentTo, back, returned) {
+        if (!this.core.workspaces || (sent === 0 && returned === 0)) return;
+        const name = (set, what) => set.size === 1
+            ? `${Monitors.savedConn([...set][0]) ? [...set][0] : 'Display'} ${what}`
+            : `${set.size} displays ${what}`;
+        const plural = (k) => `${k} window${k === 1 ? '' : 's'}`;
+        const geo = this.core.geometry;
+        const [title, subtitle] = sent > 0
+            ? [name(lost, 'disconnected'),
+                `${plural(sent)} moved to ${this.formatWorkspaces([...sentTo].map(ws => geo.bgAppRealToDisplay(geo.wsIndex(ws)) + 1))}`]
+            : [name(back, 'connected'), `${plural(returned)} returned to their workspaces`];
+        this.core.signals.addTimeout(250, () => {
+            if (this.core._settings) this.core.workspaces.showPopup(title, subtitle, 3000, null, global.display.get_current_monitor());
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     // The monitor's arrangements as saved shapes, before its windows leave.
@@ -729,16 +903,6 @@ export class Monitors extends PlaidSubsystem {
         }
         this.setWindowGroup(a, cb, 'swap');
         this.setWindowGroup(b, ca, 'swap');
-    }
-
-    sendHome(win) {
-        const home = this.core._windowWorkspaces.get(win);
-        const cur = win.get_workspace();
-        // Never slot 0, the Background App's parking.
-        if (!home || home === cur || this.core.geometry.wsIndex(home) < 1) return;
-        this.core.debugLog(`group: ${win.get_wm_class_instance() || '?'} id=${win.get_id()} home ws=${this.core.geometry.wsIndex(home)} ` +
-            `(was on ws=${this.core.geometry.wsIndex(cur)})`);
-        win.change_workspace(home);
     }
 
     // A fixed group's window stays in the order of the workspace it came

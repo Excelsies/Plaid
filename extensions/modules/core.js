@@ -151,6 +151,12 @@ export class PlaidCore {
         this._groupObjs = new Map();
         // Fixed groups (monitors.fixedConn), one object per connector.
         this._fixedGroupObjs = new Map();
+        // Windows of a removed monitor moved to an unused workspace
+        // (monitors.regroupWindows): window -> {conn, source, target}; the
+        // target per "conn|source index"; the workspaces made for it.
+        this._evacuated = new Map();
+        this._evacTargets = new Map();
+        this._createdEvacTargets = new Set();
         this._monitorConnCache = null;
         this._monitorConnPartial = false;
         // A burst of monitor changes waiting for its settled pass (Monitors).
@@ -432,6 +438,9 @@ export class PlaidCore {
                 windowMonitors: this._windowMonitors,
                 groupObjs: this._groupObjs,
                 fixedGroupObjs: this._fixedGroupObjs,
+                evacuated: this._evacuated,
+                evacTargets: this._evacTargets,
+                createdEvacTargets: this._createdEvacTargets,
                 keyedPrimary: this._keyedPrimary,
                 monitorSig: this.monitors.signature(),
             };
@@ -553,6 +562,10 @@ export class PlaidCore {
         if (s.windowMonitors) this._windowMonitors = s.windowMonitors;
         if (s.groupObjs) this._groupObjs = s.groupObjs;
         if (s.fixedGroupObjs) this._fixedGroupObjs = s.fixedGroupObjs;
+        // An undock while locked still returns its windows on the redock.
+        if (s.evacuated) this._evacuated = liveOnly(s.evacuated);
+        if (s.evacTargets) this._evacTargets = s.evacTargets;
+        if (s.createdEvacTargets) this._createdEvacTargets = s.createdEvacTargets;
         if (s.lastRealFocusedWindow && alive(s.lastRealFocusedWindow))
             this._lastRealFocusedWindow = s.lastRealFocusedWindow;
         if (s.scratchpadWindows) {
@@ -663,6 +676,9 @@ export class PlaidCore {
         this._windowMonitors = null;
         this._groupObjs = null;
         this._fixedGroupObjs = null;
+        this._evacuated = null;
+        this._evacTargets = null;
+        this._createdEvacTargets = null;
         this._keyedPrimary = null;
         this._workspaceLayouts = null;
         this._masterRatios = null;

@@ -257,8 +257,10 @@ mismatch churn.
       the layout of the monitor it is dropped on
 - [ ] Focus/swap keys at a screen edge cross to the neighbouring monitor
 - [ ] Cycle layout and resize change only the focused window's monitor
-- [ ] Unplug a monitor: its windows join the remaining layout; plug it back:
-      windows moved there get its old layout and arrangement
+- [ ] Unplug a monitor: its windows move to unused workspaces (one per
+      workspace they were on), the view does not switch and a popup says
+      where; plug it back: they return to their workspaces with its old
+      layout and arrangement, and the workspaces made for them go
 - [ ] Log out and in: each monitor keeps its layout per workspace
 - [ ] Settings → Multitasking → workspaces on the primary display only: a
       window moved to another display tiles there; that display's
@@ -266,8 +268,9 @@ mismatch churn.
       hover reach its windows, and they keep their border. Cycle layout on
       it changes only that display. Turn the setting off and on: both
       arrangements come back
-- [ ] Same setting, unplug the other display: each of its windows goes back
-      to the workspace it came from
+- [ ] Same setting, unplug the other display: its windows move to unused
+      workspaces, one per workspace they came from; plug it back: they
+      return to its arrangement
 
 ## Focus on Hover (v50.65)
 

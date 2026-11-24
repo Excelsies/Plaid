@@ -490,6 +490,7 @@ export class Windows extends PlaidSubsystem {
         this.core._windowWorkspaces.delete(win);
         this.core._windowWSIndices.delete(win);
         this.core._windowMonitors?.delete(win);
+        this.core._evacuated?.delete(win);
         if (this.core._grabbedWindow === win) this.core._grabbedWindow = null;
         win._plaidTickSent = null;
         win._plaidOpenBox = null;
@@ -536,6 +537,38 @@ export class Windows extends PlaidSubsystem {
             this.core.layouts.retileWorkspace(ws);
         }
         this.core.actions.noteClosed(win);
+    }
+
+    // The window is on another workspace than its order's: it leaves that
+    // order and tree and joins the new workspace's (workspace-changed, and
+    // monitors.regroupWindows' moves while the signals are not connected).
+    followWorkspace(win) {
+        const oldWs = this.core._windowWorkspaces.get(win);
+        const newWs = win.get_workspace();
+        // Moved off the workspace an unplugged display's window was sent
+        // to: it stays where it is put. (Shown on every workspace: its
+        // display came back, not a move.)
+        const ev = this.core._evacuated?.get(win);
+        if (ev && newWs && newWs !== ev.target && !win.is_on_all_workspaces()) this.core._evacuated.delete(win);
+        if (oldWs) {
+            const order = this.getWorkspaceOrder(oldWs);
+            const idx = order.indexOf(win);
+            if (idx !== -1) order.splice(idx, 1);
+            // Leave the old tree now: a grab defers this retile to its
+            // end, and until then the old slot stays a drop target
+            // (drag-scroll carries a window off mid-grab). The monitor
+            // stays: it joins the same monitor's group there.
+            if (oldWs !== newWs)
+                this.core.monitors.removeFromGroupTree(win, oldWs, this.core.monitors.windowConn(win));
+            this.core.layouts.retileWorkspace(oldWs);
+        }
+        if (newWs) {
+            const order = this.getWorkspaceOrder(newWs);
+            if (!order.includes(win)) order.push(win);
+            this.core._windowWorkspaces.set(win, newWs);
+            this.core._windowWSIndices.set(win, this.core.geometry.wsIndex(newWs));
+            this.core.layouts.retileWorkspace(newWs);
+        }
     }
 
     connectWindowSignals(win) {
@@ -590,30 +623,10 @@ export class Windows extends PlaidSubsystem {
         sigIds.push({ emitter: win, id: this.connectObject(win, 'workspace-changed', () => {
             // A fixed group's window is shown on every workspace: mutter
             // reports each workspace switch as a change. Its order stays with
-            // the workspace it came from (monitors.sendHome).
+            // the workspace it came from.
             const monitors = this.core.monitors;
             if (monitors.fixedConn(monitors.windowConn(win))) return;
-            const oldWs = this.core._windowWorkspaces.get(win);
-            const newWs = win.get_workspace();
-            if (oldWs) {
-                const order = this.getWorkspaceOrder(oldWs);
-                const idx = order.indexOf(win);
-                if (idx !== -1) order.splice(idx, 1);
-                // Leave the old tree now: a grab defers this retile to its
-                // end, and until then the old slot stays a drop target
-                // (drag-scroll carries a window off mid-grab). The monitor
-                // stays: it joins the same monitor's group there.
-                if (oldWs !== newWs)
-                    this.core.monitors.removeFromGroupTree(win, oldWs, this.core.monitors.windowConn(win));
-                this.core.layouts.retileWorkspace(oldWs);
-            }
-            if (newWs) {
-                const order = this.getWorkspaceOrder(newWs);
-                if (!order.includes(win)) order.push(win);
-                this.core._windowWorkspaces.set(win, newWs);
-                this.core._windowWSIndices.set(win, this.core.geometry.wsIndex(newWs));
-                this.core.layouts.retileWorkspace(newWs);
-            }
+            this.followWorkspace(win);
         }) });
         sigIds.push({ emitter: win, id: this.connectObject(win, 'notify::minimized', () => {
             // Scratch members are float-class but stay in _windowWorkspaces

@@ -14,10 +14,10 @@ Releases older than v50.43 predate this changelog; see the git history and the
 
 ## Unreleased
 
-- **Windows from an unplugged display go back to their own workspace.** With
-  workspaces on the primary display only, a disconnected display's windows return
-  to the workspace each came from instead of piling onto the one you are viewing;
-  when the display returns they regroup onto it.
+- **A window you move off its evacuation workspace stays where you put it.** When
+  an unplugged display returns, only its windows still on the workspace they were
+  moved to go back to their own workspaces. With workspaces on the primary display
+  only, the windows are grouped by the workspace each came from.
 
 ## v51.32 — 2026-11-23
 
